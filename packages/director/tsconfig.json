@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": "../..",
+    "paths": {
+      "@cadence/core": ["packages/core/src/index.ts"],
+      "@cadence/understanding": ["packages/understanding/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

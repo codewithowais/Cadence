@@ -1,0 +1,23 @@
+{
+  "name": "@cadence/director",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Director: typed tools that operate on the edit-doc. Stub (deterministic) now; real Claude behind a money gate later.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cadence/core": "*",
+    "@cadence/understanding": "*",
+    "zod": "4.5.4"
+  }
+}

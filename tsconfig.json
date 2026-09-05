@@ -5,6 +5,7 @@
     "paths": {
       "@cadence/core": ["packages/core/src/index.ts"],
       "@cadence/render-node": ["packages/render-node/src/index.ts"],
+      "@cadence/understanding": ["packages/understanding/src/index.ts"],
       "@cadence/director": ["packages/director/src/index.ts"]
     }
   },

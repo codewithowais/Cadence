@@ -5,12 +5,12 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 ## Status legend
 ✅ done & verified · 🚧 in progress · ⬜ todo · ⛔ blocked on money gate
 
-## Phase 0 — Spike (prove the loop)
+## Phase 0 — Spike (prove the loop) — ✅ COMPLETE
 
 - ✅ **S0.1 Scaffold + verify gate.** npm workspaces monorepo; `@cadence/core` (engine-agnostic edit-doc schema + render interface); `@cadence/render-node` (headless canvas RenderEngine); `npm run typecheck` + `npm run verify` (renders one real frame, fails loudly). Pinned versions. — *verified: typecheck exit 0, verify renders 1280×720 PNG.*
-- ⬜ **S0.2 Stub Director + `set_timeline` tool.** Deterministic Director that emits a valid edit-doc from a request; exposed as a typed tool. Verify: a request → valid doc → renders.
-- ⬜ **S0.3 Ingest one video + local transcript.** faster-whisper/whisper.cpp wrapper (free). Verify: transcript JSON produced for a sample.
-- ⬜ **S0.4 "Cut a 60s highlight" end-to-end.** transcript → stub Director → edit-doc → preview frame. (Phase 0 done gate.)
+- ✅ **S0.2 Stub Director + `set_timeline` tool.** `@cadence/director`: `ProjectState`, typed `set_timeline` tool (validates edit-doc via schema before it lands), `StubDirector` with plain-language intent routing. — *verified: Director calls set_timeline, doc renders.*
+- ✅ **S0.3 Ingest + transcript (stub).** `@cadence/understanding`: `Transcript` types + `Transcriber` interface + deterministic `StubTranscriber` (offline, free). — *verified: 3-min media → 39 segments.* **Next:** `FasterWhisperTranscriber` drop-in (real local Whisper).
+- ✅ **S0.4 "Cut a 60s highlight" end-to-end.** media → transcript → StubDirector → 61s edit-doc (15 cuts, word-accurate source offsets) → rendered full-frame preview. **Phase-0 done gate met.**
 
 ## Phase 1 — Social MVP (see AGENTS.md §11 for done)
 

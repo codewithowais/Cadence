@@ -43,23 +43,29 @@ function drawText(ctx: SKRSContext2D, clip: TextClip): void {
   ctx.restore();
 }
 
-/** Placeholder tile for a media clip until real decode lands. */
+/**
+ * Placeholder tile for a media clip until real decode lands. The tile's natural
+ * size is the composition frame (a full-frame clip covers the frame); the clip
+ * transform anchors it by its CENTER, so `{x: w/2, y: h/2}` centers it and
+ * `scale` shrinks it to a picture-in-picture. This matches how real media will
+ * be drawn later.
+ */
 function drawMediaPlaceholder(
   ctx: SKRSContext2D,
   clip: VideoClip | ImageClip,
   label: string,
   fill: string,
+  frameW: number,
+  frameH: number,
 ): void {
-  const w = 640;
-  const h = 360;
   ctx.save();
   applyTransform(ctx, clip.transform);
   ctx.fillStyle = fill;
   ctx.beginPath();
-  ctx.roundRect(-w / 2, -h / 2, w, h, 16);
+  ctx.roundRect(-frameW / 2, -frameH / 2, frameW, frameH, 0);
   ctx.fill();
   ctx.fillStyle = "#ffffff";
-  ctx.font = "28px sans-serif";
+  ctx.font = "40px sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(label, 0, 0);
@@ -92,12 +98,12 @@ export class CanvasRenderEngine implements RenderEngine {
           break;
         case "image": {
           const asset = doc.media.find((m) => m.id === clip.mediaId);
-          drawMediaPlaceholder(ctx, clip, asset?.label ?? asset?.src ?? clip.mediaId, tintFor(clip.mediaId));
+          drawMediaPlaceholder(ctx, clip, asset?.label ?? asset?.src ?? clip.mediaId, tintFor(clip.mediaId), width, height);
           break;
         }
         case "video": {
           const asset = doc.media.find((m) => m.id === clip.mediaId);
-          drawMediaPlaceholder(ctx, clip, asset?.label ?? asset?.src ?? clip.mediaId, tintFor(clip.mediaId));
+          drawMediaPlaceholder(ctx, clip, asset?.label ?? asset?.src ?? clip.mediaId, tintFor(clip.mediaId), width, height);
           break;
         }
         case "audio":

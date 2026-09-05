@@ -1,0 +1,21 @@
+{
+  "name": "@cadence/understanding",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Media understanding: transcript types + Transcriber interface. Stub (offline) now; local Whisper adapter as a drop-in.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cadence/core": "*"
+  }
+}
