@@ -9,7 +9,11 @@ export function fmtTime(sec: number): string {
 
 /** Trigger a client-side file download (free, no server). */
 export function download(name: string, text: string, type = "application/json"): void {
-  const blob = new Blob([text], { type });
+  downloadBlob(name, new Blob([text], { type }));
+}
+
+/** Trigger a client-side download of an arbitrary Blob (e.g. an exported .mp4). */
+export function downloadBlob(name: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

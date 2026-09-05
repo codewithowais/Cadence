@@ -11,8 +11,8 @@ import { Stage } from "./Stage";
 import { CutsStrip } from "./CutsStrip";
 import { CodeDrawer } from "./CodeDrawer";
 import { emptyDoc, fullClipDoc } from "@/lib/doc";
-import { askDirector, transcribe } from "@/lib/api";
-import { download } from "@/lib/format";
+import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
+import { download, downloadBlob } from "@/lib/format";
 import type { Message } from "@/lib/types";
 
 let msgSeq = 0;
@@ -40,6 +40,9 @@ function probeImage(url: string): Promise<{ width: number; height: number }> {
 export function Editor() {
   const [mediaList, setMediaList] = useState<MediaAsset[]>([]);
   const [urls, setUrls] = useState<Record<string, string>>({});
+  // Raw uploaded File objects, kept by media id so Export can POST them to the
+  // server (object URLs alone can't be re-read server-side).
+  const [files, setFiles] = useState<Record<string, File>>({});
   const [transcripts, setTranscripts] = useState<Record<string, Transcript>>({});
   const [doc, setDoc] = useState<EditDoc>(() => emptyDoc());
   const [messages, setMessages] = useState<Message[]>([]);
@@ -50,6 +53,9 @@ export function Editor() {
 
   const urlsRef = useRef(urls);
   urlsRef.current = urls;
+  // Mirror `files` in a ref: the `handleFiles(files)` param shadows the state.
+  const filesRef = useRef(files);
+  filesRef.current = files;
 
   const durationSec = useMemo(() => docDurationSec(doc), [doc]);
   const visualClipCount = useMemo(
@@ -110,6 +116,7 @@ export function Editor() {
         };
         for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u);
         setUrls({ [asset.id]: url });
+        setFiles({ [asset.id]: file });
         setMediaList([asset]);
         setTranscripts({});
         setDoc(fullClipDoc(asset));
@@ -125,6 +132,7 @@ export function Editor() {
         );
       } else if (imgs.length > 0) {
         const nextUrls = { ...urlsRef.current };
+        const nextFiles = { ...filesRef.current };
         const added: MediaAsset[] = [];
         for (let i = 0; i < imgs.length; i++) {
           const file = imgs[i]!;
@@ -139,10 +147,12 @@ export function Editor() {
             label: file.name,
           };
           nextUrls[asset.id] = url;
+          nextFiles[asset.id] = file;
           added.push(asset);
         }
         const allImages = [...mediaList.filter((m) => m.kind === "image"), ...added];
         setUrls(nextUrls);
+        setFiles(nextFiles);
         setMediaList(allImages);
         say("you", `Added ${imgs.length} photo${imgs.length > 1 ? "s" : ""}`);
         const res = await askDirector({ request: "make a slideshow from my photos", media: allImages, transcripts: [], doc: emptyDoc() });
@@ -192,9 +202,50 @@ export function Editor() {
     setPlaying((p) => !p);
   }
 
-  function exportDoc() {
+  /** Fallback: download the edit-doc as JSON (always available, no ffmpeg). */
+  function exportJson() {
     download(`${doc.meta.title || "cadence"}.editdoc.json`, JSON.stringify(doc, null, 2));
-    say("director", "Exported the edit-doc (JSON). Real video export lands with the ffmpeg worker.", "info");
+    say("director", "Exported the edit-doc (JSON) as a fallback.", "info");
+  }
+
+  /**
+   * Real .mp4 export: upload each media File → build a doc whose media.src are the
+   * returned server paths → POST to /api/export → download the mp4. If ffmpeg
+   * isn't installed the route returns 501; we surface the install hint and fall
+   * back to the JSON edit-doc export.
+   */
+  async function exportDoc() {
+    if (mediaList.length === 0 || durationSec <= 0) return;
+    setBusy(true);
+    setPlaying(false);
+    say("director", "Rendering your video with ffmpeg…", "info");
+    try {
+      // Upload every media file used by the doc; map id → server path.
+      const srcById: Record<string, string> = {};
+      for (const media of mediaList) {
+        const file = files[media.id];
+        if (!file) throw new Error(`Missing the uploaded file for ${media.label ?? media.id}.`);
+        const { path } = await uploadMedia(file);
+        srcById[media.id] = path;
+      }
+      const serverDoc: EditDoc = structuredClone(doc);
+      serverDoc.media = serverDoc.media.map((m) => ({ ...m, src: srcById[m.id] ?? m.src }));
+
+      const result = await exportVideo(serverDoc);
+      if (result.ok) {
+        downloadBlob(`${doc.meta.title || "cadence"}.mp4`, result.blob);
+        say("director", "Exported a real .mp4 (free ffmpeg path — faithful, no content changes).", "edit");
+      } else if (result.unavailable) {
+        say("director", `${result.message} Meanwhile, here's the edit-doc (JSON).`, "info");
+        exportJson();
+      } else {
+        say("director", `Export failed: ${result.message}`, "error");
+      }
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Export failed.", "error");
+    } finally {
+      setBusy(false);
+    }
   }
 
   const seek = (t: number) => { setPlaying(false); setTimeSec(t); };

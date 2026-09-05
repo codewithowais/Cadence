@@ -1,0 +1,22 @@
+{
+  "name": "@cadence/render-ffmpeg",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Real .mp4 export via system ffmpeg. Turns an EditDoc into an ffmpeg filtergraph (cuts+concat, looks, burn-in captions, slideshow/xfade, fades, quality/upscale). Free/local ffmpeg path only; faithful (identity-preserving) enhancement via @cadence/enhance.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cadence/core": "*",
+    "@cadence/enhance": "*"
+  }
+}

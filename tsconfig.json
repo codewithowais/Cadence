@@ -7,7 +7,8 @@
       "@cadence/render-node": ["packages/render-node/src/index.ts"],
       "@cadence/understanding": ["packages/understanding/src/index.ts"],
       "@cadence/director": ["packages/director/src/index.ts"],
-      "@cadence/enhance": ["packages/enhance/src/index.ts"]
+      "@cadence/enhance": ["packages/enhance/src/index.ts"],
+      "@cadence/render-ffmpeg": ["packages/render-ffmpeg/src/index.ts"]
     }
   },
   "include": [

@@ -12,6 +12,8 @@
   "dependencies": {
     "@cadence/core": "*",
     "@cadence/director": "*",
+    "@cadence/enhance": "*",
+    "@cadence/render-ffmpeg": "*",
     "@cadence/render-node": "*",
     "@cadence/understanding": "*",
     "next": "16.3.4",

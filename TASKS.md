@@ -17,14 +17,14 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **S1.1 Next.js editor app.** web + 3 api routes; north-star dark/amber conversation-first UI with rooms rail, live preview (seeks real uploaded footage), cuts timeline, nudge, code drawer, JSON export. — *verified: `next build` clean, UI renders, HTTP pipeline returns valid PNG.*
 - ✅ **S1.2 Director edit tools + photo→video + quality.** Tools: create_highlight, filler_cut, reframe (9:16/1:1/4:5/16:9), add_captions, apply_look (warm/cool/vivid/bw/cinematic), auto_mix, make_slideshow, set_quality. Multi-intent chaining for custom scenarios. — *verified: 4 rendered scenarios + chained-tool + 4K asserts.*
 - ✅ **S1.3 Features wired into the UI.** Video-or-photos upload, generic live preview (Ken Burns/crossfade/looks/captions), one-tap QuickActions bar. — *verified: next build clean, in-browser layout.*
-- ⬜ **S1.4 Real media export.** ffmpeg worker: edit-doc → real .mp4 (cuts, looks, captions, reframe, quality/sharpen/denoise). Free; needs ffmpeg installed.
+- ✅ **S1.4 Real media export (ffmpeg).** `@cadence/render-ffmpeg`: PURE `buildExportPlan` (edit-doc → ffmpeg filtergraph: cut+concat, looks, burn-in captions, slideshow xfade/Ken Burns, fades, lanczos upscale + unsharp + denoise) · `detectFfmpeg` · `runExport` (free/local path; faithful `@cadence/enhance` pass when `aiUpscale` on, off by default). Web `/api/upload` + `/api/export` (streams mp4; 501 + install hint when ffmpeg absent); Export button wired with JSON fallback. — *verified: typecheck + verify (checks 7–8, no ffmpeg needed) + next build all green.* **Note: producing an actual .mp4 requires `brew install ffmpeg` (not installed here).**
 - ⬜ **S1.5 Real local Whisper** transcriber (drop-in for StubTranscriber).
 - ⬜ **S1.6 Enterprise bones:** multi-tenant Postgres (orgs→users→projects→media→edit-docs, versioned) + dev auth + docker-compose.
 - ⬜ docker-compose: web · api · worker · db(Postgres). *(Docker not installed locally yet — free install; see README.)*
 - ⬜ Multi-tenant data model (orgs → users → projects → media → edit-docs, versioned).
 - ⬜ Local dev auth (Auth.js credentials) behind an auth interface.
 - ⬜ Director tools: filler cut · reframe 9:16 · burn-in captions · one warm look · basic auto-mix.
-- ⬜ Export renders a real file (ffmpeg worker; free, needs ffmpeg installed).
+- ✅ Export renders a real file (ffmpeg; free, needs ffmpeg installed — see S1.4).
 - ⬜ Agentic loop hardening (plan→act→verify→correct) + 5 eval prompts.
 
 ## Open money gates

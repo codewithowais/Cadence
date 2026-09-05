@@ -1,0 +1,116 @@
+/**
+ * runExport — the impure driver: build the pure plan, spawn system ffmpeg, and
+ * resolve to the finished .mp4.
+ *
+ * MONEY GATE: the default path is FREE/local ffmpeg (Lanczos upscale + unsharp +
+ * hqdn3d — all in the filtergraph from plan.ts). No paid service is ever enabled
+ * here. FAITHFULNESS: when `doc.quality.aiUpscale` is on, we select a provider
+ * from @cadence/enhance (configFromEnv/selectProvider); every such provider is
+ * identity-preserving by contract (Real-ESRGAN-style detail work only — NEVER a
+ * generative face/content redraw). If no faithful AI provider is available, we
+ * fall back to the free path silently.
+ */
+import { spawn } from "node:child_process";
+import { configFromEnv, selectProvider, type EnhanceResult } from "@cadence/enhance";
+import type { EditDoc } from "@cadence/core";
+import { buildExportPlan, type ResolveMediaPath } from "./plan";
+import { detectFfmpeg, FFMPEG_MISSING_MESSAGE, type FfmpegInfo } from "./detect";
+
+export interface RunExportOptions {
+  resolveMediaPath: ResolveMediaPath;
+  outFile: string;
+  /** Override the ffmpeg binary (default $FFMPEG_PATH or "ffmpeg"). */
+  bin?: string;
+  /** Called with ffmpeg's stderr chunks (progress lines) if provided. */
+  onLog?: (line: string) => void;
+  /** Skip the availability probe (used by callers that already probed). */
+  skipDetect?: boolean;
+}
+
+export interface ExportOutcome {
+  outFile: string;
+  args: string[];
+  ffmpeg: FfmpegInfo;
+  /** Set when an @cadence/enhance faithful pass ran (aiUpscale). */
+  enhance?: EnhanceResult;
+}
+
+/** Thrown when ffmpeg isn't installed; `.code` lets callers map it to HTTP 501. */
+export class FfmpegNotFoundError extends Error {
+  readonly code = "FFMPEG_NOT_FOUND";
+  constructor(message = FFMPEG_MISSING_MESSAGE) {
+    super(message);
+    this.name = "FfmpegNotFoundError";
+  }
+}
+
+/**
+ * Render `doc` to a real .mp4 at `outFile`. Throws {@link FfmpegNotFoundError}
+ * with a clear install hint if ffmpeg is missing.
+ */
+export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<ExportOutcome> {
+  const bin = opts.bin || process.env.FFMPEG_PATH || "ffmpeg";
+
+  const ffmpeg = opts.skipDetect ? { available: true, bin } : await detectFfmpeg(bin);
+  if (!ffmpeg.available) throw new FfmpegNotFoundError();
+
+  const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile);
+
+  await spawnFfmpeg(bin, plan.args, opts.onLog);
+
+  // Optional faithful AI enhancement pass (off by default; money/setup gated).
+  let enhance: EnhanceResult | undefined;
+  if (doc.quality.aiUpscale) {
+    const provider = selectProvider(configFromEnv());
+    // The free provider is a no-op marker (its work already happened in the
+    // filtergraph). Only run a real pass for an available, faithful AI provider.
+    if (provider.usesAI && (await provider.isAvailable())) {
+      const scale = deriveScale(doc);
+      enhance = await provider.enhance({
+        inputPath: opts.outFile,
+        outputPath: opts.outFile,
+        scale,
+        sharpen: doc.quality.sharpen,
+        denoise: doc.quality.denoise,
+        kind: "video",
+      });
+    } else {
+      enhance = {
+        outputPath: opts.outFile,
+        provider: provider.id,
+        usedAI: false,
+        note: "aiUpscale requested but no faithful AI provider available — used the free Lanczos+unsharp path",
+      };
+    }
+  }
+
+  return { outFile: opts.outFile, args: plan.args, ffmpeg, enhance };
+}
+
+/** Upscale factor implied by quality targets (2..4), else 2. */
+function deriveScale(doc: EditDoc): number {
+  const tw = doc.quality.targetWidth;
+  if (tw && doc.meta.width > 0) return Math.max(2, Math.min(4, Math.round(tw / doc.meta.width)));
+  return 2;
+}
+
+function spawnFfmpeg(bin: string, args: string[], onLog?: (line: string) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr?.on("data", (d: Buffer) => {
+      const s = d.toString();
+      stderr += s;
+      if (stderr.length > 64_000) stderr = stderr.slice(-64_000);
+      onLog?.(s);
+    });
+    child.on("error", (err) => {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") reject(new FfmpegNotFoundError());
+      else reject(err);
+    });
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited ${code}\n${stderr.slice(-2000)}`));
+    });
+  });
+}

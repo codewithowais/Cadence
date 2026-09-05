@@ -17,6 +17,13 @@ import { CanvasRenderEngine } from "@cadence/render-node";
 import { StubTranscriber } from "@cadence/understanding";
 import { ProjectState, StubDirector } from "@cadence/director";
 import { allProviders, buildCliArgs, configFromEnv, selectProvider } from "@cadence/enhance";
+import {
+  buildExportPlan,
+  detectFfmpeg,
+  runExport,
+  FfmpegNotFoundError,
+  FFMPEG_MISSING_MESSAGE,
+} from "@cadence/render-ffmpeg";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = resolve(__dirname, "..", ".cadence");
@@ -164,6 +171,108 @@ async function checkEnhance(): Promise<void> {
   console.log(`  [32m✔[0m check 6 (enhance): ${providers.length} providers, all faithful; free default + AI options (local/api/cli)`);
 }
 
+async function checkExportPlan(): Promise<void> {
+  const resolve = (id: string) => `/media/${id}.mp4`;
+
+  // (a) 2-cut highlight → per-clip source trim (-ss/-t) + concat + setpts.
+  const highlight = parseEditDoc({
+    version: 1,
+    meta: { title: "hl", width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "clip-001", kind: "video", src: "/media/clip-001.mp4" }],
+    tracks: [
+      {
+        id: "video",
+        kind: "visual",
+        clips: [
+          { id: "c0", kind: "video", start: 0, duration: 4, mediaId: "clip-001", sourceIn: 12, transform: { x: 960, y: 540 } },
+          { id: "c1", kind: "video", start: 4, duration: 5, mediaId: "clip-001", sourceIn: 40, transform: { x: 960, y: 540 } },
+        ],
+      },
+    ],
+  });
+  const hp = buildExportPlan(highlight, resolve, "/out/hl.mp4");
+  const ha = hp.args.join(" ");
+  assert(hp.filterComplex.includes("concat=n=2:v=1:a=1"), "highlight: expected 2-way concat");
+  assert(hp.filterComplex.includes("setpts=PTS-STARTPTS"), "highlight: expected setpts");
+  assert((ha.match(/-ss /g) ?? []).length >= 2, "highlight: expected per-clip -ss source trims");
+  assert(hp.filterComplex.includes("crop=1920:1080"), "highlight: expected scale/crop to WxH");
+  assert(ha.includes("-map [vcat]") && ha.includes("-map [acat]"), "highlight: expected video+audio maps");
+  assert(ha.endsWith("/out/hl.mp4"), "highlight: outFile should be last arg");
+
+  // (b) captions → drawtext (time-gated) with a pill box + escaped text.
+  const captioned = parseEditDoc({
+    version: 1,
+    meta: { title: "cap", width: 1080, height: 1920, fps: 30 },
+    media: [{ id: "v", kind: "video", src: "/media/v.mp4" }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 6, mediaId: "v", transform: { x: 540, y: 960 } }] },
+      {
+        id: "captions",
+        kind: "visual",
+        clips: [
+          { id: "cap0", kind: "text", start: 0.2, duration: 2, text: "It's 100% real: a, b; c", background: "#0a0d12cc", transform: { x: 540, y: 1700 } },
+        ],
+      },
+    ],
+  });
+  const cp = buildExportPlan(captioned, resolve, "/out/cap.mp4");
+  assert(cp.filterComplex.includes("drawtext="), "captions: expected drawtext");
+  assert(cp.filterComplex.includes("enable='between(t\\,0.2\\,2.2)'"), "captions: expected time-gated enable");
+  assert(cp.filterComplex.includes("box=1"), "captions: expected pill box");
+  assert(cp.filterComplex.includes("It\\'s 100\\%") && cp.filterComplex.includes("a\\, b\\; c"), "captions: expected escaped special chars");
+
+  // (c) quality ultra → lanczos upscale + unsharp (+ hqdn3d denoise).
+  const ultra = parseEditDoc({
+    version: 1,
+    meta: { title: "q", width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "v", kind: "video", src: "/media/v.mp4" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 5, mediaId: "v", transform: { x: 960, y: 540 } }] }],
+    quality: { preset: "ultra", targetWidth: 3840, targetHeight: 2160, sharpen: 0.5, denoise: 0.35, aiUpscale: false, faithful: true },
+  });
+  const qp = buildExportPlan(ultra, resolve, "/out/q.mp4");
+  assert(qp.filterComplex.includes("scale=3840:2160:flags=lanczos"), "quality: expected lanczos upscale");
+  assert(qp.filterComplex.includes("unsharp="), "quality: expected unsharp sharpen");
+  assert(qp.filterComplex.includes("hqdn3d="), "quality: expected hqdn3d denoise");
+  assert(qp.args.includes("-crf") && qp.args[qp.args.indexOf("-crf") + 1] === "18", "quality: ultra should use crf 18");
+
+  // (d) slideshow → images looped + Ken Burns zoompan + xfade crossfades.
+  const imgs: MediaAsset[] = Array.from({ length: 4 }, (_, i) => ({
+    id: `photo-${i}`, kind: "image" as const, src: `/media/p${i}.jpg`, width: 1920, height: 1080, label: `p${i}.jpg`,
+  }));
+  const slideProject = new ProjectState({ media: imgs });
+  const slideRes = await new StubDirector().interpret("make a slideshow from my photos with a warm look", slideProject);
+  const sp = buildExportPlan(slideRes.doc, resolve, "/out/slide.mp4");
+  assert(sp.filterComplex.includes("xfade=transition=fade"), "slideshow: expected xfade crossfades");
+  assert(sp.filterComplex.includes("zoompan="), "slideshow: expected Ken Burns zoompan");
+  assert((sp.args.filter((a) => a === "-loop").length) >= 4, "slideshow: each still should be looped");
+  assert(sp.filterComplex.includes("colorbalance="), "slideshow: expected warm colorbalance from the look");
+
+  console.log(`  [32m✔[0m check 7 (export plan): 2-cut concat + captions/drawtext + ultra lanczos/unsharp + slideshow xfade`);
+}
+
+async function checkFfmpegGraceful(): Promise<void> {
+  // detect never throws; reports availability + (when present) a version.
+  const info = await detectFfmpeg();
+  if (!info.available) {
+    // Missing-binary path: runExport must throw a clear, actionable error.
+    let threw = false;
+    try {
+      await runExport(
+        parseEditDoc({ version: 1, meta: { title: "x" }, tracks: [] }),
+        { resolveMediaPath: (id) => `/media/${id}.mp4`, outFile: "/out/x.mp4" },
+      );
+    } catch (err) {
+      threw = true;
+      assert(err instanceof FfmpegNotFoundError, "missing ffmpeg should throw FfmpegNotFoundError");
+      assert((err as Error).message === FFMPEG_MISSING_MESSAGE, "error should carry the install hint");
+    }
+    assert(threw, "runExport should throw when ffmpeg is missing");
+    console.log(`  [32m✔[0m check 8 (ffmpeg graceful): absent → clear "${FFMPEG_MISSING_MESSAGE}" (install to produce real .mp4)`);
+  } else {
+    console.log(`  [32m✔[0m check 8 (ffmpeg graceful): ffmpeg present (${info.version ?? "unknown"}) — real .mp4 export available`);
+  }
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -172,6 +281,8 @@ async function main(): Promise<void> {
   await checkSlideshow();
   await checkTitlesFades();
   await checkEnhance();
+  await checkExportPlan();
+  await checkFfmpegGraceful();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 
