@@ -231,8 +231,12 @@ export function buildExportPlan(
   const inputArgs: string[] = [];
   const inputs: string[] = [];
   let inputIdx = 0;
-  const addInput = (perInputOpts: string[], path: string): number => {
-    inputArgs.push(...perInputOpts, "-i", path);
+  // isFile=true (default) restricts this input to the local `file` protocol —
+  // defense-in-depth against SSRF/arbitrary-read even if a path check is bypassed.
+  // The synthetic lavfi source passes isFile=false.
+  const addInput = (perInputOpts: string[], path: string, isFile = true): number => {
+    const opts = isFile ? ["-protocol_whitelist", "file,crypto", ...perInputOpts] : perInputOpts;
+    inputArgs.push(...opts, "-i", path);
     inputs.push(path);
     return inputIdx++;
   };
@@ -336,6 +340,7 @@ export function buildExportPlan(
     const idx = addInput(
       ["-f", "lavfi"],
       `color=c=${bg.color}:s=${W}x${H}:r=${fps}:d=${r3(dur)}`,
+      false,
     );
     filters.push(`[${idx}:v]format=yuv420p[vbg]`);
     videoLabel = "vbg";

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseEditDoc } from "@cadence/core";
 import { detectFfmpeg, runExport, FFMPEG_MISSING_MESSAGE, FfmpegNotFoundError } from "@cadence/render-ffmpeg";
+import { resolveUploadPath } from "@/lib/uploads";
 
 export const runtime = "nodejs";
 // Real encoding can take a while; give it room.
@@ -30,8 +31,13 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const doc = parseEditDoc(body?.doc);
 
-    // media.src already holds concrete server paths (from /api/upload).
-    const byId = new Map(doc.media.map((m) => [m.id, m.src] as const));
+    // SECURITY: media.src is client-supplied. Validate every path resolves INSIDE
+    // the uploads dir before handing any of it to ffmpeg — otherwise a crafted
+    // src ("/etc/passwd", "http://…") would be arbitrary-file-read / SSRF.
+    const byId = new Map<string, string>();
+    for (const m of doc.media) {
+      byId.set(m.id, await resolveUploadPath(m.src));
+    }
     const resolveMediaPath = (mediaId: string): string => {
       const p = byId.get(mediaId);
       if (!p) throw new Error(`no media path for "${mediaId}" — upload it first`);

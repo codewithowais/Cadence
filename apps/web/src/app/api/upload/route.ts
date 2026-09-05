@@ -1,12 +1,10 @@
 import { type NextRequest } from "next/server";
 import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, extname, basename } from "node:path";
 import { randomUUID } from "node:crypto";
+import { UPLOAD_DIR } from "@/lib/uploads";
 
 export const runtime = "nodejs";
-
-const UPLOAD_DIR = join(tmpdir(), "cadence-uploads");
 
 /**
  * Save an uploaded media file (multipart/form-data, field "file") to a temp dir
