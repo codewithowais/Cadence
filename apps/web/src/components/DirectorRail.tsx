@@ -8,16 +8,16 @@ interface DirectorRailProps {
   busy: boolean;
   hasMedia: boolean;
   onSend: (text: string) => void;
-  onFile: (file: File) => void;
+  onFiles: (files: File[]) => void;
 }
 
 const SUGGESTIONS = [
   "Cut a 60-second highlight of the best parts",
-  "Make a 30-second version",
-  "Trim it to the best 45 seconds",
+  "Make it vertical with captions",
+  "Give it a cinematic look",
 ];
 
-export function DirectorRail({ messages, busy, hasMedia, onSend, onFile }: DirectorRailProps) {
+export function DirectorRail({ messages, busy, hasMedia, onSend, onFiles }: DirectorRailProps) {
   const [text, setText] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -51,16 +51,17 @@ export function DirectorRail({ messages, busy, hasMedia, onSend, onFile }: Direc
             <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-xl bg-amber/10 text-amber">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M8 8l4-4 4 4M4 20h16" /></svg>
             </div>
-            <p className="text-sm text-text">Add a video to begin</p>
-            <p className="mx-auto mt-1 max-w-[15rem] text-xs text-muted">
-              Then just tell me what you want — no timeline knowledge needed.
+            <p className="text-sm text-text">Add a video — or photos</p>
+            <p className="mx-auto mt-1 max-w-[16rem] text-xs text-muted">
+              Edit a video, or turn a group of photos into one. Then just tell me
+              what you want — no timeline knowledge needed.
             </p>
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
               className="mt-4 rounded-lg bg-amber px-4 py-2 text-sm font-semibold text-ink transition hover:bg-amber-bright"
             >
-              Choose a video
+              Choose video or photos
             </button>
           </div>
         )}
@@ -114,7 +115,7 @@ export function DirectorRail({ messages, busy, hasMedia, onSend, onFile }: Direc
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
-            title={hasMedia ? "Replace video" : "Add video"}
+            title={hasMedia ? "Add/replace media" : "Add video or photos"}
             className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted transition hover:bg-line hover:text-text"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10M14 3v6h6M10 13l3 3 4-5" /></svg>
@@ -148,11 +149,12 @@ export function DirectorRail({ messages, busy, hasMedia, onSend, onFile }: Direc
       <input
         ref={fileRef}
         type="file"
-        accept="video/*"
+        accept="video/*,image/*"
+        multiple
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) onFile(f);
+          const files = e.target.files ? Array.from(e.target.files) : [];
+          if (files.length) onFiles(files);
           e.target.value = "";
         }}
       />

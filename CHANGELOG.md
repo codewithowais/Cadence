@@ -36,3 +36,10 @@ All notable changes, one line per verified slice.
 
 ### Money gate note
 - ⛔ **AI super-resolution (Real-ESRGAN local model or a paid upscaling API)** is the first likely gate. The free path — higher-res export + sharpen/denoise via the (coming) ffmpeg worker — is wired now via `set_quality`; `aiUpscale` is a flag that stays off until approved.
+
+### S1.3 — Features wired into the UI
+- Upload accepts **video or a group of photos** (multiple); dropping photos auto-builds a slideshow.
+- Preview Stage rewritten to render active clips generically — video, layered photos (real `<img>` with Ken Burns + crossfade), and captions — applying looks live via CSS `filter` (same math as the server).
+- **One-tap QuickActions** bar (context-aware for video vs photos): Highlight, Remove filler, 9:16, Captions, Cinematic, Auto-mix, Make 4K / Slideshow, Warm look.
+- Editor manages multiple media + a URL map; nudge, export, code drawer intact.
+- *verified:* `next build` clean; empty state + layout confirmed in-browser.
