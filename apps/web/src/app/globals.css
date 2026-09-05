@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+/* ---- North-star design tokens ---------------------------------------- */
+@theme {
+  --font-chrome: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-voice: var(--font-fraunces), Georgia, "Times New Roman", serif;
+
+  /* Graded dark palette */
+  --color-ink: #0a0d12;
+  --color-panel: #10151c;
+  --color-elevated: #161d26;
+  --color-line: #232c38;
+  --color-line-soft: #1a212b;
+
+  --color-text: #e9eef5;
+  --color-muted: #98a4b3;
+  --color-faint: #667181;
+
+  /* Amber = action / brand */
+  --color-amber: #f5b944;
+  --color-amber-bright: #ffca5f;
+  --color-amber-deep: #b9832a;
+
+  /* Teal = selection */
+  --color-teal: #45d3c4;
+  --color-teal-soft: #2b7a73;
+}
+
+/* ---- Base ------------------------------------------------------------ */
+html,
+body {
+  height: 100%;
+}
+body {
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-family: var(--font-chrome);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* subtle graded glow, top-left amber whisper */
+  background-image:
+    radial-gradient(1200px 600px at 12% -10%, rgba(245, 185, 68, 0.06), transparent 60%),
+    radial-gradient(1000px 700px at 110% 10%, rgba(69, 211, 196, 0.05), transparent 55%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-teal) 35%, transparent);
+  color: var(--color-text);
+}
+
+/* Focus ring — amber, accessible */
+:where(a, button, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-amber);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Custom scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* The user's own words, in Fraunces italic */
+.voice {
+  font-family: var(--font-voice);
+  font-style: italic;
+  letter-spacing: -0.01em;
+}
+
+/* Range input styled as a scrubber */
+input[type="range"].scrubber {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-line);
+  cursor: pointer;
+}
+input[type="range"].scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--color-amber);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-amber) 22%, transparent);
+  transition: transform 0.12s ease;
+}
+input[type="range"].scrubber::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+input[type="range"].scrubber::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-amber);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

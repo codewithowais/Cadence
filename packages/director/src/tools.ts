@@ -6,7 +6,7 @@
  */
 import { z } from "zod";
 import { docDurationSec, EditDoc, type EditDoc as EditDocT } from "@cadence/core";
-import type { ProjectState } from "./project.js";
+import type { ProjectState } from "./project";
 
 export interface ToolContext {
   project: ProjectState;

@@ -1,2 +1,2 @@
-export * from "./transcript.js";
-export { StubTranscriber } from "./stub-transcriber.js";
+export * from "./transcript";
+export { StubTranscriber } from "./stub-transcriber";

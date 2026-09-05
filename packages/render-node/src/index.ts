@@ -1,1 +1,1 @@
-export { CanvasRenderEngine } from "./canvas-engine.js";
+export { CanvasRenderEngine } from "./canvas-engine";

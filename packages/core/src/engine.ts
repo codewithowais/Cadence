@@ -6,7 +6,7 @@
  * browser will preview with Omniclip/WebCodecs; a future worker may swap in
  * MLT/ffmpeg. None of those changes touch this interface or the edit-doc.
  */
-import type { Clip, EditDoc, Track } from "./schema.js";
+import type { Clip, EditDoc, Track } from "./schema";
 
 /** A rendered still frame. `data` is the encoded image bytes. */
 export interface RenderedFrame {

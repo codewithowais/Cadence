@@ -16,3 +16,12 @@ All notable changes, one line per verified slice.
 - `@cadence/director`: `ProjectState` (working set), typed `set_timeline` tool (schema-validates the doc before it lands), `StubDirector` (plain-language routing), and a real deterministic `buildHighlightDoc` skill (ranks transcript segments, lays word-accurate cuts back-to-back).
 - Fixed clip transform semantics: a visual clip's anchor is its **center**; media placeholders are frame-covering. Highlight cuts are centered full-frame.
 - Verify gate extended to run the full loop: media → transcript → Director → edit-doc → frame. — *verified: "cut a 60-second highlight" → 61s doc of 15 cuts, renders 1920×1080.*
+
+## Phase 1
+
+### S1.1 — Next.js editor app (conversation-first UI)
+- `apps/web`: Next.js 16 (App Router, Turbopack) + React 19 + Tailwind v4, pinned. North-star design system: graded dark palette, amber action / teal selection, Space Grotesk chrome + Fraunces italic for the user's words.
+- API services (stateless): `/api/transcribe` (StubTranscriber), `/api/director` (StubDirector + set_timeline), `/api/render` (canvas engine → PNG). Native `@napi-rs/canvas` kept server-only via `serverExternalPackages`.
+- Editor UI: rooms rail (Media/Edit/Color/VFX/Audio/Deliver), Director conversation spine with plain-language composer + suggestions, live preview **that seeks the user's actual uploaded footage** (client-side via pure @cadence/core — no ffmpeg), scrubber + playback clock, cuts timeline (click-to-seek), manual **nudge** for the ending, `{}` code escape-hatch drawer, and edit-doc JSON export.
+- Converted intra-package imports to extensionless so tsx, tsc, and Next's bundler all resolve the workspace source.
+- *verified:* `next build` clean (TS passes); UI renders at desktop; HTTP pipeline transcribe→director→render returns a valid PNG.

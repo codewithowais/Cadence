@@ -14,7 +14,8 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 
 ## Phase 1 — Social MVP (see AGENTS.md §11 for done)
 
-- ⬜ Next.js app (web + api routes); dark graded UI per `/design/north-star.html`; conversation-first rooms.
+- ✅ **S1.1 Next.js editor app.** web + 3 api routes; north-star dark/amber conversation-first UI with rooms rail, live preview (seeks real uploaded footage), cuts timeline, nudge, code drawer, JSON export. — *verified: `next build` clean, UI renders, HTTP pipeline returns valid PNG.*
+- ⬜ **S1.2 Director edit tools** (repeat per feature): filler cut · reframe 9:16 · burn-in captions · one warm look · basic auto-mix. Each: extend schema → typed tool → UI/prompt → render-verify.
 - ⬜ docker-compose: web · api · worker · db(Postgres). *(Docker not installed locally yet — free install; see README.)*
 - ⬜ Multi-tenant data model (orgs → users → projects → media → edit-docs, versioned).
 - ⬜ Local dev auth (Auth.js credentials) behind an auth interface.

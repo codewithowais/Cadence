@@ -6,8 +6,8 @@
  * `Transcriber` interface, so nothing downstream changes.
  */
 import type { MediaAsset } from "@cadence/core";
-import type { Transcript, TranscriptSegment, Word } from "./transcript.js";
-import type { Transcriber } from "./transcript.js";
+import type { Transcript, TranscriptSegment, Word } from "./transcript";
+import type { Transcriber } from "./transcript";
 
 const WORD_POOL = [
   "so", "today", "we're", "going", "to", "talk", "about", "the", "thing", "that",

@@ -6,9 +6,9 @@
  * LLM while keeping the exact same tool-calling contract.
  */
 import { docDurationSec, type EditDoc } from "@cadence/core";
-import type { ProjectState } from "./project.js";
-import { setTimelineTool, type ToolCall } from "./tools.js";
-import { buildHighlightDoc } from "./highlight.js";
+import type { ProjectState } from "./project";
+import { setTimelineTool, type ToolCall } from "./tools";
+import { buildHighlightDoc } from "./highlight";
 
 export interface DirectorResult {
   /** The edit-doc now current on the project. */
