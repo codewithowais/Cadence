@@ -1,0 +1,22 @@
+{
+  "name": "@cadence/render-node",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless Node RenderEngine (canvas rasterizer). Renders one frame for the verify gate and previews without a browser.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cadence/core": "*",
+    "@napi-rs/canvas": "1.0.8"
+  }
+}

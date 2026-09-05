@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@cadence/core": ["packages/core/src/index.ts"],
+      "@cadence/render-node": ["packages/render-node/src/index.ts"],
+      "@cadence/director": ["packages/director/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": ["node_modules", "**/dist/**", "apps/**"]
+}

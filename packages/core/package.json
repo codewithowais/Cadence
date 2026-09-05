@@ -1,0 +1,21 @@
+{
+  "name": "@cadence/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Engine-agnostic edit-doc schema (the single source of truth) and the render-engine interface.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "4.5.4"
+  }
+}

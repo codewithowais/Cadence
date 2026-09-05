@@ -1,0 +1,18 @@
+# deps
+node_modules/
+# build
+dist/
+.next/
+out/
+*.tsbuildinfo
+# env / secrets
+.env
+.env.local
+.env.*.local
+# cadence render/verify scratch
+.cadence/
+# os
+.DS_Store
+# logs
+*.log
+npm-debug.log*
