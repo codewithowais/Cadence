@@ -28,6 +28,28 @@ export const Transform = z.object({
 });
 export type Transform = z.infer<typeof Transform>;
 
+/**
+ * Color grade / "look" — expressed as data so it previews identically in CSS
+ * (client <video>/<img> filter), server canvas (ctx.filter), and export (ffmpeg).
+ * brightness/contrast/saturation are multipliers (1 = neutral); warmth 0..1 adds
+ * a warm overlay.
+ */
+export const ColorGrade = z.object({
+  brightness: z.number().min(0).default(1),
+  contrast: z.number().min(0).default(1),
+  saturation: z.number().min(0).default(1),
+  warmth: z.number().min(0).max(1).default(0),
+});
+export type ColorGrade = z.infer<typeof ColorGrade>;
+
+/** Ken Burns motion for stills: zoom (end scale, start = 1) + pan across the clip. */
+export const KenBurns = z.object({
+  zoom: z.number().min(0.1).default(1),
+  panX: z.number().default(0),
+  panY: z.number().default(0),
+});
+export type KenBurns = z.infer<typeof KenBurns>;
+
 /** Media kinds we can ingest. */
 export const MediaKind = z.enum(["video", "audio", "image"]);
 export type MediaKind = z.infer<typeof MediaKind>;
@@ -54,6 +76,9 @@ const clipBase = {
   duration: z.number().positive(),
 };
 
+/** Crossfade-in duration in seconds (0 = hard cut). Shared by visual clips. */
+const transitionInSec = z.number().nonnegative().default(0);
+
 /** A clip that plays a slice of a video asset. */
 export const VideoClip = z.object({
   ...clipBase,
@@ -63,15 +88,20 @@ export const VideoClip = z.object({
   sourceIn: z.number().nonnegative().default(0),
   transform: Transform.prefault({}),
   volume: z.number().min(0).max(1).default(1),
+  look: ColorGrade.prefault({}),
+  transitionInSec,
 });
 export type VideoClip = z.infer<typeof VideoClip>;
 
-/** A still image clip. */
+/** A still image clip (with optional Ken Burns motion). */
 export const ImageClip = z.object({
   ...clipBase,
   kind: z.literal("image"),
   mediaId: z.string().min(1),
   transform: Transform.prefault({}),
+  look: ColorGrade.prefault({}),
+  motion: KenBurns.prefault({}),
+  transitionInSec,
 });
 export type ImageClip = z.infer<typeof ImageClip>;
 
@@ -85,6 +115,9 @@ export const TextClip = z.object({
   color: HexColor.default("#ffffff"),
   align: z.enum(["left", "center", "right"]).default("center"),
   transform: Transform.prefault({}),
+  transitionInSec,
+  /** Optional pill background behind the text (used by captions). */
+  background: HexColor.optional(),
 });
 export type TextClip = z.infer<typeof TextClip>;
 
@@ -126,6 +159,24 @@ export const Meta = z.object({
 });
 export type Meta = z.infer<typeof Meta>;
 
+/** Output quality / enhancement settings, applied at export. */
+export const QualityPreset = z.enum(["standard", "high", "ultra"]);
+export type QualityPreset = z.infer<typeof QualityPreset>;
+
+export const Quality = z.object({
+  preset: QualityPreset.default("standard"),
+  /** Target output resolution (upscale/downscale at export). */
+  targetWidth: z.number().int().positive().optional(),
+  targetHeight: z.number().int().positive().optional(),
+  /** Target output fps (frame interpolation at export when higher than source). */
+  fps: z.number().positive().optional(),
+  sharpen: z.number().min(0).max(1).default(0),
+  denoise: z.number().min(0).max(1).default(0),
+  /** AI super-resolution — requires a gated model/API; off by default. */
+  aiUpscale: z.boolean().default(false),
+});
+export type Quality = z.infer<typeof Quality>;
+
 /**
  * The whole project as a declarative document. `version` is the schema version
  * so stored docs can be migrated. This object is what the Director emits and
@@ -136,6 +187,7 @@ export const EditDoc = z.object({
   meta: Meta.prefault({}),
   media: z.array(MediaAsset).default([]),
   tracks: z.array(Track).default([]),
+  quality: Quality.prefault({}),
 });
 export type EditDoc = z.infer<typeof EditDoc>;
 

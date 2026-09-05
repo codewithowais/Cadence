@@ -25,3 +25,14 @@ All notable changes, one line per verified slice.
 - Editor UI: rooms rail (Media/Edit/Color/VFX/Audio/Deliver), Director conversation spine with plain-language composer + suggestions, live preview **that seeks the user's actual uploaded footage** (client-side via pure @cadence/core — no ffmpeg), scrubber + playback clock, cuts timeline (click-to-seek), manual **nudge** for the ending, `{}` code escape-hatch drawer, and edit-doc JSON export.
 - Converted intra-package imports to extensionless so tsx, tsc, and Next's bundler all resolve the workspace source.
 - *verified:* `next build` clean (TS passes); UI renders at desktop; HTTP pipeline transcribe→director→render returns a valid PNG.
+
+### S1.2 — Edit tools, photo→video, and quality
+- Schema: color grade (looks), crossfade transitions, Ken Burns motion for stills, caption pill background, and output `quality` settings — all edits-as-data. Shared `grade.ts` helpers (cssFilter/transitionOpacity/imageMotion) so browser CSS, server canvas, and export compute looks identically.
+- Renderer: applies looks (ctx.filter + warmth overlay), crossfade opacity ramps, and Ken Burns scale/pan.
+- New Director tools: `create_highlight`, `filler_cut`, `reframe` (9:16/1:1/4:5/16:9), `add_captions` (transcript synced through cuts), `apply_look` (warm/cool/vivid/bw/cinematic), `auto_mix`, `make_slideshow` (photos→video), `set_quality` (standard/high/ultra + AI-upscale flag, gated).
+- StubDirector now detects multiple intents and chains tools in order (builders→transforms), enabling custom scenarios: "cut a 40s highlight, make it vertical with captions and a cinematic look."
+- Captions size to the frame (fit in portrait).
+- *verified:* typecheck green; verify gate renders 4 scenarios (highlight, filler, vertical+captions+cinematic, slideshow) + asserts chained tool calls and 4K quality.
+
+### Money gate note
+- ⛔ **AI super-resolution (Real-ESRGAN local model or a paid upscaling API)** is the first likely gate. The free path — higher-res export + sharpen/denoise via the (coming) ffmpeg worker — is wired now via `set_quality`; `aiUpscale` is a flag that stays off until approved.
