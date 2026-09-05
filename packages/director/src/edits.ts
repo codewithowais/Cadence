@@ -167,6 +167,7 @@ export function setQuality(doc: EditDoc, preset: QualityKey, aiUpscale = false):
     sharpen: q.sharpen,
     denoise: q.denoise,
     aiUpscale,
+    faithful: true,
   };
   return parseEditDoc(clone);
 }

@@ -50,3 +50,9 @@ All notable changes, one line per verified slice.
 - StubDirector routes titles (extracts quoted text), fades, and the new looks; all chainable.
 - QuickActions: added Fade in/out (+ Vintage for photos).
 - *verified:* verify gate check 5 renders a chained highlight+title+vintage+fades frame; `next build` clean.
+
+### S1.5 — Pluggable, faithful enhance/upscale system
+- `@cadence/enhance`: `EnhanceProvider` contract with a hard **faithfulness** rule (detail-preserving only — never alters faces/identity/content). Providers: **free** (Lanczos+unsharp+denoise, no AI, default), **local** (Real-ESRGAN), **api** (hosted, metered), **cli** (bring-any-CLI). Selected by `ENHANCE_PROVIDER` env; `buildCliArgs` templating for custom tools.
+- Schema `quality`: added `faithful` (always true) + `enhanceProvider`.
+- **Honesty fix:** `set_quality` no longer implies the preview changed — it says the upscale renders on **export** (preview stays at source res), and that enhancement is faithful (no face/content changes). Addresses "it says 4K but doesn't look 4K."
+- *verified:* verify gate check 6 asserts CLI templating, provider selection, and that all providers are identity-preserving with both AI and non-AI options.

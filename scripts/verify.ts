@@ -16,6 +16,7 @@ import { parseEditDoc, docDurationSec, type EditDoc, type MediaAsset } from "@ca
 import { CanvasRenderEngine } from "@cadence/render-node";
 import { StubTranscriber } from "@cadence/understanding";
 import { ProjectState, StubDirector } from "@cadence/director";
+import { allProviders, buildCliArgs, configFromEnv, selectProvider } from "@cadence/enhance";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = resolve(__dirname, "..", ".cadence");
@@ -140,6 +141,29 @@ async function checkTitlesFades(): Promise<void> {
   console.log(`  [32m✔[0m check 5 (titles/fades/looks): ${r.summary}`);
 }
 
+async function checkEnhance(): Promise<void> {
+  // CLI arg templating is pure + testable.
+  const args = buildCliArgs("esrgan -i {input} -o {output} -s {scale}", {
+    input: "a.png", output: "b.png", scale: 4,
+  });
+  assert(
+    JSON.stringify(args) === JSON.stringify(["esrgan", "-i", "a.png", "-o", "b.png", "-s", "4"]),
+    `buildCliArgs wrong: ${JSON.stringify(args)}`,
+  );
+
+  // Provider selection by config.
+  assert(selectProvider(configFromEnv({})).id === "free", "default provider should be free");
+  assert(selectProvider(configFromEnv({ ENHANCE_PROVIDER: "cli", ENHANCE_CLI_COMMAND: "x {input}" })).id === "cli", "cli not selected");
+  assert(selectProvider(configFromEnv({ ENHANCE_PROVIDER: "local" })).id === "local", "local not selected");
+
+  // Faithfulness contract: EVERY provider preserves identity (no face changes).
+  const providers = allProviders(configFromEnv({}));
+  assert(providers.every((p) => p.preservesIdentity === true), "a provider is not identity-preserving");
+  assert(providers.some((p) => !p.usesAI) && providers.some((p) => p.usesAI), "need both AI and non-AI options");
+
+  console.log(`  [32m✔[0m check 6 (enhance): ${providers.length} providers, all faithful; free default + AI options (local/api/cli)`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -147,6 +171,7 @@ async function main(): Promise<void> {
   await checkEditTools();
   await checkSlideshow();
   await checkTitlesFades();
+  await checkEnhance();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

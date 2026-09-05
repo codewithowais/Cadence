@@ -188,8 +188,15 @@ export const Quality = z.object({
   fps: z.number().positive().optional(),
   sharpen: z.number().min(0).max(1).default(0),
   denoise: z.number().min(0).max(1).default(0),
-  /** AI super-resolution — requires a gated model/API; off by default. */
+  /** AI super-resolution — requires a gated model/API/CLI; off by default. */
   aiUpscale: z.boolean().default(false),
+  /** Which enhance provider to use when aiUpscale is on (see @cadence/enhance). */
+  enhanceProvider: z.string().optional(),
+  /**
+   * Faithful = detail-preserving upscale only. MUST NOT alter faces, identity,
+   * or content (no generative redraw). Always true; kept explicit as a contract.
+   */
+  faithful: z.boolean().default(true),
 });
 export type Quality = z.infer<typeof Quality>;
 

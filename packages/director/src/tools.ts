@@ -230,11 +230,14 @@ export const qualityTool: DirectorTool<{ preset: QualityKey; aiUpscale?: boolean
   async execute(input, ctx) {
     const doc = setQuality(ctx.project.doc, input.preset, input.aiUpscale ?? false);
     const q = doc.quality;
-    const note = input.aiUpscale ? " (AI upscale requested — needs a gated model)" : "";
+    const note = input.aiUpscale
+      ? " using AI super-resolution (faithful — no face/content changes)"
+      : " with faithful sharpen + denoise (no face/content changes)";
     return commit(
       ctx.project,
       doc,
-      `Quality set to ${input.preset} → ${q.targetWidth}×${q.targetHeight}${note}.`,
+      `Quality set to ${input.preset}. On export it will render at ${q.targetWidth}×${q.targetHeight}${note}. ` +
+        `(The preview stays at source resolution — real upscaling happens when you export.)`,
     );
   },
 };

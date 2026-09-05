@@ -1,0 +1,12 @@
+{
+  "name": "@cadence/enhance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pluggable, faithful video/image enhancement. Free (Lanczos+sharpen+denoise) and AI providers (local model / API / any CLI). Identity-preserving: never alters faces or content.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": { ".": { "types": "./src/index.ts", "default": "./src/index.ts" } },
+  "scripts": { "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": { "@cadence/core": "*" }
+}
