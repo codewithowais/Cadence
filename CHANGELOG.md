@@ -43,3 +43,10 @@ All notable changes, one line per verified slice.
 - **One-tap QuickActions** bar (context-aware for video vs photos): Highlight, Remove filler, 9:16, Captions, Cinematic, Auto-mix, Make 4K / Slideshow, Warm look.
 - Editor manages multiple media + a URL map; nudge, export, code drawer intact.
 - *verified:* `next build` clean; empty state + layout confirmed in-browser.
+
+### S1.4 — Titles, fades, backgrounds, more looks
+- Schema: `solid` clip kind (color fill → backgrounds, letterbox, fades) + `transitionOutSec` on visual clips; `transitionOpacity` now ramps in and out.
+- New tools: `add_title` (title card / lower-third with fade), `add_fades` (fade from/to black). More looks: vintage, noir, vibrant.
+- StubDirector routes titles (extracts quoted text), fades, and the new looks; all chainable.
+- QuickActions: added Fade in/out (+ Vintage for photos).
+- *verified:* verify gate check 5 renders a chained highlight+title+vintage+fades frame; `next build` clean.

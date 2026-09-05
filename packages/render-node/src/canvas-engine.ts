@@ -21,6 +21,7 @@ import {
   type ImageClip,
   type RenderedFrame,
   type RenderEngine,
+  type SolidClip,
   type TextClip,
   type VideoClip,
 } from "@cadence/core";
@@ -105,6 +106,16 @@ function drawMedia(
   ctx.restore();
 }
 
+function drawSolid(ctx: SKRSContext2D, clip: SolidClip, frameW: number, frameH: number): void {
+  const op = transitionOpacity(clip, clipTimeCache);
+  if (op <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = op;
+  ctx.fillStyle = clip.color;
+  ctx.fillRect(0, 0, frameW, frameH);
+  ctx.restore();
+}
+
 /** Deterministic-ish tint from a string so different media read differently. */
 function tintFor(id: string): string {
   let hash = 0;
@@ -138,6 +149,9 @@ export class CanvasRenderEngine implements RenderEngine {
           drawMedia(ctx, clip, asset?.label ?? asset?.src ?? clip.mediaId, tintFor(clip.mediaId), width, height);
           break;
         }
+        case "solid":
+          drawSolid(ctx, clip, width, height);
+          break;
         case "audio":
           break;
       }

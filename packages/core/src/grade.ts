@@ -5,7 +5,7 @@
  * on export (ffmpeg). Keeping this math in one place is what makes the preview
  * trustworthy.
  */
-import type { ColorGrade, ImageClip, TextClip, VideoClip } from "./schema";
+import type { ColorGrade, ImageClip, SolidClip, TextClip, VideoClip } from "./schema";
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 
@@ -27,14 +27,18 @@ export function clipProgress(
   return clamp01((timeSec - clip.start) / Math.max(0.0001, clip.duration));
 }
 
-/** Effective opacity including the crossfade-in ramp. */
+/** Effective opacity including crossfade-in and -out ramps. */
 export function transitionOpacity(
-  clip: VideoClip | ImageClip | TextClip,
+  clip: VideoClip | ImageClip | TextClip | SolidClip,
   timeSec: number,
 ): number {
   let op = clip.transform.opacity;
   if (clip.transitionInSec > 0) {
     op *= clamp01((timeSec - clip.start) / clip.transitionInSec);
+  }
+  if (clip.transitionOutSec > 0) {
+    const end = clip.start + clip.duration;
+    op *= clamp01((end - timeSec) / clip.transitionOutSec);
   }
   return op;
 }

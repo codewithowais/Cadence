@@ -18,6 +18,7 @@ const VIDEO_ACTIONS: Action[] = [
   { label: "9:16", icon: "M8 3h8v18H8z", prompt: "make it vertical 9:16" },
   { label: "Captions", icon: "M4 5h16v14H4z M7 10h4 M7 14h7", prompt: "add captions" },
   { label: "Cinematic", icon: "M3 7h18M3 12h18M3 17h18", prompt: "give it a cinematic look" },
+  { label: "Fade in/out", icon: "M3 12h18 M6 6l0 12 M18 6l0 12", prompt: "add a fade in and out" },
   { label: "Auto-mix", icon: "M4 10v4 M9 6v12 M14 8v8 M19 10v4", prompt: "auto-mix the audio" },
   { label: "Make 4K", icon: "M12 3l2.5 5 5.5.8-4 3.9 1 5.4L12 21l-5-2.6 1-5.4-4-3.9 5.5-.8z", prompt: "make it 4K high quality" },
 ];
@@ -26,7 +27,8 @@ const IMAGE_ACTIONS: Action[] = [
   { label: "Slideshow", icon: "M4 5h16v11H4z M8 20h8", prompt: "make a slideshow from my photos" },
   { label: "9:16", icon: "M8 3h8v18H8z", prompt: "make it vertical 9:16" },
   { label: "Warm look", icon: "M12 3a9 9 0 100 18 4 4 0 010-8 4 4 0 000-8z", prompt: "give it a warm look" },
-  { label: "Cinematic", icon: "M3 7h18M3 12h18M3 17h18", prompt: "cinematic look" },
+  { label: "Vintage", icon: "M4 5h16v14H4z M4 9h16", prompt: "vintage look" },
+  { label: "Fade in/out", icon: "M3 12h18 M6 6l0 12 M18 6l0 12", prompt: "add a fade in and out" },
   { label: "Make 4K", icon: "M12 3l2.5 5 5.5.8-4 3.9 1 5.4L12 21l-5-2.6 1-5.4-4-3.9 5.5-.8z", prompt: "make it high quality 4K" },
 ];
 

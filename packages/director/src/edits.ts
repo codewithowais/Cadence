@@ -4,7 +4,7 @@
  * schema so the result is always valid. Tools (tools.ts) wrap these; the real
  * Claude Director will call the same operations.
  */
-import { parseEditDoc, type ColorGrade, type EditDoc } from "@cadence/core";
+import { docDurationSec, parseEditDoc, type ColorGrade, type EditDoc } from "@cadence/core";
 import type { Transcript } from "@cadence/understanding";
 
 // ---- Aspect ratios ---------------------------------------------------------
@@ -45,7 +45,8 @@ export function reframe(doc: EditDoc, aspect: AspectKey): EditDoc {
 
 // ---- Looks -----------------------------------------------------------------
 
-export type LookKey = "warm" | "cool" | "vivid" | "bw" | "cinematic" | "none";
+export type LookKey =
+  | "warm" | "cool" | "vivid" | "bw" | "cinematic" | "vintage" | "noir" | "vibrant" | "none";
 
 export const LOOK_PRESETS: Record<LookKey, ColorGrade & { label: string }> = {
   warm: { brightness: 1.03, contrast: 1.05, saturation: 1.08, warmth: 0.5, label: "warm & golden" },
@@ -53,6 +54,9 @@ export const LOOK_PRESETS: Record<LookKey, ColorGrade & { label: string }> = {
   vivid: { brightness: 1.02, contrast: 1.1, saturation: 1.35, warmth: 0.1, label: "punchy & vivid" },
   bw: { brightness: 1.02, contrast: 1.12, saturation: 0, warmth: 0, label: "black & white" },
   cinematic: { brightness: 0.98, contrast: 1.14, saturation: 0.95, warmth: 0.22, label: "cinematic teal-amber" },
+  vintage: { brightness: 1.02, contrast: 0.95, saturation: 0.82, warmth: 0.55, label: "vintage film" },
+  noir: { brightness: 0.96, contrast: 1.22, saturation: 0, warmth: 0, label: "high-contrast noir" },
+  vibrant: { brightness: 1.04, contrast: 1.08, saturation: 1.45, warmth: 0.12, label: "vibrant pop" },
   none: { brightness: 1, contrast: 1, saturation: 1, warmth: 0, label: "no grade" },
 };
 
@@ -164,5 +168,58 @@ export function setQuality(doc: EditDoc, preset: QualityKey, aiUpscale = false):
     denoise: q.denoise,
     aiUpscale,
   };
+  return parseEditDoc(clone);
+}
+
+// ---- Titles ----------------------------------------------------------------
+
+export type TitleStyle = "card" | "lower-third";
+
+/** Add a title card or lower-third at the start, with a fade in/out. */
+export function addTitle(doc: EditDoc, text: string, style: TitleStyle = "card"): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const w = clone.meta.width;
+  const h = clone.meta.height;
+  const id = `title-${Date.now()}`;
+  const clip =
+    style === "lower-third"
+      ? {
+          id, kind: "text" as const, start: 0, duration: 3,
+          text, fontSize: Math.round(h * 0.045), color: "#ffffff", align: "left" as const,
+          background: "#0a0d12cc",
+          transform: { x: Math.round(w * 0.06), y: Math.round(h * 0.82) },
+          transitionInSec: 0.3, transitionOutSec: 0.3,
+        }
+      : {
+          id, kind: "text" as const, start: 0, duration: 2.8,
+          text, fontSize: Math.round(h * 0.09), color: "#ffffff", align: "center" as const,
+          transform: { x: w / 2, y: h / 2 },
+          transitionInSec: 0.4, transitionOutSec: 0.4,
+        };
+
+  let titles = clone.tracks.find((t) => t.id === "titles");
+  if (!titles) {
+    titles = { id: "titles", kind: "visual", clips: [] };
+    clone.tracks.push(titles);
+  }
+  (titles.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+// ---- Fades -----------------------------------------------------------------
+
+/** Add a fade from black at the start and a fade to black at the end. */
+export function addFades(doc: EditDoc, inSec = 0.6, outSec = 0.6): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const total = docDurationSec(clone);
+  if (total <= 0) return clone;
+  const clips: unknown[] = [
+    { id: "fade-in", kind: "solid", start: 0, duration: Math.min(inSec, total), color: "#000000", transitionOutSec: Math.min(inSec, total) },
+  ];
+  if (total > outSec) {
+    clips.push({ id: "fade-out", kind: "solid", start: total - outSec, duration: outSec, color: "#000000", transitionInSec: outSec });
+  }
+  clone.tracks = clone.tracks.filter((t) => t.id !== "fades");
+  clone.tracks.push({ id: "fades", kind: "visual", clips: clips as never });
   return parseEditDoc(clone);
 }

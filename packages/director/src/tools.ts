@@ -18,6 +18,8 @@ import { fillerCut } from "./filler";
 import { buildSlideshowDoc } from "./slideshow";
 import {
   addCaptions,
+  addFades,
+  addTitle,
   applyLook,
   autoMix,
   reframe,
@@ -25,7 +27,10 @@ import {
   type AspectKey,
   type LookKey,
   type QualityKey,
+  type TitleStyle,
 } from "./edits";
+
+const LOOK_KEYS = ["warm", "cool", "vivid", "bw", "cinematic", "vintage", "noir", "vibrant", "none"] as const;
 
 export interface ToolContext {
   project: ProjectState;
@@ -143,11 +148,35 @@ export const captionsTool: DirectorTool<Record<string, never>> = {
 
 export const lookTool: DirectorTool<{ look: LookKey }> = {
   name: "apply_look",
-  description: "Apply a color-grade preset (warm, cool, vivid, bw, cinematic, none).",
-  inputSchema: z.object({ look: z.enum(["warm", "cool", "vivid", "bw", "cinematic", "none"]) }),
+  description: "Apply a color-grade preset (warm, cool, vivid, bw, cinematic, vintage, noir, vibrant, none).",
+  inputSchema: z.object({ look: z.enum(LOOK_KEYS) }),
   async execute(input, ctx) {
     const doc = applyLook(ctx.project.doc, input.look);
     return commit(ctx.project, doc, `Applied the ${input.look} look.`);
+  },
+};
+
+// ---- add_title -------------------------------------------------------------
+
+export const titleTool: DirectorTool<{ text: string; style?: TitleStyle }> = {
+  name: "add_title",
+  description: "Add a title card or lower-third with a fade in/out.",
+  inputSchema: z.object({ text: z.string().min(1), style: z.enum(["card", "lower-third"]).optional() }),
+  async execute(input, ctx) {
+    const doc = addTitle(ctx.project.doc, input.text, input.style ?? "card");
+    return commit(ctx.project, doc, `Added a ${input.style ?? "card"} title: “${input.text}”.`);
+  },
+};
+
+// ---- add_fades -------------------------------------------------------------
+
+export const fadesTool: DirectorTool<Record<string, never>> = {
+  name: "add_fades",
+  description: "Add a fade from black at the start and a fade to black at the end.",
+  inputSchema: z.object({}),
+  async execute(_input, ctx) {
+    const doc = addFades(ctx.project.doc);
+    return commit(ctx.project, doc, "Added fade in/out.");
   },
 };
 
@@ -220,4 +249,6 @@ export const DIRECTOR_TOOLS = {
   auto_mix: autoMixTool,
   make_slideshow: slideshowTool,
   set_quality: qualityTool,
+  add_title: titleTool,
+  add_fades: fadesTool,
 } as const;

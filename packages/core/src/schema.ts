@@ -76,8 +76,9 @@ const clipBase = {
   duration: z.number().positive(),
 };
 
-/** Crossfade-in duration in seconds (0 = hard cut). Shared by visual clips. */
+/** Crossfade-in / -out durations in seconds (0 = hard cut). Shared by visual clips. */
 const transitionInSec = z.number().nonnegative().default(0);
+const transitionOutSec = z.number().nonnegative().default(0);
 
 /** A clip that plays a slice of a video asset. */
 export const VideoClip = z.object({
@@ -90,6 +91,7 @@ export const VideoClip = z.object({
   volume: z.number().min(0).max(1).default(1),
   look: ColorGrade.prefault({}),
   transitionInSec,
+  transitionOutSec,
 });
 export type VideoClip = z.infer<typeof VideoClip>;
 
@@ -102,6 +104,7 @@ export const ImageClip = z.object({
   look: ColorGrade.prefault({}),
   motion: KenBurns.prefault({}),
   transitionInSec,
+  transitionOutSec,
 });
 export type ImageClip = z.infer<typeof ImageClip>;
 
@@ -116,6 +119,7 @@ export const TextClip = z.object({
   align: z.enum(["left", "center", "right"]).default("center"),
   transform: Transform.prefault({}),
   transitionInSec,
+  transitionOutSec,
   /** Optional pill background behind the text (used by captions). */
   background: HexColor.optional(),
 });
@@ -131,11 +135,23 @@ export const AudioClip = z.object({
 });
 export type AudioClip = z.infer<typeof AudioClip>;
 
+/** A solid color fill — full-frame backgrounds, letterbox, and fades to/from black. */
+export const SolidClip = z.object({
+  ...clipBase,
+  kind: z.literal("solid"),
+  color: HexColor.default("#000000"),
+  transform: Transform.prefault({}),
+  transitionInSec,
+  transitionOutSec,
+});
+export type SolidClip = z.infer<typeof SolidClip>;
+
 export const Clip = z.discriminatedUnion("kind", [
   VideoClip,
   ImageClip,
   TextClip,
   AudioClip,
+  SolidClip,
 ]);
 export type Clip = z.infer<typeof Clip>;
 

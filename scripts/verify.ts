@@ -120,12 +120,33 @@ async function checkSlideshow(): Promise<void> {
   console.log(`  [32m✔[0m check 4 (slideshow): ${r.summary} — ${n}b`);
 }
 
+async function checkTitlesFades(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  const r = await new StubDirector().interpret(
+    'cut a 30 second highlight, add a title that says "My Video", give it a vintage look, and fade in and out',
+    project,
+  );
+  const names = r.toolCalls.map((c) => c.name);
+  for (const need of ["create_highlight", "add_title", "apply_look", "add_fades"]) {
+    assert(names.includes(need), `titles/fades chain missing ${need}`);
+  }
+  assert(r.doc.tracks.some((t) => t.id === "titles" && t.clips.length > 0), "expected a titles track");
+  assert(r.doc.tracks.some((t) => t.id === "fades" && t.clips.some((c) => c.kind === "solid")), "expected fade solids");
+  const firstVid = r.doc.tracks.flatMap((t) => t.clips).find((c) => c.kind === "video");
+  assert(firstVid && firstVid.kind === "video" && firstVid.look.saturation < 1, "vintage look not applied");
+  // render very near the start so the fade-from-black solid is visible
+  await renderAndAssert(r.doc, 0.2, "verify-title-fade.png");
+  console.log(`  [32m✔[0m check 5 (titles/fades/looks): ${r.summary}`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
   await checkHighlight();
   await checkEditTools();
   await checkSlideshow();
+  await checkTitlesFades();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

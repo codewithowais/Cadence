@@ -12,13 +12,16 @@ import {
   autoMixTool,
   captionsTool,
   createHighlightTool,
+  fadesTool,
   fillerCutTool,
   lookTool,
   qualityTool,
   reframeTool,
   slideshowTool,
+  titleTool,
   type ToolCall,
 } from "./tools";
+import type { TitleStyle } from "./edits";
 import type { AspectKey, LookKey, QualityKey } from "./edits";
 
 export interface DirectorResult {
@@ -51,14 +54,29 @@ function parseAspect(req: string): AspectKey | null {
 }
 
 function parseLook(req: string): LookKey | null {
+  if (/\b(no|remove|reset)\s+(look|grade|colou?r|filter)\b/.test(req)) return "none";
+  if (/noir/.test(req)) return "noir";
   if (/black.?and.?white|b\s?&\s?w|grayscale|greyscale|monochrome/.test(req)) return "bw";
+  if (/vintage|retro|old ?film|film ?grain|nostalg/.test(req)) return "vintage";
   if (/cinematic|film(ic)?|movie/.test(req)) return "cinematic";
-  if (/vivid|punchy|vibrant|pop|saturat/.test(req)) return "vivid";
+  if (/vibrant/.test(req)) return "vibrant";
+  if (/vivid|punchy|pop|saturat/.test(req)) return "vivid";
   if (/warm|golden|cozy|cosy/.test(req)) return "warm";
   if (/cool|cold|blue/.test(req)) return "cool";
-  if (/\b(no|remove|reset)\s+(look|grade|color|colour|filter)\b/.test(req)) return "none";
   if (/look|grade|colou?r|filter/.test(req)) return "warm";
   return null;
+}
+
+function parseTitle(req: string, original: string): { text: string; style: TitleStyle } | null {
+  if (!/\btitle\b|title card|lower.?third|name card|intro text/.test(req)) return null;
+  const style: TitleStyle = /lower.?third/.test(req) ? "lower-third" : "card";
+  const quoted = original.match(/["“'“”]([^"“”']{1,60})["“”']/);
+  let text = quoted?.[1] ?? null;
+  if (!text) {
+    const m = original.match(/(?:titled|that says|called|saying|title:?)\s+(.+)$/i);
+    if (m) text = m[1]!.trim().replace(/[.]+$/, "");
+  }
+  return { text: text ?? "Title", style };
 }
 
 function parseQuality(req: string): { preset: QualityKey; aiUpscale: boolean } | null {
@@ -122,6 +140,21 @@ export class StubDirector {
       steps.push({
         run: (p) => captionsTool.execute({}, { project: p }),
         call: { name: captionsTool.name, input: {} },
+      });
+    }
+
+    const title = parseTitle(req, request);
+    if (title) {
+      steps.push({
+        run: (p) => titleTool.execute(title, { project: p }),
+        call: { name: titleTool.name, input: title },
+      });
+    }
+
+    if (/\bfades?\b|fade in|fade out|from black|to black|intro and outro/.test(req)) {
+      steps.push({
+        run: (p) => fadesTool.execute({}, { project: p }),
+        call: { name: fadesTool.name, input: {} },
       });
     }
 
