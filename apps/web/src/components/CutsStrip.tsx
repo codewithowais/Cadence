@@ -162,6 +162,22 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   const secToPx = useCallback((s: number) => s * pxPerSec, [pxPerSec]);
   const pxToSec = useCallback((px: number) => (pxPerSec > 0 ? px / pxPerSec : 0), [pxPerSec]);
 
+  // Zoom anchored to the PLAYHEAD (CapCut-style). Without this the strip grows
+  // left-anchored and the frame you were looking at slides off to the side — the
+  // "zoom goes the wrong way" bug. We flag a zoom, then re-center on the playhead
+  // once the new width is laid out.
+  const centerOnPlayhead = useRef(false);
+  const zoomTo = useCallback((next: number) => {
+    centerOnPlayhead.current = true;
+    setZoom(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(next * 10) / 10)));
+  }, []);
+  useLayoutEffect(() => {
+    if (!centerOnPlayhead.current) return;
+    centerOnPlayhead.current = false;
+    const el = scrollRef.current;
+    if (el && pxPerSec > 0) el.scrollLeft = Math.max(0, timeSec * pxPerSec - el.clientWidth / 2);
+  }, [zoom, pxPerSec, timeSec]);
+
   // Snap targets rebuilt per render: all clip edges + playhead + markers + ends.
   // Each edge remembers which clip it belongs to so a drag can ignore its own.
   const snapTargets = useMemo(() => {
@@ -196,6 +212,18 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   const drag = useRef<DragState | null>(null);
   const rafRef = useRef<number | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ trackId: string; x: number } | null>(null);
+
+  // Follow the playhead: when time advances past the visible edge (playback or a
+  // seek off-screen), scroll to keep it in view. It only reacts to time changes,
+  // so it never fights a manual scroll, and it stands down during a drag.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || drag.current || pxPerSec <= 0 || contentWidth <= laneWidth + 1) return;
+    const x = timeSec * pxPerSec;
+    const pad = el.clientWidth * 0.12;
+    if (x < el.scrollLeft + pad) el.scrollLeft = Math.max(0, x - pad);
+    else if (x > el.scrollLeft + el.clientWidth - pad) el.scrollLeft = x - el.clientWidth + pad;
+  }, [timeSec, pxPerSec, contentWidth, laneWidth]);
 
   const selected = selectedClipId ? findClip(doc, selectedClipId) : null;
 
@@ -354,7 +382,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           <span className="mx-1 h-5 w-px bg-line" aria-hidden />
           <button
             type="button"
-            onClick={() => setZoom((z) => Math.max(ZOOM_MIN, Math.round((z - 1) * 10) / 10))}
+            onClick={() => zoomTo(zoom - 1)}
             disabled={zoom <= ZOOM_MIN}
             aria-label="Zoom out timeline"
             className="grid h-6 w-6 place-items-center rounded-md border border-line bg-elevated text-muted transition hover:text-text disabled:opacity-40"
@@ -367,7 +395,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
             max={ZOOM_MAX}
             step={0.5}
             value={zoom}
-            onChange={(e) => setZoom(Number(e.target.value))}
+            onChange={(e) => zoomTo(Number(e.target.value))}
             aria-label={`Timeline zoom: ${zoom}×`}
             title={`Zoom ${zoom}×`}
             style={{ accentColor: "var(--color-teal)" }}
@@ -375,7 +403,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           />
           <button
             type="button"
-            onClick={() => setZoom((z) => Math.min(ZOOM_MAX, Math.round((z + 1) * 10) / 10))}
+            onClick={() => zoomTo(zoom + 1)}
             disabled={zoom >= ZOOM_MAX}
             aria-label="Zoom in timeline"
             className="grid h-6 w-6 place-items-center rounded-md border border-line bg-elevated text-muted transition hover:text-text disabled:opacity-40"
