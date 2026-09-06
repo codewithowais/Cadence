@@ -582,10 +582,38 @@ export type Clip = z.infer<typeof Clip>;
 export const TrackKind = z.enum(["visual", "audio"]);
 export type TrackKind = z.infer<typeof TrackKind>;
 
+/**
+ * A track (a horizontal lane of clips). ARRAY ORDER IS Z-ORDER: earlier tracks
+ * paint first (bottom of the stack), later tracks paint over them — the single
+ * source of truth honored by `activeClipsAt` (canvas + Stage) and the ffmpeg
+ * export's layer compositing. There is deliberately NO `z` field; reordering a
+ * layer means reordering the `tracks` array (see `reorderTrack`).
+ *
+ * The metadata fields are all additive (optional / defaulted-off) so every
+ * existing EditDoc still parses:
+ *  - name   — header label in the timeline UI (falls back to `id`).
+ *  - hidden — exclude the track from every render (visual layers are skipped by
+ *             `activeClipsAt`; the ffmpeg export skips a hidden track's clips and
+ *             hidden audio).
+ *  - locked — UI-only edit guard; the pure track ops refuse to move clips on /
+ *             remove a locked track.
+ *  - muted  — audio track dropped from the export mix.
+ *  - solo   — audio solo: when ANY audio track solos, only soloed audio plays.
+ */
 export const Track = z.object({
   id: z.string().min(1),
   kind: TrackKind,
   clips: z.array(Clip).default([]),
+  /** Header label for the timeline UI; falls back to `id` when absent. */
+  name: z.string().optional(),
+  /** Exclude this track from every render (skipped by activeClipsAt + export). */
+  hidden: z.boolean().default(false),
+  /** UI-only: block edits/selection on this track's clips (pure ops refuse moves). */
+  locked: z.boolean().default(false),
+  /** Audio track: drop it from the export mix. */
+  muted: z.boolean().default(false),
+  /** Audio track: when any audio track solos, only soloed audio plays. */
+  solo: z.boolean().default(false),
 });
 export type Track = z.infer<typeof Track>;
 

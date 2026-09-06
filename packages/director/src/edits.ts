@@ -33,7 +33,7 @@ const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.m
  * titles, captions, b-roll PiP, fades or music). Speed / zoom / transition edits
  * apply to these, never to the overlays.
  */
-const OVERLAY_TRACK_IDS = new Set([
+export const OVERLAY_TRACK_IDS = new Set([
   "titles",
   "captions",
   "broll",
@@ -43,7 +43,24 @@ const OVERLAY_TRACK_IDS = new Set([
   "callouts",
   "demo-text",
 ]);
-const isMainVisualTrack = (id: string): boolean => !OVERLAY_TRACK_IDS.has(id);
+/**
+ * A "main" (magnetic) visual track carries the primary footage/photos and
+ * gap-closes when clips move — as opposed to overlay lanes (titles, captions,
+ * b-roll, fades, music, cursor, callouts). Reused by the track ops so a clip
+ * dropped onto a magnetic track re-flows, while a drop onto an overlay lane keeps
+ * its free position.
+ */
+export const isMainVisualTrack = (id: string): boolean => !OVERLAY_TRACK_IDS.has(id);
+
+/**
+ * Build a fresh track object for the mutable structuredClone before it is
+ * re-parsed. Includes the additive metadata defaults (hidden/locked/muted/solo)
+ * so the intermediate object satisfies the Track type; `clips` is passed through
+ * (re-validated by parseEditDoc at the end of each op).
+ */
+function mkTrack(id: string, kind: EditDoc["tracks"][number]["kind"], clips: unknown[] = []): EditDoc["tracks"][number] {
+  return { id, kind, clips: clips as never, hidden: false, locked: false, muted: false, solo: false };
+}
 
 // ---- Aspect ratios ---------------------------------------------------------
 
@@ -249,7 +266,7 @@ export function addCaptions(doc: EditDoc, transcript: Transcript): EditDoc {
     }
   }
 
-  clone.tracks.push({ id: "captions", kind: "visual", clips: captions as never });
+  clone.tracks.push(mkTrack("captions", "visual", captions));
   return parseEditDoc(clone);
 }
 
@@ -325,7 +342,7 @@ export function addTitle(doc: EditDoc, text: string, style: TitleStyle = "card")
 
   let titles = clone.tracks.find((t) => t.id === "titles");
   if (!titles) {
-    titles = { id: "titles", kind: "visual", clips: [] };
+    titles = mkTrack("titles", "visual");
     clone.tracks.push(titles);
   }
   (titles.clips as unknown[]).push(clip);
@@ -366,7 +383,7 @@ export function addMusic(
     sourceIn: 0,
     volume: opts.volume ?? 0.28,
   };
-  clone.tracks.push({ id: "music", kind: "audio", clips: [clip as never] });
+  clone.tracks.push(mkTrack("music", "audio", [clip]));
   return parseEditDoc(clone);
 }
 
@@ -451,7 +468,7 @@ export function addBroll(
 
   let broll = clone.tracks.find((t) => t.id === "broll");
   if (!broll) {
-    broll = { id: "broll", kind: "visual", clips: [] };
+    broll = mkTrack("broll", "visual");
     clone.tracks.push(broll);
   }
   (broll.clips as unknown[]).push(clip);
@@ -502,7 +519,7 @@ export function addKineticTitle(
 
   let titles = clone.tracks.find((t) => t.id === "titles");
   if (!titles) {
-    titles = { id: "titles", kind: "visual", clips: [] };
+    titles = mkTrack("titles", "visual");
     clone.tracks.push(titles);
   }
   (titles.clips as unknown[]).push(clip);
@@ -815,7 +832,7 @@ export function addCursor(doc: EditDoc, opts: AddCursorOpts): EditDoc {
   };
   let track = clone.tracks.find((t) => t.id === "cursor");
   if (!track) {
-    track = { id: "cursor", kind: "visual", clips: [] };
+    track = mkTrack("cursor", "visual");
     clone.tracks.push(track);
   }
   (track.clips as unknown[]).push(clip);
@@ -865,7 +882,7 @@ export function typeText(doc: EditDoc, opts: TypeTextOpts): EditDoc {
   };
   let track = clone.tracks.find((t) => t.id === "demo-text");
   if (!track) {
-    track = { id: "demo-text", kind: "visual", clips: [] };
+    track = mkTrack("demo-text", "visual");
     clone.tracks.push(track);
   }
   (track.clips as unknown[]).push(clip);
@@ -911,7 +928,7 @@ export function addCallout(doc: EditDoc, opts: AddCalloutOpts): EditDoc {
   };
   let track = clone.tracks.find((t) => t.id === "callouts");
   if (!track) {
-    track = { id: "callouts", kind: "visual", clips: [] };
+    track = mkTrack("callouts", "visual");
     clone.tracks.push(track);
   }
   (track.clips as unknown[]).push(clip);
@@ -1778,7 +1795,7 @@ export function addVoiceover(
     sourceIn: 0,
     volume: opts.volume ?? 1,
   };
-  clone.tracks.push({ id: "voiceover", kind: "audio", clips: [clip as never] });
+  clone.tracks.push(mkTrack("voiceover", "audio", [clip]));
   return parseEditDoc(clone);
 }
 
@@ -1794,6 +1811,6 @@ export function addFades(doc: EditDoc, inSec = 0.6, outSec = 0.6): EditDoc {
     clips.push({ id: "fade-out", kind: "solid", start: total - outSec, duration: outSec, color: "#000000", transitionInSec: outSec });
   }
   clone.tracks = clone.tracks.filter((t) => t.id !== "fades");
-  clone.tracks.push({ id: "fades", kind: "visual", clips: clips as never });
+  clone.tracks.push(mkTrack("fades", "visual", clips));
   return parseEditDoc(clone);
 }

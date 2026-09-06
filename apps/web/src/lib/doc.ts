@@ -220,7 +220,7 @@ export function addVoiceover(doc: EditDoc, asset: MediaAsset): EditDoc {
   const dur = asset.durationSec ?? 5;
   let vo = clone.tracks.find((t) => t.id === "voiceover");
   if (!vo) {
-    vo = { id: "voiceover", kind: "audio", clips: [] };
+    vo = { id: "voiceover", kind: "audio", clips: [], hidden: false, locked: false, muted: false, solo: false };
     clone.tracks.push(vo);
   }
   let startPos = 0;
@@ -279,7 +279,7 @@ export function addMusic(
     sourceIn: 0,
     volume: clamp(opts.volume ?? 0.28, 0, 1),
   };
-  clone.tracks.push({ id: "music", kind: "audio", clips: [clip as never] });
+  clone.tracks.push({ id: "music", kind: "audio", clips: [clip as never], hidden: false, locked: false, muted: false, solo: false });
   return parseEditDoc(clone);
 }
 

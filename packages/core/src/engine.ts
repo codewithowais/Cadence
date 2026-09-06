@@ -36,10 +36,16 @@ export interface ClipOnTrack {
 /**
  * All clips active at `timeSec`, in paint order (earlier tracks first, i.e.
  * bottom of the stack). Callers draw them in the returned order.
+ *
+ * A `hidden` track contributes nothing — so the canvas raster, the browser Stage,
+ * and the client preview all skip a hidden layer for free (they share this
+ * helper). Hidden is the single guard: it keeps preview↔canvas↔export in agreement
+ * (the ffmpeg export skips the same hidden tracks).
  */
 export function activeClipsAt(doc: EditDoc, timeSec: number): ClipOnTrack[] {
   const out: ClipOnTrack[] = [];
   for (const track of doc.tracks) {
+    if (track.hidden) continue;
     for (const clip of track.clips) {
       if (isClipActiveAt(clip, timeSec)) out.push({ track, clip });
     }

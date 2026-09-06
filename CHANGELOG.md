@@ -4,6 +4,15 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.1 — Cycle F wave A (engine): true multi-track layers
+- **Track metadata** (additive to `Track`, backward-compatible): `name?`, `hidden`, `locked`, `muted`, `solo`. Array order stays the single source of z-order.
+- **Layers honored across renderers:** `activeClipsAt` skips `hidden` visual tracks (canvas + Stage + preview get it free); **ffmpeg export reworked to composite visual tracks by z-order** — base = lowest visual track, upper layers overlaid in order through the existing overlay/blend/chroma/mask path. The single-visual-track fast path is byte-identical (all prior checks unchanged). Audio honors `muted`/`solo`.
+- **Pure track ops + Director tools:** `addTrack`/`removeTrack`/`setTrack`/`reorderTrack`/`moveClipToTrack` (`@cadence/director`) + tools `add_track`/`remove_track`/`set_track`/`reorder_track`/`move_clip`. `move_clip` generalizes within-track reorder; lock-guarded.
+- Fixes the CapCut-parity keystone: layers no longer flatten on export. Driven by `docs/CAPCUT-PARITY.md`. *verified:* typecheck (root+web) + test:unit 44/44 + verify **54/54** + evals 5/5 + `next build` clean.
+
+### fix(timeline) — zoom anchors on the playhead + follows during playback
+- Timeline zoom re-centers on the playhead (was left-anchored → content slid away) and the strip follows the playhead past the viewport edge without fighting manual scroll. (`CutsStrip`.)
+
 ### Ops — Neon DB live + Vercel deploy readiness
 - **Database live:** applied the 3 migrations to a Neon Postgres instance; `/api/health` → `{ status:"ok", db:true }`. Local `.env` (gitignored) holds `DATABASE_URL`; symlinked to `apps/web/.env` so the single file feeds both Node tooling (`migrate`, `verify`) and the Next app.
 - **Vercel:** `apps/web/vercel.json` (framework pin) + `DEPLOY.md` — Root Directory `apps/web` (Vercel re-anchors to the npm-workspace root and transpiles `packages/*`), env-var table (`SESSION_SECRET` required; `DATABASE_URL` for persistence), Neon steps, and honest limitations (ffmpeg export is Docker-only; absent on serverless it degrades gracefully). `.env.example` extended with the enhance/TTS provider vars.

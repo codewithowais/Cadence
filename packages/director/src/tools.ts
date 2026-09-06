@@ -27,6 +27,7 @@ import { buildHighlightDoc } from "./highlight";
 import { fillerCut } from "./filler";
 import { buildSlideshowDoc } from "./slideshow";
 import { buildDemo, type BuildDemoOptions } from "./demo";
+import { addTrack, moveClipToTrack, removeTrack, reorderTrack, setTrack } from "./tracks";
 import {
   addBroll,
   addCallout,
@@ -1148,6 +1149,100 @@ export const generateVoiceoverTool: DirectorTool<{ text: string; voice?: string;
   },
 };
 
+// ---- track management (multi-layer) ----------------------------------------
+
+export const addTrackTool: DirectorTool<{ kind: "visual" | "audio"; name?: string; afterTrackId?: string }> = {
+  name: "add_track",
+  description:
+    "Add a new empty track (a layer). kind: visual (composites over lower visual tracks) or audio (mixed in). Optionally set a `name` and insert it directly ABOVE `afterTrackId` (higher z-order); otherwise it goes on top. Array order = z-order.",
+  inputSchema: z.object({
+    kind: z.enum(["visual", "audio"]),
+    name: z.string().optional(),
+    afterTrackId: z.string().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = addTrack(ctx.project.doc, input);
+    return commit(ctx.project, doc, `Added a ${input.kind} track${input.name ? ` “${input.name}”` : ""}.`);
+  },
+};
+
+export const removeTrackTool: DirectorTool<{ trackId: string }> = {
+  name: "remove_track",
+  description: "Remove a track and every clip on it. Refuses on a locked track.",
+  inputSchema: z.object({ trackId: z.string().min(1) }),
+  async execute(input, ctx) {
+    const doc = removeTrack(ctx.project.doc, input.trackId);
+    return commit(ctx.project, doc, `Removed track “${input.trackId}”.`);
+  },
+};
+
+export const setTrackTool: DirectorTool<{ trackId: string; name?: string; hidden?: boolean; locked?: boolean; muted?: boolean; solo?: boolean }> = {
+  name: "set_track",
+  description:
+    "Set a track's metadata: name, hidden (exclude from render), locked (block edits), muted (drop from the audio mix), solo (when any audio track solos, only soloed audio plays). Omitted fields keep their current value.",
+  inputSchema: z
+    .object({
+      trackId: z.string().min(1),
+      name: z.string().optional(),
+      hidden: z.boolean().optional(),
+      locked: z.boolean().optional(),
+      muted: z.boolean().optional(),
+      solo: z.boolean().optional(),
+    })
+    .refine(
+      (v) =>
+        v.name !== undefined ||
+        v.hidden !== undefined ||
+        v.locked !== undefined ||
+        v.muted !== undefined ||
+        v.solo !== undefined,
+      { message: "provide at least one of name/hidden/locked/muted/solo" },
+    ),
+  async execute(input, ctx) {
+    const { trackId, ...opts } = input;
+    const doc = setTrack(ctx.project.doc, trackId, opts);
+    const parts = Object.entries(opts)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => `${k} ${v}`);
+    return commit(ctx.project, doc, `Set track “${trackId}” (${parts.join(", ")}).`);
+  },
+};
+
+export const reorderTrackTool: DirectorTool<{ trackId: string; toIndex: number }> = {
+  name: "reorder_track",
+  description:
+    "Change a track's z-order by moving it to `toIndex` in the track array (0 = bottom of the stack, higher = painted on top). Reorders layers without touching clips.",
+  inputSchema: z.object({ trackId: z.string().min(1), toIndex: z.number().int().nonnegative() }),
+  async execute(input, ctx) {
+    const doc = reorderTrack(ctx.project.doc, input.trackId, input.toIndex);
+    return commit(ctx.project, doc, `Moved track “${input.trackId}” to z-index ${input.toIndex}.`);
+  },
+};
+
+export const moveClipTool: DirectorTool<{ clipId: string; trackId?: string; atSec?: number }> = {
+  name: "move_clip",
+  description:
+    "Move a clip to another track (`trackId`) and/or to a new start time (`atSec`). Dropping onto a magnetic/main visual track re-flows the lane (gap-close); onto an overlay/free lane it keeps the given start. Omit `trackId` to reposition within the clip's current track. Refuses on a locked track.",
+  inputSchema: z
+    .object({
+      clipId: z.string().min(1),
+      trackId: z.string().optional(),
+      atSec: z.number().nonnegative().optional(),
+    })
+    .refine((v) => v.trackId !== undefined || v.atSec !== undefined, {
+      message: "provide a trackId and/or atSec",
+    }),
+  async execute(input, ctx) {
+    const current = ctx.project.doc.tracks.find((t) => t.clips.some((c) => c.id === input.clipId));
+    if (!current) throw new Error(`No clip “${input.clipId}” on any track.`);
+    const toTrackId = input.trackId ?? current.id;
+    const doc = moveClipToTrack(ctx.project.doc, input.clipId, toTrackId, input.atSec);
+    const where = input.trackId && input.trackId !== current.id ? ` to track “${input.trackId}”` : "";
+    const at = input.atSec !== undefined ? ` at ${input.atSec}s` : "";
+    return commit(ctx.project, doc, `Moved clip “${input.clipId}”${where}${at}.`);
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
   edit_by_transcript: editByTranscriptTool,
@@ -1194,4 +1289,9 @@ export const DIRECTOR_TOOLS = {
   audio_fade: audioFadeTool,
   set_pan: setPanTool,
   normalize_loudness: normalizeLoudnessTool,
+  add_track: addTrackTool,
+  remove_track: removeTrackTool,
+  set_track: setTrackTool,
+  reorder_track: reorderTrackTool,
+  move_clip: moveClipTool,
 } as const;

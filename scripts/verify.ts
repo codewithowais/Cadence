@@ -106,6 +106,11 @@ import {
   addCursor,
   addCallout,
   typeText,
+  addTrack,
+  removeTrack,
+  setTrack,
+  reorderTrack,
+  moveClipToTrack,
   ASPECTS,
   type DirectorLike,
 } from "@cadence/director";
@@ -2074,6 +2079,113 @@ async function checkTts(): Promise<void> {
   console.log(`  [32m✔[0m check 53 (TTS voice-over): free-first (none default, unavailable) + cli/api selection & gating; buildTtsArgs pure; graceful "money-gated" via tool + Director; addVoiceover track amixes on export`);
 }
 
+async function checkMultiTrackLayers(): Promise<void> {
+  const resolve = (id: string) => `/media/${id}.mp4`;
+
+  // A base video track + a SECOND visual layer above it (array order = z-order).
+  // The upper clip is a PiP (scale 0.5) with a screen blend — a real second layer.
+  const layered = parseEditDoc({
+    version: 1,
+    meta: { title: "layers", width: 1920, height: 1080, fps: 30 },
+    media: [
+      { id: "base", kind: "video", src: "/media/base.mp4" },
+      { id: "top", kind: "video", src: "/media/top.mp4" },
+    ],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "b0", kind: "video", start: 0, duration: 6, mediaId: "base", transform: { x: 960, y: 540 } }] },
+      { id: "layer2", kind: "visual", clips: [{ id: "u0", kind: "video", start: 0, duration: 6, mediaId: "top", transform: { x: 960, y: 540, scale: 0.5 } }] },
+    ],
+  });
+
+  // (a) Paint order (bottom→top) exposes BOTH layers; the upper is painted last.
+  const active = activeClipsAt(layered, 3).map((c) => c.clip.id);
+  assert(JSON.stringify(active) === JSON.stringify(["b0", "u0"]), `layers: paint order should be [b0,u0], got ${JSON.stringify(active)}`);
+  const n = await renderAndAssert(layered, 3, "verify-layers.png");
+
+  // (b) Export composites the upper layer OVER the base (z-order): the base is the
+  // single-clip fast path (v0), and the upper layer overlays onto it → [v0][bov0].
+  const lp = buildExportPlan(layered, resolve, "/out/layers.mp4");
+  assert(lp.filterComplex.includes("[v0][bov0]overlay="), `layers: upper layer must overlay OVER the base (v0), got: ${lp.filterComplex.slice(0, 300)}`);
+  assert(lp.inputs.includes("/media/base.mp4") && lp.inputs.includes("/media/top.mp4"), "layers: both layer sources must be inputs");
+
+  // A blend-mode upper layer composites via blend=all_mode= over the base (v0).
+  const blended = parseEditDoc({
+    version: 1,
+    meta: { title: "blend-layer", width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "base", kind: "video", src: "/media/base.mp4" }, { id: "top", kind: "video", src: "/media/top.mp4" }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "b0", kind: "video", start: 0, duration: 6, mediaId: "base", transform: { x: 960, y: 540 } }] },
+      { id: "grade", kind: "visual", clips: [{ id: "u0", kind: "video", start: 0, duration: 6, mediaId: "top", transform: { x: 960, y: 540 }, blendMode: "screen" }] },
+    ],
+  });
+  const bp = buildExportPlan(blended, resolve, "/out/blend.mp4");
+  assert(bp.filterComplex.includes("[v0][bov0]blend=all_mode=screen"), "layers: blend upper layer must blend over the base (v0)");
+
+  // (c) A HIDDEN visual track is excluded from BOTH canvas (activeClipsAt) and export.
+  const hidden = setTrack(layered, "layer2", { hidden: true });
+  assert(hidden.tracks.find((t) => t.id === "layer2")!.hidden === true, "layers: setTrack should hide the track");
+  const hiddenActive = activeClipsAt(hidden, 3).map((c) => c.clip.id);
+  assert(JSON.stringify(hiddenActive) === JSON.stringify(["b0"]), `layers: hidden track must be skipped by activeClipsAt, got ${JSON.stringify(hiddenActive)}`);
+  const hp = buildExportPlan(hidden, resolve, "/out/hidden.mp4");
+  assert(!hp.filterComplex.includes("overlay="), "layers: a hidden upper track must NOT be composited on export");
+  assert(!hp.inputs.includes("/media/top.mp4"), "layers: a hidden track's media must not be an input");
+
+  // (d) Audio mute / solo in the export mix.
+  const audioDoc = parseEditDoc({
+    version: 1,
+    meta: { title: "audio-layers", width: 1920, height: 1080, fps: 30 },
+    media: [
+      { id: "base", kind: "video", src: "/media/base.mp4" },
+      { id: "songA", kind: "audio", src: "/media/songA.mp4", durationSec: 30 },
+      { id: "songB", kind: "audio", src: "/media/songB.mp4", durationSec: 30 },
+    ],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "b0", kind: "video", start: 0, duration: 6, mediaId: "base", transform: { x: 960, y: 540 } }] },
+      { id: "music", kind: "audio", clips: [{ id: "mA", kind: "audio", start: 0, duration: 6, mediaId: "songA" }] },
+      { id: "music2", kind: "audio", clips: [{ id: "mB", kind: "audio", start: 0, duration: 6, mediaId: "songB" }] },
+    ],
+  });
+  // Baseline: base audio + both music → 3-way amix.
+  const allAudio = buildExportPlan(audioDoc, resolve, "/out/a.mp4");
+  assert(allAudio.filterComplex.includes("amix=inputs=3"), `audio: base + 2 music should be a 3-way amix, got: ${allAudio.filterComplex.match(/amix=inputs=\d+/)?.[0]}`);
+
+  // Mute music2 → dropped from the mix (base + songA = 2-way amix; songB not an input).
+  const muted = setTrack(audioDoc, "music2", { muted: true });
+  const mp = buildExportPlan(muted, resolve, "/out/muted.mp4");
+  assert(mp.filterComplex.includes("amix=inputs=2"), `audio: muting a track should drop it (2-way amix), got: ${mp.filterComplex.match(/amix=inputs=\d+/)?.[0]}`);
+  assert(mp.inputs.includes("/media/songA.mp4") && !mp.inputs.includes("/media/songB.mp4"), "audio: a muted track's media must not be an input");
+
+  // Solo music (songA) → ONLY soloed audio plays: songB dropped AND the base video
+  // audio dropped (sunk with anullsink so the graph has no dangling output).
+  const soloed = setTrack(audioDoc, "music", { solo: true });
+  const solp = buildExportPlan(soloed, resolve, "/out/solo.mp4");
+  assert(solp.inputs.includes("/media/songA.mp4"), "audio(solo): the soloed track must play");
+  assert(!solp.inputs.includes("/media/songB.mp4"), "audio(solo): a non-soloed track must be dropped");
+  assert(solp.filterComplex.includes("anullsink"), "audio(solo): the non-soloed base audio must be sunk (no dangling output)");
+
+  // Pure track ops: add / reorder / remove / cross-lane move + lock guard.
+  const added = addTrack(layered, { kind: "visual", name: "Overlay", afterTrackId: "video" });
+  assert(added.tracks.length === 3 && added.tracks[1]!.id === "layer-1" && added.tracks[1]!.name === "Overlay", "tracks: addTrack should insert a named layer above 'video'");
+  // Reorder the new layer to the bottom (z-index 0).
+  const reordered = reorderTrack(added, "layer-1", 0);
+  assert(reordered.tracks[0]!.id === "layer-1", "tracks: reorderTrack should move the layer to the bottom");
+  // Move the base clip onto the free overlay lane → keeps the given start (no reflow).
+  const moved = moveClipToTrack(added, "b0", "layer-1", 2.5);
+  const movedClip = moved.tracks.find((t) => t.id === "layer-1")!.clips.find((c) => c.id === "b0")!;
+  assert(movedClip.start === 2.5, `tracks: a free-lane drop should keep start 2.5, got ${movedClip.start}`);
+  assert(moved.tracks.find((t) => t.id === "video")!.clips.length === 0, "tracks: the clip should have left its source lane");
+  // removeTrack respects a lock (clear error, no-op).
+  const locked = setTrack(added, "layer-1", { locked: true });
+  let threw = false;
+  try { removeTrack(locked, "layer-1"); } catch { threw = true; }
+  assert(threw, "tracks: removeTrack must refuse a locked track");
+  // Unlocked removal drops the track.
+  const removed = removeTrack(added, "layer-1");
+  assert(!removed.tracks.some((t) => t.id === "layer-1"), "tracks: removeTrack should drop the track");
+
+  console.log(`  [32m✔[0m check 54 (multi-track layers): 2-layer doc paints bottom→top (${n}b) + upper overlays/blends OVER base (v0) on export; hidden track skipped in canvas+export; mute/solo drop audio (anullsink); addTrack/reorder/move(free start)/lock-guarded remove`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -2094,6 +2206,7 @@ async function main(): Promise<void> {
   await checkZoom();
   await checkTransitions();
   await checkColorAdjust();
+  await checkMultiTrackLayers();
   await checkFrameSizes();
   await checkMoreLooks();
   await checkMoreTransitions();

@@ -677,30 +677,69 @@ function pushVideoChain(
 
 // --- clip collection --------------------------------------------------------
 
-function collectVisualBase(doc: EditDoc): (VideoClip | ImageClip)[] {
-  const base: (VideoClip | ImageClip)[] = [];
+/**
+ * The BASE visual layer: the LOWEST (earliest in array order = bottom of the
+ * stack) non-hidden visual track that carries any video/image clip. The base is
+ * concat/xfade'd (the fast path); every HIGHER visual track composites over it
+ * (collectUpperLayers). The legacy "broll" lane is never the base — it is always
+ * an overlay — so a broll-only doc still gets a lavfi/solid base beneath it, as
+ * before. Returns the base track's video/image clips sorted by start (unchanged
+ * from the historical single-track behavior).
+ */
+function baseVisualTrack(doc: EditDoc): EditDoc["tracks"][number] | null {
   for (const track of doc.tracks) {
-    if (track.kind !== "visual") continue;
-    if (track.id === "broll") continue; // b-roll is overlaid, not concatenated
-    for (const clip of track.clips) {
-      if (clip.kind === "video" || clip.kind === "image") base.push(clip);
-    }
+    if (track.kind !== "visual" || track.hidden) continue;
+    if (track.id === "broll") continue; // b-roll is always overlaid, never the base
+    if (track.clips.some((c) => c.kind === "video" || c.kind === "image")) return track;
+  }
+  return null;
+}
+
+function collectVisualBase(doc: EditDoc): (VideoClip | ImageClip)[] {
+  const track = baseVisualTrack(doc);
+  if (!track) return [];
+  const base: (VideoClip | ImageClip)[] = [];
+  for (const clip of track.clips) {
+    if (clip.kind === "video" || clip.kind === "image") base.push(clip);
   }
   base.sort((a, b) => a.start - b.start);
   return base;
 }
 
-/** B-roll / PiP overlay clips (top "broll" visual track). */
-function collectBroll(doc: EditDoc): (VideoClip | ImageClip)[] {
+/**
+ * Every visual layer ABOVE the base — the true multi-track z-order fix. Iterates
+ * non-hidden visual tracks in ARRAY ORDER (bottom→top), skipping the base track,
+ * and returns their video/image clips (sorted by start WITHIN each track). Each is
+ * composited over the base via the overlay/blend path below, carrying its own
+ * transform (PiP or full-frame), blendMode, chroma, and mask. The legacy "broll"
+ * track is one of these upper layers — so in the common single-visual-track case
+ * (base + broll only) this returns exactly the old b-roll list, and the export
+ * graph is byte-for-byte unchanged (the fast path).
+ */
+function collectUpperLayers(doc: EditDoc): (VideoClip | ImageClip)[] {
+  const baseId = baseVisualTrack(doc)?.id;
   const out: (VideoClip | ImageClip)[] = [];
   for (const track of doc.tracks) {
-    if (track.id !== "broll") continue;
+    if (track.kind !== "visual" || track.hidden) continue;
+    if (track.id === baseId) continue;
+    const layer: (VideoClip | ImageClip)[] = [];
     for (const clip of track.clips) {
-      if (clip.kind === "video" || clip.kind === "image") out.push(clip);
+      if (clip.kind === "video" || clip.kind === "image") layer.push(clip);
     }
+    layer.sort((a, b) => a.start - b.start);
+    out.push(...layer);
   }
-  out.sort((a, b) => a.start - b.start);
   return out;
+}
+
+/**
+ * Whether a solo is active among AUDIO-contributing tracks (any non-hidden audio
+ * track, or the base visual track, with `solo` set). When true, only soloed audio
+ * plays — CapCut solo semantics.
+ */
+function soloActive(doc: EditDoc): boolean {
+  const baseId = baseVisualTrack(doc)?.id;
+  return doc.tracks.some((t) => !t.hidden && t.solo && (t.kind === "audio" || t.id === baseId));
 }
 
 function collectTextClips(doc: EditDoc): TextClip[] {
@@ -730,9 +769,19 @@ function collectCursors(doc: EditDoc): CursorClip[] {
   return out;
 }
 
+/**
+ * Extra audio-track clips (music / voice-over), honoring per-track flags:
+ *  - `hidden` or `muted` track → dropped from the mix.
+ *  - when any audio track solos → only soloed tracks contribute.
+ * All flags default off, so a doc with no flags set collects every audio clip
+ * exactly as before (the fast path).
+ */
 function collectAudioClips(doc: EditDoc): { clip: Extract<Clip, { kind: "audio" }>; trackId: string }[] {
+  const solo = soloActive(doc);
   const out: { clip: Extract<Clip, { kind: "audio" }>; trackId: string }[] = [];
   for (const track of doc.tracks) {
+    if (track.hidden || track.muted) continue;
+    if (solo && !track.solo) continue;
     for (const clip of track.clips) if (clip.kind === "audio") out.push({ clip, trackId: track.id });
   }
   return out;
@@ -1036,16 +1085,18 @@ export function buildExportPlan(
     videoLabel = "vbg";
   }
 
-  // ---- B-roll / overlay compositing ---------------------------------------
-  // A plain b-roll is a corner PiP (scaled + positioned, time-gated overlay). A
-  // b-roll carrying a compositing effect becomes a FULL-FRAME layer over the base:
+  // ---- Multi-track layer compositing (z-order) ----------------------------
+  // Every visual track ABOVE the base (in array order, bottom→top) composites
+  // over it here — the true multi-layer export. Each clip carries its own look:
+  //   • a plain layer clip is a PiP (scaled + positioned, time-gated overlay) —
+  //     e.g. a corner b-roll, or a full-frame second video (scale 1, centered);
   //   • chroma / mask → alpha-composited via overlay (green-screen / shaped reveal);
   //   • blendMode     → blended over the base via blend=all_mode=… (a texture /
   //                     double-exposure / leak layer that spans the timeline).
-  // (Documented: on the base track these effects preview on the canvas; on export
-  // they composite through this overlay path — put the clip on the b-roll track.)
-  const broll = collectBroll(doc);
-  broll.forEach((clip, i) => {
+  // In the common single-visual-track case (base + a "broll" lane) this is exactly
+  // the historical b-roll overlay pass — byte-for-byte unchanged.
+  const overlayLayers = collectUpperLayers(doc);
+  overlayLayers.forEach((clip, i) => {
     const blend = clip.blendMode ?? "normal";
     const chroma = clip.chroma;
     const mask = clip.mask;
@@ -1190,6 +1241,21 @@ export function buildExportPlan(
     videoLabel = "vleak";
   }
 
+  // ---- Base-track mute / solo ---------------------------------------------
+  // The base video's embedded audio (audioLabel) follows its track's flags: a
+  // MUTED base track drops it; when a SOLO is active elsewhere and the base isn't
+  // soloed, it drops too. We keep the base video and sink the now-unused audio pad
+  // (anullsink) so the filtergraph has no dangling output. All flags default off,
+  // so this never fires for existing docs (fast path).
+  const baseTrack = baseVisualTrack(doc);
+  const dropBaseAudio =
+    !!audioLabel && ((baseTrack?.muted ?? false) || (soloActive(doc) && !(baseTrack?.solo ?? false)));
+  let sinkAudioLabel: string | null = null;
+  if (dropBaseAudio) {
+    sinkAudioLabel = audioLabel;
+    audioLabel = null;
+  }
+
   // ---- Extra audio-track clips (e.g. music), delayed + mixed --------------
   const audioClips = collectAudioClips(doc);
   const extraAudioLabels: string[] = [];
@@ -1228,6 +1294,9 @@ export function buildExportPlan(
     filters.push(`[${audioLabel}]loudnorm=I=-14:TP=-1.5:LRA=11[aout]`);
     audioLabel = "aout";
   }
+
+  // Discard a dropped base-audio pad so it isn't a dangling filtergraph output.
+  if (sinkAudioLabel) filters.push(`[${sinkAudioLabel}]anullsink`);
 
   // ---- Assemble argv -------------------------------------------------------
   const filterComplex = filters.join(";");
