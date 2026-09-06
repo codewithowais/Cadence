@@ -4,6 +4,12 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.24 — easier transitions: apply-to-all · Auto · hover-preview · drag-drop
+- **Apply to all cuts** + one-tap **✦ Auto** (crossfade 0.5s to every cut) + **Remove all** — a prominent timeline-toolbar group and popover footer actions; each a single coalesced undo (`lib/transition-ops.ts` folds over the engine's pure per-cut ops).
+- **Hover mini-preview** — hovering any of the 55 transition swatches plays a tiny live A/B animation (pure `transitionStyle`, one rAF loop) so you see it before applying.
+- **Drag-a-transition** — drag a swatch onto a clip to apply it (mirrors the media drag-drop plumbing).
+- *verified:* typecheck (root+web) + `next build` + e2e (transition specs green; the export spec is red pending the caption-export fix).
+
 ### S4.23 — fix: malformed export filtergraph (geq escaping) + real-encode test
 - **Root cause of export failures:** `geq` alpha expressions (masks / chroma-key) double-escaped commas (`\,`→`\\,`), which ffmpeg's evaluator rejects → the whole filtergraph failed to parse (`Error parsing global options: Invalid argument`, exit 234). Fixed with a single-pass `escExpr()` (build with plain commas, escape once); also corrected the chroma+mask alpha accessor `a(X,Y)`→`alpha(X,Y)` and hardened the emphasis zoompan escaping (byte-identical output).
 - **New real-encode verify check (64):** actually spawns ffmpeg on 8 complex docs (the exact failing combo, xfade multi-clip, keyframed PiP, adjustment+grade, slideshow, chroma+mask) and asserts exit 0 + non-empty `.mp4` — catches malformed graphs that string checks missed.

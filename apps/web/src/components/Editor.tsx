@@ -75,6 +75,7 @@ import {
   splitAtTimes,
   type TrimEdge,
 } from "@/lib/edit-ops";
+import { clearAllTransitions, setAllTransitions } from "@/lib/transition-ops";
 import { detectBeats as detectBeatsLib } from "@/lib/beats";
 import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
@@ -1080,6 +1081,31 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     }
   }
 
+  /**
+   * Apply one transition `type` + `durSec` to EVERY cut on the main visual
+   * track(s) at once (the popover "Apply to all cuts" + toolbar "Auto"). Folds
+   * the engine's pure per-cut ops via `setAllTransitions` and commits ONCE, so
+   * carpeting the whole timeline is a single undo step.
+   */
+  function applyTransitionToAllCuts(type: TransitionType, durSec: number) {
+    setPlaying(false);
+    try {
+      commit(setAllTransitions(doc, type, durSec));
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't apply that to every cut.", "error");
+    }
+  }
+
+  /** Hard-cut every main-track boundary (clear all transitions) — one undo step. */
+  function removeAllTransitions() {
+    setPlaying(false);
+    try {
+      commit(clearAllTransitions(doc));
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't clear the transitions.", "error");
+    }
+  }
+
   // ---- On-timeline keyframes (P1-2) -----------------------------------------
   // All three use the FUNCTIONAL commit form so a live diamond drag reads the
   // freshest doc (not a stale closure) between coalesced steps, and swallow the
@@ -1594,6 +1620,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onMoveClipToTrack: moveClipToTrackAt,
               onSetTransition: setClipTransition,
               onClearTransition: clearClipTransition,
+              onApplyTransitionToAll: applyTransitionToAllCuts,
+              onRemoveAllTransitions: removeAllTransitions,
               onSetFadeOut: setClipFadeOut,
               onClearFadeOut: clearClipFadeOut,
               onSetKeyframe: setClipKeyframe,

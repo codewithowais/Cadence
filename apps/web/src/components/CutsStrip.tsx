@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   clipProgress,
   speedRampIntegral,
+  transitionStyle,
   valueAt,
   TRANSITION_GROUPS,
   TRANSITION_TYPES,
@@ -19,6 +20,7 @@ import { clipKeyframes, SPEED_RAMP_PRESETS, type SpeedRampPreset } from "@cadenc
 import { fmtTime } from "@/lib/format";
 import { computeWaveform } from "@/lib/waveform";
 import { findClip, isMainSequentialTrack, maxTimelineDuration, MIN_CLIP_SEC, type TrimEdge } from "@/lib/edit-ops";
+import { hasAnyTransition, mainCutCount } from "@/lib/transition-ops";
 
 /** The media whose audio the waveform should visualize (prefers the base video). */
 export interface WaveformSource {
@@ -74,6 +76,14 @@ export interface TimelineEdit {
   onSetTransition: (clipId: string, type: TransitionType, durSec: number) => void;
   /** Turn one cut back into a hard cut (clear its transition). */
   onClearTransition: (clipId: string) => void;
+  /**
+   * Apply one transition type + duration to EVERY cut on the main visual
+   * track(s) at once (popover "Apply to all cuts" + toolbar "Auto"). Batched
+   * into a single undo step by the editor.
+   */
+  onApplyTransitionToAll: (type: TransitionType, durSec: number) => void;
+  /** Hard-cut every main-track boundary (clear all transitions) — one undo step. */
+  onRemoveAllTransitions: () => void;
   /** Fade the last clip out to black (its outgoing ramp) — a transition with no cut. */
   onSetFadeOut: (clipId: string, durSec: number) => void;
   /** Remove a clip's fade-out-to-black. */
@@ -135,6 +145,22 @@ export interface TimelineEdit {
 export const MEDIA_DND_ID = "application/x-cadence-media";
 export const MEDIA_DND_AUDIO = "application/x-cadence-audio";
 export const MEDIA_DND_VISUAL = "application/x-cadence-visual";
+
+/**
+ * MIME type a transition swatch sets when dragged from the gallery onto a cut.
+ * Mirrors the Media-grid `onDropMedia` plumbing: the payload is `type|durSec` so
+ * the drop can reuse the popover's picked duration.
+ */
+export const TRANSITION_DND_ID = "application/x-cadence-transition";
+
+/** Read a transition-swatch drag off a DataTransfer, or null if it isn't one. */
+function readTransitionDrag(dt: DataTransfer): { type: TransitionType; durSec: number } | null {
+  if (!Array.from(dt.types).includes(TRANSITION_DND_ID)) return null;
+  const raw = dt.getData(TRANSITION_DND_ID);
+  if (!raw) return { type: "crossfade", durSec: 0.6 }; // payload only readable on drop
+  const [type, dur] = raw.split("|");
+  return { type: (type || "crossfade") as TransitionType, durSec: Number(dur) || 0.6 };
+}
 
 interface CutsStripProps {
   doc: EditDoc;
@@ -396,6 +422,74 @@ const TRANSITION_GALLERY: { group: string; items: TransitionEntry[] }[] = (() =>
   return order.map((group) => ({ group, items: byGroup.get(group)! }));
 })();
 
+/** A synthetic incoming clip used only to drive the hover mini-preview math. */
+type PreviewClip = Parameters<typeof transitionStyle>[0];
+function makePreviewClip(type: TransitionType): PreviewClip {
+  return {
+    kind: "solid",
+    id: "preview",
+    start: 0,
+    duration: 2,
+    transitionType: type,
+    transitionInSec: 1,
+    transitionOutSec: 0,
+    transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 },
+  } as unknown as PreviewClip;
+}
+
+/**
+ * A tiny looping A→B animation of one transition, driven by the SAME pure
+ * `transitionStyle` primitives the Stage + export read — so the hover preview
+ * shows exactly what applying it will do. Lightweight: one rAF loop writes the
+ * incoming layer's style directly (no per-frame React re-render), and it only
+ * mounts while a swatch is hovered/focused.
+ */
+function TransitionMiniPreview({ type, size = 132 }: { type: TransitionType; size?: number }) {
+  const frontRef = useRef<HTMLDivElement>(null);
+  const w = size;
+  const h = Math.round((size * 9) / 16);
+  useEffect(() => {
+    const clip = makePreviewClip(type);
+    let raf = 0;
+    let startTs: number | null = null;
+    const DUR = 1300; // ms of the reveal
+    const HOLD = 500; // ms fully revealed before looping
+    const frame = (ts: number) => {
+      if (startTs === null) startTs = ts;
+      const e = (ts - startTs) % (DUR + HOLD);
+      const p = e < DUR ? e / DUR : 1;
+      const st = transitionStyle(clip, p, w, h);
+      const el = frontRef.current;
+      if (el) {
+        el.style.opacity = String(st.opacity);
+        el.style.transform = `translate(${st.translateXPct}%, ${st.translateYPct}%) scale(${st.scaleMul})`;
+        el.style.clipPath = st.clipPath === "none" ? "" : st.clipPath;
+      }
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, [type, w, h]);
+  return (
+    <div
+      aria-hidden
+      className="relative overflow-hidden rounded-md border border-line"
+      style={{ width: w, height: h }}
+    >
+      {/* Outgoing frame "A" (teal). */}
+      <div className="absolute inset-0" style={{ background: "linear-gradient(135deg, var(--color-teal) 0%, color-mix(in srgb, var(--color-teal) 55%, black) 100%)" }} />
+      {/* Incoming frame "B" (amber) — the layer the transition animates in. */}
+      <div
+        ref={frontRef}
+        className="absolute inset-0 will-change-transform"
+        style={{ background: "linear-gradient(135deg, var(--color-amber) 0%, color-mix(in srgb, var(--color-amber) 55%, black) 100%)" }}
+      />
+      <span className="absolute left-1 top-1 rounded bg-black/30 px-1 text-[8px] font-semibold leading-none text-white/90">A</span>
+      <span className="absolute right-1 bottom-1 rounded bg-black/30 px-1 text-[8px] font-semibold leading-none text-white/90">B</span>
+    </div>
+  );
+}
+
 /** Which animatable props a clip kind supports (mirrors core's clipSupportsProp). */
 function animatableProps(clip: Clip): KeyframeProp[] {
   if (clip.kind === "audio") return ["volume"];
@@ -449,6 +543,9 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   }, [doc.tracks]);
   const visualCount = useMemo(() => doc.tracks.filter((t) => t.kind === "visual").length, [doc.tracks]);
   const anyAudioSolo = useMemo(() => doc.tracks.some((t) => t.kind === "audio" && t.solo), [doc.tracks]);
+  // Bulk-transition gating: how many cut boundaries exist + is anything applied.
+  const cutCount = useMemo(() => mainCutCount(doc), [doc]);
+  const anyTransition = useMemo(() => hasAnyTransition(doc), [doc]);
 
   // Zoom multiplier: at 1 the whole timeline fits the lane width (matching the
   // previous %-based look); >1 makes it wider and horizontally scrollable.
@@ -550,6 +647,8 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   const trackDrag = useRef<TrackDragState | null>(null);
   const rafRef = useRef<number | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ trackId: string; x: number } | null>(null);
+  // A transition swatch being dragged from the gallery is hovering THIS cut clip.
+  const [transitionDropClipId, setTransitionDropClipId] = useState<string | null>(null);
   // Track-reorder insertion line: the kind group + top-first slot the header will land in.
   const [trackDrop, setTrackDrop] = useState<{ kind: TrackKind; index: number } | null>(null);
   // Inline rename editor state.
@@ -938,6 +1037,36 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           })}
         </span>
 
+        {/* One-tap bulk transitions — the biggest ease win. "Auto" carpets every
+            cut with a tasteful crossfade; "Remove all" hard-cuts everything. */}
+        <span
+          role="group"
+          aria-label="Transitions for all cuts"
+          className="ml-2 inline-flex items-center gap-1.5"
+        >
+          <span className="text-faint">Transitions</span>
+          <button
+            type="button"
+            onClick={() => edit.onApplyTransitionToAll("crossfade", 0.5)}
+            disabled={cutCount < 1}
+            title="Auto: add a smooth crossfade (0.5s) to every cut on the main track"
+            aria-label="Auto: apply a crossfade to every cut"
+            className="rounded-md border border-amber/40 bg-amber/10 px-2 py-1 font-medium text-amber transition hover:bg-amber/20 disabled:opacity-40 disabled:hover:bg-amber/10"
+          >
+            ✦ Auto
+          </button>
+          <button
+            type="button"
+            onClick={edit.onRemoveAllTransitions}
+            disabled={!anyTransition}
+            title="Remove every transition — hard-cut the whole timeline"
+            aria-label="Remove all transitions"
+            className="rounded-md border border-line bg-elevated px-2 py-1 text-muted transition hover:text-text disabled:opacity-40"
+          >
+            Remove all
+          </button>
+        </span>
+
         <span className="ml-auto flex items-center gap-1.5">
           <button
             type="button"
@@ -1177,6 +1306,39 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                             edit.onSelectClip(clip.id);
                             zoomToClip(clip);
                           }}
+                          // Drag-a-transition: a main-visual video/image clip is a drop
+                          // target for a swatch dragged from the gallery (mirrors the
+                          // Media-grid drop plumbing). Dropping sets its incoming cut.
+                          onDragOver={
+                            showChips && (clip.kind === "video" || clip.kind === "image")
+                              ? (e) => {
+                                  if (!readTransitionDrag(e.dataTransfer)) return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  e.dataTransfer.dropEffect = "copy";
+                                  if (transitionDropClipId !== clip.id) setTransitionDropClipId(clip.id);
+                                }
+                              : undefined
+                          }
+                          onDragLeave={
+                            showChips && (clip.kind === "video" || clip.kind === "image")
+                              ? (e) => {
+                                  if (e.currentTarget === e.target) setTransitionDropClipId(null);
+                                }
+                              : undefined
+                          }
+                          onDrop={
+                            showChips && (clip.kind === "video" || clip.kind === "image")
+                              ? (e) => {
+                                  const info = readTransitionDrag(e.dataTransfer);
+                                  setTransitionDropClipId(null);
+                                  if (!info) return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  edit.onSetTransition(clip.id, info.type, info.durSec);
+                                }
+                              : undefined
+                          }
                           title={modeHint ? `${clip.kind} · ${modeHint}` : `${clip.kind} · ${fmtTime(clip.duration)}${track.locked ? " · locked" : " · double-click to zoom to it"}`}
                           className={[
                             "group absolute inset-y-0 overflow-hidden rounded-md border px-2 text-left text-[11px] leading-9 outline-none transition",
@@ -1188,13 +1350,15 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                                 : draggable
                                   ? "cursor-grab active:cursor-grabbing"
                                   : "cursor-pointer",
-                            isSelected
-                              ? "z-10 ring-2 ring-amber shadow-[0_0_0_1px_var(--color-amber)]"
-                              : active
-                                ? "ring-2 ring-amber/70"
-                                : modeEligible
-                                  ? "ring-1 ring-inset ring-teal/50"
-                                  : "hover:brightness-125",
+                            transitionDropClipId === clip.id
+                              ? "z-20 ring-2 ring-amber brightness-110"
+                              : isSelected
+                                ? "z-10 ring-2 ring-amber shadow-[0_0_0_1px_var(--color-amber)]"
+                                : active
+                                  ? "ring-2 ring-amber/70"
+                                  : modeEligible
+                                    ? "ring-1 ring-inset ring-teal/50"
+                                    : "hover:brightness-125",
                           ].join(" ")}
                           style={{ left, width }}
                         >
@@ -1444,6 +1608,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
             y={transitionEdit.y}
             edge={transitionEdit.edge}
             isStart={transitionEdit.isStart}
+            cutCount={cutCount}
             edit={edit}
             onClose={() => setTransitionEdit(null)}
           />
@@ -1461,6 +1626,7 @@ function TransitionPopover({
   y,
   edge,
   isStart,
+  cutCount,
   edit,
   onClose,
 }: {
@@ -1471,6 +1637,8 @@ function TransitionPopover({
   edge: "in" | "out";
   /** The "in" edge on the FIRST clip is a fade-in-from-black, not a cut. */
   isStart: boolean;
+  /** Number of cut boundaries on the main track(s) — gates "Apply to all cuts". */
+  cutCount: number;
   edit: TimelineEdit;
   onClose: () => void;
 }) {
@@ -1479,8 +1647,15 @@ function TransitionPopover({
   const on = current > 0;
   // Seed the duration slider from the current transition, else a sensible 0.6s.
   const [dur, setDur] = useState(on ? Math.max(0.1, Math.min(2, current)) : 0.6);
+  // The last type picked/hovered — drives "Apply to all cuts" + the active swatch.
+  const [pickedType, setPickedType] = useState<TransitionType>(clip.transitionType ?? "crossfade");
   // Live filter across all 55 transitions (label + engine type), case-insensitive.
   const [query, setQuery] = useState("");
+  // Which swatch is being hovered/focused (drives the animated mini-preview card).
+  const [hovered, setHovered] = useState<{ type: TransitionType; label: string; x: number; y: number } | null>(null);
+  // A swatch is mid-drag onto a cut — drop the click-catcher's hit-testing so the
+  // drag reaches the timeline clips beneath it.
+  const [dragging, setDragging] = useState(false);
   const filteredGallery = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return TRANSITION_GALLERY;
@@ -1534,8 +1709,25 @@ function TransitionPopover({
 
   return (
     <>
-      {/* click-catcher */}
-      <div className="fixed inset-0 z-40" onPointerDown={onClose} aria-hidden />
+      {/* click-catcher — disabled mid-drag so a dragged swatch reaches the cuts. */}
+      <div
+        className={["fixed inset-0 z-40", dragging ? "pointer-events-none" : ""].join(" ")}
+        onPointerDown={onClose}
+        aria-hidden
+      />
+      {/* Animated hover mini-preview of the hovered transition (A→B loop). */}
+      {hovered && !dragging && (
+        <div
+          className="pointer-events-none fixed z-[60] rounded-lg border border-line bg-elevated p-1.5 shadow-2xl"
+          style={{
+            left: Math.min(hovered.x + 8, (typeof window !== "undefined" ? window.innerWidth : 9999) - 156),
+            top: Math.max(8, hovered.y - 24),
+          }}
+        >
+          <TransitionMiniPreview type={hovered.type} />
+          <p className="mt-1 max-w-[132px] truncate text-center text-[10px] text-muted">{hovered.label}</p>
+        </div>
+      )}
       <div
         ref={panelRef}
         role="dialog"
@@ -1588,15 +1780,36 @@ function TransitionPopover({
                     <div className="grid grid-cols-2 gap-1.5">
                       {section.items.map(({ type, label }) => {
                         const active = on && clip.transitionType === type;
+                        const showHover = (e: { currentTarget: HTMLElement }) => {
+                          const r = e.currentTarget.getBoundingClientRect();
+                          setHovered({ type, label, x: r.right, y: r.top });
+                        };
                         return (
                           <button
                             key={type}
                             type="button"
-                            onClick={() => edit.onSetTransition(clip.id, type, dur)}
+                            draggable
+                            onClick={() => {
+                              setPickedType(type);
+                              edit.onSetTransition(clip.id, type, dur);
+                            }}
+                            onDragStart={(e) => {
+                              setPickedType(type);
+                              setDragging(true);
+                              setHovered(null);
+                              e.dataTransfer.effectAllowed = "copy";
+                              e.dataTransfer.setData(TRANSITION_DND_ID, `${type}|${dur}`);
+                              e.dataTransfer.setData("text/plain", label);
+                            }}
+                            onDragEnd={() => setDragging(false)}
+                            onMouseEnter={showHover}
+                            onFocus={showHover}
+                            onMouseLeave={() => setHovered((h) => (h?.type === type ? null : h))}
+                            onBlur={() => setHovered((h) => (h?.type === type ? null : h))}
                             aria-pressed={active}
-                            title={label}
+                            title={`${label} — click to apply, or drag onto a cut`}
                             className={[
-                              "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition",
+                              "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition cursor-grab active:cursor-grabbing",
                               active
                                 ? "border-amber bg-amber/10 text-amber"
                                 : "border-line bg-panel text-muted hover:border-amber/40 hover:text-text",
@@ -1645,6 +1858,35 @@ function TransitionPopover({
           >
             Add fade out
           </button>
+        )}
+        {/* Bulk actions — apply the picked style + duration to every cut, or
+            hard-cut the whole timeline. Both are single undo steps. */}
+        {!isOut && (
+          <div className="mt-3 flex items-center gap-1.5 border-t border-line-soft pt-2.5">
+            <button
+              type="button"
+              onClick={() => {
+                edit.onApplyTransitionToAll(pickedType, dur);
+                onClose();
+              }}
+              disabled={cutCount < 1}
+              title={`Apply ${TRANSITION_GROUPS[pickedType].label} (${dur.toFixed(1)}s) to all ${cutCount} cut${cutCount === 1 ? "" : "s"}`}
+              className="flex-1 rounded-md border border-amber/40 bg-amber/10 px-2 py-1.5 text-[11px] font-medium text-amber transition hover:bg-amber/20 disabled:opacity-40 disabled:hover:bg-amber/10"
+            >
+              Apply to all cuts
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                edit.onRemoveAllTransitions();
+                onClose();
+              }}
+              title="Remove every transition — hard-cut the whole timeline"
+              className="rounded-md border border-line bg-panel px-2 py-1.5 text-[11px] text-muted transition hover:text-text"
+            >
+              Remove all
+            </button>
+          </div>
         )}
       </div>
     </>
