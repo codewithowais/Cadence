@@ -4,6 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.8 — Cycle F wave E (web): roll / slip / slide trim modes
+- Timeline **Normal · Roll · Slip · Slide** mode selector (plain-language tooltips) — in a non-Normal mode, dragging an eligible main-track clip performs that trim (cumulative delta vs. the pre-drag doc, coalesced undo; affordances per mode). Normal-mode move/trim/cross-track/reorder untouched.
+- Discoverable **Roll/Slip/Slide ±0.1s** nudges in the clip inspector (disabled with a reason when inapplicable). Wired through the undoable commit path.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **11/11**. **Cycle F (CapCut-parity waves A–E) complete.**
+
 ### S4.7 — Cycle F wave E (engine): roll / slip / slide trims
 - Three pure trim ops on the main sequential track (no schema change): **`rollEdit`** (move the shared cut between two clips, outer edges + total fixed), **`slipEdit`** (change a clip's source in/out, timeline position fixed), **`slideEdit`** (move a clip, neighbors absorb, total fixed). Respect `speed`, clamp to `MIN_CLIP_SEC` + source bounds, gap-free reflow, no-op at edges. Tools `roll_edit`/`slip_edit`/`slide_edit`. Completes the manual trim toolkit.
 - *verified:* typecheck (root+web) + test:unit 44/44 + verify **57/57** + evals 5/5.

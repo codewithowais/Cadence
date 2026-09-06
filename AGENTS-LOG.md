@@ -30,3 +30,9 @@ run in parallel on disjoint files (packages/* vs apps/web/*), integrated + gated
 - Full tester pass: Playwright **8/8** (added `e2e/wave5.spec.ts`; refreshed 3 stale assertions that lagged improved behavior). Artifacts refreshed under `test-artifacts/`.
 - **Neon Postgres live:** migrations applied to the user's instance; `/api/health` → `db:true`. Local `.env` (gitignored) symlinked to `apps/web/.env`.
 - **Vercel-ready:** `apps/web/vercel.json` + `DEPLOY.md` (Root Directory `apps/web`, env-var table, Neon setup, ffmpeg/Docker limitation).
+
+## Cycle F — CapCut parity (manual + AI), waves A–E — done
+- Advisory: `docs/CAPCUT-PARITY.md` (senior editor) + `docs/MANUAL-EDITING-PLAN.md` (head of editing/UX). Key finding: layers were built in schema+preview but flattened on ffmpeg export — fixed in Wave A.
+- Waves ran engine (`packages/**`) then UI (`apps/web/**`), disjoint, each gated + committed (S4.1–S4.8): A multi-track+z-order export, B Walkthrough/Demo room+zoom, C keyframe editor+per-cut transitions+fades, D beat-sync+stickers+markers-persist, E roll/slip/slide. Plus the playhead-anchored zoom fix.
+- Gate at completion: verify 57 · unit 44 · evals 5 · Playwright e2e 11/11. Every AI capability has a manual control.
+- Deferred (optional): speed ramps, LUT, adjustment layers, karaoke captions, multiple sequences (P2), motion-tracking (gated).

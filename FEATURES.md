@@ -41,6 +41,15 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - ✅ **Auto-reframe** (`auto_reframe`) — free centered reframe to any aspect + optional settle-pan; subject tracking is a money-gated upgrade (honest note).
 - 🎬 **AI voice-over** (`generate_voiceover`) — pluggable TTS (`none`/`cli`/`api`); money-gated, fails gracefully when no provider is configured.
 
+### Manual timeline (CapCut-style) — every capability is AI **and** manual
+- ✅ **Multi-track layers** with a **track-header gutter**: rename, **hide/show**, lock, mute/solo, reorder (z-order), add/remove (+ Video/+ Audio); **drag clips between tracks**. Layers composite by z-order in preview **and** export.
+- ✅ **On-timeline keyframe editor** — draggable diamonds per prop (x/y/scale/rotation/opacity, volume); add/retime/value/easing/remove.
+- ✅ **Per-cut transitions** — a ◇ chip on each cut → 7-type gallery + duration, or hard cut.
+- ✅ **Roll / Slip / Slide** trim modes (+ inspector nudges) and **audio fade** drag-handles.
+- ✅ **Zoom** anchored to the playhead + follow, Fit, and double-click zoom-to-selection.
+- ✅ **Beat-sync** — Detect beats → beat markers → Split at beats; **Stickers/emoji + text presets** picker.
+- ✅ **Walkthrough/Demo room** — build interaction videos from screenshots with visual on-preview placement (typed fields, cursor+click, callouts).
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

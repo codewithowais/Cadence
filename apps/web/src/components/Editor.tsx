@@ -22,6 +22,9 @@ import {
   setKeyframe,
   moveKeyframe,
   removeKeyframe,
+  rollEdit,
+  slipEdit,
+  slideEdit,
 } from "@cadence/director";
 import type { TrackFlag } from "./CutsStrip";
 import type { Transcript } from "@cadence/understanding";
@@ -1008,6 +1011,49 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     commit(setClipFade(doc, clipId, fade), { coalesce: coalesceKey });
   }
 
+  // ---- Roll / slip / slide trims (Wave E) -----------------------------------
+  // Pure @cadence/director ops → the undoable commit. A live drag passes the
+  // pre-drag `baseDoc` so the cumulative delta always applies to the same
+  // baseline (idempotent), and the whole drag coalesces into one undo step; the
+  // inspector steppers omit `baseDoc` and nudge the freshest doc. A clamped /
+  // no-op op returns a doc equal to its input, which `commit` drops cleanly.
+
+  /** Roll the cut between a clip and its next neighbour by `deltaSec`. */
+  function rollClipBy(clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) {
+    setPlaying(false);
+    commit((prev) => {
+      try {
+        return rollEdit(baseDoc ?? prev, clipId, deltaSec);
+      } catch {
+        return prev;
+      }
+    }, { coalesce: coalesceKey });
+  }
+
+  /** Slip a clip's source in/out by `deltaSec` (timeline position fixed). */
+  function slipClipBy(clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) {
+    setPlaying(false);
+    commit((prev) => {
+      try {
+        return slipEdit(baseDoc ?? prev, clipId, deltaSec);
+      } catch {
+        return prev;
+      }
+    }, { coalesce: coalesceKey });
+  }
+
+  /** Slide a clip along the timeline by `deltaSec`; its neighbours absorb it. */
+  function slideClipBy(clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) {
+    setPlaying(false);
+    commit((prev) => {
+      try {
+        return slideEdit(baseDoc ?? prev, clipId, deltaSec);
+      } catch {
+        return prev;
+      }
+    }, { coalesce: coalesceKey });
+  }
+
   // ---- On-preview placement (Walkthrough room) ------------------------------
 
   /**
@@ -1306,6 +1352,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onMoveKeyframe: moveClipKeyframe,
               onRemoveKeyframe: removeClipKeyframe,
               onSetAudioFade: setClipFadeAt,
+              onRoll: rollClipBy,
+              onSlip: slipClipBy,
+              onSlide: slideClipBy,
             }}
           />
         </div>

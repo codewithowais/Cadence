@@ -28,6 +28,13 @@ export interface WaveformSource {
 export type TrackFlag = "hidden" | "locked" | "muted" | "solo";
 
 /**
+ * Timeline trim mode (Wave E). "normal" keeps the existing move/trim/reorder
+ * behaviour; the three advanced modes re-purpose a horizontal drag on a MAIN
+ * sequential video/image clip into a roll / slip / slide edit.
+ */
+export type TrimMode = "normal" | "roll" | "slip" | "slide";
+
+/**
  * Direct-manipulation callbacks. Each returns a doc mutation that the editor
  * routes through its commit/undo history — the CutsStrip never mutates the doc
  * itself. `coalesceKey` lets a live drag collapse into a single undo step.
@@ -81,6 +88,19 @@ export interface TimelineEdit {
     fade: { fadeInSec?: number; fadeOutSec?: number },
     coalesceKey: string,
   ) => void;
+  // ---- Roll / slip / slide trims (Wave E) ---------------------------------
+  // Each shifts a MAIN-track cut by `deltaSec`, routed through the pure
+  // @cadence/director op → the editor's undoable commit. During a live drag the
+  // CutsStrip passes the pre-drag `baseDoc` so the cumulative delta always
+  // applies to the same baseline (idempotent) and the whole drag coalesces into
+  // one undo step; the inspector's ±0.1s steppers omit it (a discrete nudge onto
+  // the freshest doc).
+  /** Roll the cut between this clip and its next neighbour. */
+  onRoll: (clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) => void;
+  /** Slip the clip's source in/out (timeline position fixed). */
+  onSlip: (clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) => void;
+  /** Slide the clip along the timeline; its neighbours absorb the move. */
+  onSlide: (clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) => void;
 }
 
 interface CutsStripProps {
@@ -131,6 +151,55 @@ function clipFitsTrack(clip: Clip, kind: TrackKind): boolean {
 function isSequentialOn(track: Track, clip: Clip): boolean {
   return track.kind === "audio" ? clip.kind === "audio" : clip.kind === "video" || clip.kind === "image";
 }
+
+/**
+ * Whether `clip` on `track` can take a roll / slip / slide edit (Wave E), and its
+ * position among the track's sequential video/image clips. Mirrors the engine's
+ * gating (`packages/director/src/trims.ts`): a MAIN sequential VISUAL track that
+ * isn't locked, carrying a video/image clip. Slip additionally needs real source
+ * (video); roll needs a NEXT neighbour; slide needs a neighbour on BOTH sides.
+ */
+interface TrimEligibility {
+  /** Base gate: a main-track video/image clip on an unlocked visual track. */
+  main: boolean;
+  roll: boolean;
+  slip: boolean;
+  slide: boolean;
+}
+
+function trimEligibility(track: Track, clip: Clip): TrimEligibility {
+  const main =
+    track.kind === "visual" &&
+    isMainSequentialTrack(track) &&
+    !track.locked &&
+    (clip.kind === "video" || clip.kind === "image");
+  if (!main) return { main: false, roll: false, slip: false, slide: false };
+  const seq = track.clips.filter((c) => c.kind === "video" || c.kind === "image");
+  const idx = seq.findIndex((c) => c.id === clip.id);
+  const hasPrev = idx > 0;
+  const hasNext = idx >= 0 && idx < seq.length - 1;
+  return {
+    main: true,
+    roll: hasNext,
+    slip: clip.kind === "video",
+    slide: hasPrev && hasNext,
+  };
+}
+
+/** Whether a given trim mode can act on this clip (normal is always allowed). */
+function eligibleForMode(mode: TrimMode, track: Track, clip: Clip): boolean {
+  if (mode === "normal") return true;
+  const e = trimEligibility(track, clip);
+  return mode === "roll" ? e.roll : mode === "slip" ? e.slip : e.slide;
+}
+
+/** Plain-language copy for the trim-mode segmented control + its tooltips. */
+const TRIM_MODES: { mode: TrimMode; label: string; hint: string }[] = [
+  { mode: "normal", label: "Normal", hint: "Normal: drag to move clips or trim their edges" },
+  { mode: "roll", label: "Roll", hint: "Roll: move the cut between two clips (both edges stay put)" },
+  { mode: "slip", label: "Slip", hint: "Slip: change what's shown without moving the clip" },
+  { mode: "slide", label: "Slide", hint: "Slide: move the clip; the neighbours adjust to fit" },
+];
 
 // ---- waveform (unchanged behavior) -----------------------------------------
 
@@ -211,7 +280,17 @@ const ICONS = {
 
 // ---- drag state ------------------------------------------------------------
 
-type DragKind = "trim-left" | "trim-right" | "move" | "seek" | "fade-in" | "fade-out" | null;
+type DragKind =
+  | "trim-left"
+  | "trim-right"
+  | "move"
+  | "seek"
+  | "fade-in"
+  | "fade-out"
+  | "roll"
+  | "slip"
+  | "slide"
+  | null;
 
 interface DragState {
   kind: DragKind;
@@ -222,6 +301,12 @@ interface DragState {
   /** Geometry captured at drag start so edge math is independent of live commits. */
   origStart: number;
   origEnd: number;
+  /**
+   * Pre-drag doc snapshot (roll/slip/slide only). The cumulative delta is always
+   * applied to THIS baseline so re-applying every frame is idempotent and the
+   * whole drag coalesces into one undo step.
+   */
+  baseDoc: EditDoc | null;
   /** Fade seconds captured at drag start (for fade-in / fade-out handle drags). */
   origFadeIn: number;
   origFadeOut: number;
@@ -409,6 +494,8 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   const [transitionEdit, setTransitionEdit] = useState<{ clipId: string; x: number; y: number } | null>(null);
   // Whether the selected clip's keyframe editor is expanded (tucked by default).
   const [kfOpen, setKfOpen] = useState(false);
+  // Timeline trim mode (Wave E): Normal · Roll · Slip · Slide. Local to the strip.
+  const [trimMode, setTrimMode] = useState<TrimMode>("normal");
 
   const findTrackById = useCallback((id: string): Track | undefined => doc.tracks.find((t) => t.id === id), [doc.tracks]);
 
@@ -443,8 +530,15 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     const fadeIn = clip.kind === "video" || clip.kind === "audio" ? clip.fadeInSec : 0;
     const fadeOut = clip.kind === "video" || clip.kind === "audio" ? clip.fadeOutSec : 0;
+    // Wave E: in an advanced trim mode, a body / edge drag on an eligible main
+    // clip becomes a roll / slip / slide. Fade-corner and seek drags are left
+    // alone, and an ineligible clip (overlay, last clip for roll, …) falls back
+    // to the Normal behaviour so nothing regresses.
+    const isBodyOrEdge = edge === "move" || edge === "trim-left" || edge === "trim-right";
+    const advanced =
+      trimMode !== "normal" && isBodyOrEdge && eligibleForMode(trimMode, track, clip);
     drag.current = {
-      kind: edge ?? "move",
+      kind: advanced ? (trimMode as DragKind) : edge ?? "move",
       clipId: clip.id,
       trackId: track.id,
       pointerId: e.pointerId,
@@ -453,6 +547,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
       origEnd: clip.start + clip.duration,
       origFadeIn: fadeIn,
       origFadeOut: fadeOut,
+      baseDoc: advanced ? doc : null,
       moved: false,
       dropIndex: null,
       dropTrackId: null,
@@ -521,6 +616,18 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
         if (cur.kind === "fade-out") {
           const next = Math.max(0, cur.origFadeOut - deltaSec);
           edit.onSetAudioFade(cur.clipId, { fadeOutSec: next }, `fade-${cur.clipId}`);
+          return;
+        }
+
+        // ---- roll / slip / slide (Wave E) --------------------------------
+        // Cumulative delta from drag-start, always applied to the captured
+        // baseDoc so it stays idempotent; one coalesced undo step per drag.
+        if (cur.kind === "roll" || cur.kind === "slip" || cur.kind === "slide") {
+          const base = cur.baseDoc ?? undefined;
+          const key = `${cur.kind}-${cur.clipId}`;
+          if (cur.kind === "roll") edit.onRoll(cur.clipId, deltaSec, key, base);
+          else if (cur.kind === "slip") edit.onSlip(cur.clipId, deltaSec, key, base);
+          else edit.onSlide(cur.clipId, deltaSec, key, base);
           return;
         }
 
@@ -680,7 +787,37 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
         <span className="uppercase tracking-wider text-faint">Timeline</span>
         <span className="text-line">·</span>
         <span className="text-muted">
-          {selected ? "trim edges · drag to reorder or onto another track" : "click a cut to select · drag the ruler to scan"}
+          {trimMode !== "normal"
+            ? TRIM_MODES.find((m) => m.mode === trimMode)?.hint
+            : selected
+              ? "trim edges · drag to reorder or onto another track"
+              : "click a cut to select · drag the ruler to scan"}
+        </span>
+
+        {/* Trim-mode selector (Wave E) — Normal · Roll · Slip · Slide. */}
+        <span
+          role="group"
+          aria-label="Timeline trim mode"
+          className="ml-2 inline-flex overflow-hidden rounded-md border border-line bg-elevated"
+        >
+          {TRIM_MODES.map(({ mode, label, hint }) => {
+            const on = trimMode === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setTrimMode(mode)}
+                aria-pressed={on}
+                title={hint}
+                className={[
+                  "px-2 py-1 text-[11px] transition border-l border-line first:border-l-0",
+                  on ? "bg-amber/15 text-amber" : "text-muted hover:text-text",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            );
+          })}
         </span>
 
         <span className="ml-auto flex items-center gap-1.5">
@@ -884,6 +1021,15 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                       const isSelected = clip.id === selectedClipId;
                       const color = TRACK_COLORS[clip.kind] ?? TRACK_COLORS.audio;
                       const draggable = !track.locked;
+                      // Wave E: does the active trim mode apply to this clip?
+                      const modeEligible = trimMode !== "normal" && eligibleForMode(trimMode, track, clip);
+                      const modeHint = modeEligible
+                        ? trimMode === "roll"
+                          ? "drag to roll the cut with the next clip"
+                          : trimMode === "slip"
+                            ? "drag to slip what's shown (the clip stays put)"
+                            : "drag to slide the clip; neighbours adjust"
+                        : null;
                       return (
                         <div
                           key={clip.id}
@@ -906,16 +1052,24 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                             edit.onSelectClip(clip.id);
                             zoomToClip(clip);
                           }}
-                          title={`${clip.kind} · ${fmtTime(clip.duration)}${track.locked ? " · locked" : " · double-click to zoom to it"}`}
+                          title={modeHint ? `${clip.kind} · ${modeHint}` : `${clip.kind} · ${fmtTime(clip.duration)}${track.locked ? " · locked" : " · double-click to zoom to it"}`}
                           className={[
                             "group absolute inset-y-0 overflow-hidden rounded-md border px-2 text-left text-[11px] leading-9 outline-none transition",
                             color,
-                            track.locked ? "pointer-events-none cursor-default" : draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
+                            track.locked
+                              ? "pointer-events-none cursor-default"
+                              : modeEligible
+                                ? "cursor-ew-resize"
+                                : draggable
+                                  ? "cursor-grab active:cursor-grabbing"
+                                  : "cursor-pointer",
                             isSelected
                               ? "z-10 ring-2 ring-amber shadow-[0_0_0_1px_var(--color-amber)]"
                               : active
                                 ? "ring-2 ring-amber/70"
-                                : "hover:brightness-125",
+                                : modeEligible
+                                  ? "ring-1 ring-inset ring-teal/50"
+                                  : "hover:brightness-125",
                           ].join(" ")}
                           style={{ left, width }}
                         >
@@ -941,6 +1095,17 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                             />
                           )}
                           <span className="pointer-events-none block truncate">{clipLabel(clip)}</span>
+                          {/* Slip affordance: a subtle "source shifting" hatch + double-arrow so
+                              it's obvious the underlying footage moves, not the clip. */}
+                          {trimMode === "slip" && modeEligible && (
+                            <span
+                              aria-hidden
+                              className="pointer-events-none absolute inset-0 flex items-center justify-center text-teal/70"
+                              style={{ backgroundImage: "repeating-linear-gradient(-45deg, transparent, transparent 5px, rgba(45,212,191,0.12) 5px, rgba(45,212,191,0.12) 6px)" }}
+                            >
+                              <span className="rounded bg-panel/70 px-1 text-[9px] leading-none">⇄ source</span>
+                            </span>
+                          )}
                           {/* Trim handles — only meaningful once selected, but always grabbable. */}
                           {!track.locked && (
                             <>
@@ -1348,6 +1513,58 @@ function TrackInsertLine({ displayTracks, drop }: { displayTracks: Track[]; drop
 
 // ---- inspector -------------------------------------------------------------
 
+/**
+ * A compact labelled −/+ stepper for a roll / slip / slide nudge (Wave E). Each
+ * press moves the edit by ±0.1s via the matching pure op; presses coalesce into
+ * one undo step. Disabled (with an explanatory title) when the op can't apply.
+ */
+function TrimNudge({
+  label,
+  title,
+  disabled,
+  onNudge,
+}: {
+  label: string;
+  title: string;
+  disabled: boolean;
+  onNudge: (deltaSec: number) => void;
+}) {
+  const reason =
+    label === "Roll"
+      ? "No next clip to roll the cut into"
+      : label === "Slip"
+        ? "Only video clips have source to slip"
+        : "Needs a clip on both sides to slide";
+  return (
+    <span
+      role="group"
+      aria-label={`${label} the clip`}
+      title={disabled ? `${label} — ${reason}` : title}
+      className={["flex items-center gap-1", disabled ? "opacity-40" : ""].join(" ")}
+    >
+      <span className="text-faint">{label}</span>
+      <button
+        type="button"
+        onClick={() => onNudge(-0.1)}
+        disabled={disabled}
+        aria-label={`${label} 0.1 seconds earlier`}
+        className="rounded-md border border-line bg-panel px-1.5 py-0.5 text-muted transition hover:text-text disabled:cursor-not-allowed"
+      >
+        −0.1s
+      </button>
+      <button
+        type="button"
+        onClick={() => onNudge(0.1)}
+        disabled={disabled}
+        aria-label={`${label} 0.1 seconds later`}
+        className="rounded-md border border-line bg-panel px-1.5 py-0.5 text-muted transition hover:text-text disabled:cursor-not-allowed"
+      >
+        +0.1s
+      </button>
+    </span>
+  );
+}
+
 function ClipInspector({
   doc,
   found,
@@ -1370,6 +1587,7 @@ function ClipInspector({
   const volume = hasVolume ? clip.volume : 1;
   const muted = hasVolume && clip.volume === 0;
   const canReorder = isMainSequentialTrack(track) && (track.kind === "audio" ? clip.kind === "audio" : clip.kind === "video" || clip.kind === "image");
+  const trim = trimEligibility(track, clip); // roll / slip / slide applicability (Wave E)
   const maxDur = maxTimelineDuration(doc, clip);
   const canSplit = timeSec > clip.start + MIN_CLIP_SEC && timeSec < clip.start + clip.duration - MIN_CLIP_SEC;
 
@@ -1479,6 +1697,32 @@ function ClipInspector({
         >
           ⬦ Keyframes{kfCount > 0 ? ` (${kfCount})` : ""}
         </button>
+      )}
+
+      {/* Advanced trims (Wave E) — discoverable ±0.1s nudges so users don't have
+          to find the drag modes. Disabled when the op can't apply to this clip. */}
+      {trim.main && (
+        <>
+          <span className="mx-0.5 h-5 w-px bg-line" aria-hidden />
+          <TrimNudge
+            label="Roll"
+            title="Roll: move the cut with the next clip by 0.1s (both outer edges stay put)"
+            disabled={!trim.roll}
+            onNudge={(d) => edit.onRoll(clip.id, d, `roll-step-${clip.id}`)}
+          />
+          <TrimNudge
+            label="Slip"
+            title="Slip: shift what's shown by 0.1s without moving the clip"
+            disabled={!trim.slip}
+            onNudge={(d) => edit.onSlip(clip.id, d, `slip-step-${clip.id}`)}
+          />
+          <TrimNudge
+            label="Slide"
+            title="Slide: move the clip 0.1s; the neighbours adjust to fit"
+            disabled={!trim.slide}
+            onNudge={(d) => edit.onSlide(clip.id, d, `slide-step-${clip.id}`)}
+          />
+        </>
       )}
       <button
         type="button"

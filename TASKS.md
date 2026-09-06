@@ -23,6 +23,19 @@ Run as expert-agent waves on disjoint files (packages/** vs apps/web/**), each i
 - ✅ **DB live (Neon Postgres).** Migrations applied to the user's Neon instance; `/api/health` → `{ status:"ok", db:true }`. Local `.env` (gitignored) feeds both tooling and the app (symlinked into `apps/web/.env`).
 - ✅ **Vercel deploy readiness.** `apps/web/vercel.json` (framework pin) + `DEPLOY.md` (Root Directory `apps/web`, env-var table, Neon + limitations). ffmpeg export documented as Docker-only (absent on serverless; degrades gracefully).
 
+## Cycle F — CapCut parity: manual + AI editor (waves A–E) — ✅ COMPLETE
+
+Driven by two expert advisory docs — `docs/CAPCUT-PARITY.md` (senior editor) + `docs/MANUAL-EDITING-PLAN.md` (head of editing/UX). Every capability is AI **and** manual. Waves ran engine (`packages/**`) then UI (`apps/web/**`), each gated + committed. Full history in `CHANGELOG.md` (S4.1–S4.8).
+
+- ✅ **Zoom fix:** timeline zoom anchors on the playhead + follows during playback (was left-anchored → content slid away — the reported bug).
+- ✅ **Wave A — true multi-track:** `Track` metadata (name/hidden/locked/muted/solo); track-header gutter (rename/hide/lock/mute/solo/reorder/remove + Video/+Audio); drag clips between tracks; **ffmpeg export reworked to composite by z-order** so layers no longer flatten. Closes the multi-track + hide/show gap.
+- ✅ **Wave B — Walkthrough/Demo room:** exposes the built-but-hidden interaction-demo engine; visual on-preview placement (click/drag → composition fractions) for typed fields, cursor+click, callouts; Build walkthrough from screenshots. + zoom Fit / zoom-to-selection.
+- ✅ **Wave C — manual craft:** on-timeline keyframe editor (draggable diamonds), per-cut transition chips (7-type gallery), audio fade drag-handles; engine per-cut `setTransition`/`clearTransition` + `setKeyframe`/`moveKeyframe`/`removeKeyframe`.
+- ✅ **Wave D — beat-sync + stickers:** "Detect beats" (Web-Audio energy/onset) → beat markers + "Split at beats"; stickers/emoji + text-preset picker; **markers now persist** in `doc.markers` (was local-state only — correctness fix).
+- ✅ **Wave E — trims:** `rollEdit`/`slipEdit`/`slideEdit` ops + tools; timeline Normal·Roll·Slip·Slide mode selector + inspector nudges.
+- ✅ **Tester:** Playwright **11/11** green (added wave-a/wave-b/wave-c artifact specs). verify **57** · unit 44 · evals 5.
+- ⬜ **Deferred (P1/P2, optional):** speed ramps (CapCut Curve), LUT import, adjustment layers, karaoke captions, multiple **sequences** (P2 — the editor assumes one EditDoc), motion-tracking auto-reframe (money-gated).
+
 ## Phase 0 — Spike (prove the loop) — ✅ COMPLETE
 
 - ✅ **S0.1 Scaffold + verify gate.** npm workspaces monorepo; `@cadence/core` (engine-agnostic edit-doc schema + render interface); `@cadence/render-node` (headless canvas RenderEngine); `npm run typecheck` + `npm run verify` (renders one real frame, fails loudly). Pinned versions. — *verified: typecheck exit 0, verify renders 1280×720 PNG.*
