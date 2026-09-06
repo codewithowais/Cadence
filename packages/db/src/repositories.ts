@@ -27,12 +27,15 @@ import {
   getEditDocVersionQuery,
   getLatestEditDocQuery,
   getMembershipQuery,
+  getOrgQuery,
   getProjectQuery,
   insertEditDocVersionQuery,
   listEditDocVersionsQuery,
   listMediaQuery,
+  listOrgMembersQuery,
   listProjectsQuery,
   renameProjectQuery,
+  updateUserNameQuery,
   upsertUserQuery,
   type MediaInput,
   type MembershipRole,
@@ -113,6 +116,12 @@ export async function createOrg(name: string): Promise<OrgRow> {
   return res.rows[0]!;
 }
 
+/** Fetch the caller's own org (id comes from the session). Null if not found. */
+export async function getOrg(orgId: string): Promise<OrgRow | null> {
+  const res = await run<OrgRow>(getOrgQuery(orgId));
+  return res.rows[0] ?? null;
+}
+
 export async function createUser(email: string, name: string | null = null): Promise<UserRow> {
   const res = await run<UserRow>(createUserQuery(email, name));
   return res.rows[0]!;
@@ -131,6 +140,35 @@ export async function addMembership(
 export async function getMembership(userId: string, orgId: string): Promise<MembershipRow | null> {
   const res = await run<MembershipRow>(getMembershipQuery(userId, orgId));
   return res.rows[0] ?? null;
+}
+
+/** One member of an org: their global identity plus their role in this tenant. */
+export interface OrgMemberRow {
+  id: string;
+  email: string;
+  name: string | null;
+  role: MembershipRole;
+  created_at: Date;
+}
+
+/**
+ * Update the acting user's display name. Tenant-scoped: `scope.userId` is the
+ * session's own user id and the write only lands when that user is a member of
+ * `scope.orgId` (see updateUserNameQuery's EXISTS guard). Returns the updated
+ * user row, or null when the pair didn't match (→ caller answers 404).
+ */
+export async function updateUserName(
+  scope: TenantScope & { readonly userId: string },
+  name: string,
+): Promise<UserRow | null> {
+  const res = await run<UserRow>(updateUserNameQuery(scope.orgId, scope.userId, name));
+  return res.rows[0] ?? null;
+}
+
+/** List the members (with roles) of the caller's org. Tenant-scoped by orgId. */
+export async function listOrgMembers(scope: TenantScope): Promise<OrgMemberRow[]> {
+  const res = await run<OrgMemberRow>(listOrgMembersQuery(scope.orgId));
+  return res.rows;
 }
 
 /** The identity + active tenant a session is scoped to after sign-in. */

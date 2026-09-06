@@ -63,14 +63,24 @@ export interface AuthProvider {
   signOut(): Promise<void>;
 }
 
+/**
+ * A fixed, well-known secret used ONLY in local dev when SESSION_SECRET is
+ * unset, so sign-in works out of the box (no .env required to try the app).
+ * It is intentionally not secret — dev sessions are not a security boundary.
+ */
+const DEV_FALLBACK_SECRET = "cadence-dev-insecure-session-secret-do-not-use-in-prod";
+
 function sessionSecret(): string {
   const s = process.env.SESSION_SECRET;
-  if (!s || s.length < 16) {
+  if (s && s.length >= 16) return s;
+  // Production MUST provide a real secret; anything else is a hard error.
+  if (process.env.NODE_ENV === "production") {
     throw new Error(
-      "SESSION_SECRET is not set (or too short). Set it in .env — see .env.example for how to generate one.",
+      "SESSION_SECRET is not set (or too short). Set it in the environment — see .env.example.",
     );
   }
-  return s;
+  // Local dev / test: fall back so login works with zero config.
+  return DEV_FALLBACK_SECRET;
 }
 
 function b64url(input: Buffer | string): string {

@@ -4,6 +4,12 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.4 — Cycle C wave 2: settings depth, login polish, dev-auth fix
+- **Settings (`/settings`):** tabbed, accessible — Profile (edit display name via tenant-scoped `PATCH /api/settings`), Workspace + member roster (roles), Editor preferences (default aspect/look/quality/unmuted → `cadence:prefs` localStorage), and a Danger zone (sign out; delete-workspace intentionally disabled). New tenant-scoped, parameterized `@cadence/db` builders (`updateUserName`, `listOrgMembers`, `getOrg`). Graceful DB-down throughout.
+- **Login (`/login`):** product-grade two-panel layout — progressive-enhancement form (email validation, loading/error states), "continue without an account", clearly-labeled dev-auth + "coming soon" SSO placeholders.
+- **Dev-auth fix:** sign-in 500'd when `SESSION_SECRET` was unset. `sessionSecret()` now falls back to a fixed dev secret when unset **and not production** (prod still hard-errors) — sign-in works with zero config. *verified:* `POST /api/auth/login` → 303 → /dashboard with a signed HttpOnly cookie.
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify 22/22 + `next build` clean.
+
 ### S3.3 — Cycle C wave 1: richer pages (landing, dashboard, editor power)
 - **Landing (`/`):** full marketing page — polished hero (reduced-motion-safe glow), an 11-capability feature showcase, "how it works" (Upload→Describe→Preview→Export), clickable example-prompt chips → `/editor`, an accessible FAQ (`<details>`), stat strip, and a real footer. Claims cross-checked against FEATURES.md.
 - **Dashboard (`/dashboard`):** a real project hub — search, sort, grid↔list toggle, project cards with aspect/format badge + relative time, per-project **rename / duplicate / delete** (new tenant-scoped, parameterized API routes + `@cadence/db` builders), and **create-from-template** (Blank / Talking-head / Slideshow, server-validated seed docs). Graceful DB-down state preserved.

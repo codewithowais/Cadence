@@ -33,6 +33,19 @@ export function createOrgQuery(name: string): SqlQuery {
   };
 }
 
+/**
+ * Fetch one org by id. The id is always the caller's OWN tenant, taken from the
+ * verified session (set at sign-in by provisionAccount, which checked membership)
+ * — never a client-supplied value — so selecting the tenant root by its id is the
+ * canonical, injection-safe ($1) lookup. Returns at most one row.
+ */
+export function getOrgQuery(orgId: string): SqlQuery {
+  return {
+    text: `SELECT id, name, created_at, updated_at FROM orgs WHERE id = $1`,
+    values: [orgId],
+  };
+}
+
 export function createUserQuery(email: string, name: string | null): SqlQuery {
   return {
     text: `INSERT INTO users (email, name) VALUES ($1, $2) RETURNING id, email, name, created_at, updated_at`,
@@ -92,6 +105,46 @@ export function getMembershipQuery(userId: string, orgId: string): SqlQuery {
     text: `SELECT id, user_id, org_id, role, created_at, updated_at
            FROM memberships WHERE user_id = $1 AND org_id = $2`,
     values: [userId, orgId],
+  };
+}
+
+/**
+ * Self-service display-name update, defensively tenant-scoped. Although a user is
+ * a global identity, this builder only writes the row when the acting user is a
+ * member of the given org (the `EXISTS` guard), so it can never be used to rename
+ * an arbitrary user outside the caller's tenant. Both ids are bound as parameters.
+ * Returns the updated user row, or nothing when no such (user ∈ org) pair matched.
+ */
+export function updateUserNameQuery(orgId: string, userId: string, name: string | null): SqlQuery {
+  return {
+    text: `UPDATE users u SET name = $3, updated_at = now()
+           WHERE u.id = $2
+             AND EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = $2 AND m.org_id = $1)
+           RETURNING u.id, u.email, u.name, u.created_at, u.updated_at`,
+    values: [orgId, userId, name],
+  };
+}
+
+/**
+ * List the members of ONE org with their role, newest-owner-first. Tenant-scoped:
+ * the WHERE pins `org_id`, so it can only ever return the caller's own org roster.
+ * Emails/names come from the joined global `users` rows. `org_id` is bound ($1).
+ */
+export function listOrgMembersQuery(orgId: string): SqlQuery {
+  return {
+    text: `SELECT u.id, u.email, u.name, m.role, m.created_at
+           FROM memberships m
+           JOIN users u ON u.id = m.user_id
+           WHERE m.org_id = $1
+           ORDER BY
+             CASE m.role
+               WHEN 'owner' THEN 0
+               WHEN 'admin' THEN 1
+               WHEN 'member' THEN 2
+               ELSE 3
+             END,
+             m.created_at ASC`,
+    values: [orgId],
   };
 }
 
