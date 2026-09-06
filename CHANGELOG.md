@@ -4,6 +4,14 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.5 — Cycle D: multi-video + audio + "more options" engine; login/Neon fixes
+- **Multiple videos (DB):** upload several videos → one combined timeline (`combinedVideoDoc`/`appendVideos`); Media room clip-manager (reorder/remove, undoable); multi-video preview.
+- **Voice-over + music (DB):** in-browser **voice-over recording** (mic, graceful permission/no-mic handling) + audio upload → `voiceover`/`music` tracks; live volume sliders + duck; mixed on export.
+- **"More options" engine (DA):** 8 frame sizes (added 21:9, 4:3, 2.39:1, 2:3 + **custom W×H**), 14 looks (added bleach-bypass/moody/golden-hour/matte/punch), more transitions (dissolve/zoom/smooth) + title animations (pop/bounce), **VFX overlays** (`apply_vfx`: vignette/grain/light-leak), and **caption styling** (`style_captions`: font/weight/color/outline/size/position). New verify checks 23–27. *(Follow-up: bundle TTFs so exported captions use the exact font/weight; preview already does.)*
+- **Login UX fix:** sign-in submits via `fetch` with inline errors — **no `?error=` in the URL**, no aggressive validation popups.
+- **Dev-auth + Neon:** `SESSION_SECRET` dev fallback (prod still required); DB client negotiates **verified TLS** for managed Postgres (Neon/Supabase/RDS) automatically, local/Docker stays plaintext (`DATABASE_SSL_NO_VERIFY` opt-out for custom CAs).
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify 27/27 + `next build` clean.
+
 ### S3.4 — Cycle C wave 2: settings depth, login polish, dev-auth fix
 - **Settings (`/settings`):** tabbed, accessible — Profile (edit display name via tenant-scoped `PATCH /api/settings`), Workspace + member roster (roles), Editor preferences (default aspect/look/quality/unmuted → `cadence:prefs` localStorage), and a Danger zone (sign out; delete-workspace intentionally disabled). New tenant-scoped, parameterized `@cadence/db` builders (`updateUserName`, `listOrgMembers`, `getOrg`). Graceful DB-down throughout.
 - **Login (`/login`):** product-grade two-panel layout — progressive-enhancement form (email validation, loading/error states), "continue without an account", clearly-labeled dev-auth + "coming soon" SSO placeholders.

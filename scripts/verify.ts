@@ -53,8 +53,11 @@ import {
   StubDirector,
   runDirectorLoop,
   adjustColor,
+  applyVfx,
   reframe,
+  reframeTo,
   setQuality,
+  ASPECTS,
   type DirectorLike,
 } from "@cadence/director";
 import { allProviders, buildCliArgs, configFromEnv, selectProvider } from "@cadence/enhance";
@@ -811,6 +814,183 @@ async function checkSecurityGuard(): Promise<void> {
   );
 }
 
+/** Render a frame and return its raw PNG bytes (for pixel-change comparisons). */
+async function renderBytes(doc: EditDoc, timeSec: number): Promise<Buffer> {
+  const frame = await engine.renderFrame(doc, timeSec);
+  return Buffer.from(frame.data);
+}
+
+async function checkFrameSizes(): Promise<void> {
+  // Named ultrawide via the Director → 21:9 (2560×1080).
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const wide = await new StubDirector().interpret("make it 21:9 ultrawide", project);
+  assert(wide.toolCalls.some((c) => c.name === "reframe"), "expected reframe for 21:9");
+  assert(wide.doc.meta.width === 2560 && wide.doc.meta.height === 1080, `expected 2560×1080, got ${wide.doc.meta.width}×${wide.doc.meta.height}`);
+  await renderAndAssert(wide.doc, docDurationSec(wide.doc) / 2, "verify-2560x1080.png");
+
+  // Custom width×height via the Director → "reframe to 1600x900".
+  const custom = await new StubDirector().interpret("reframe to 1600x900", project);
+  const reframeCall = custom.toolCalls.find((c) => c.name === "reframe");
+  assert(reframeCall, "expected reframe for a custom size");
+  assert(custom.doc.meta.width === 1600 && custom.doc.meta.height === 900, `expected 1600×900, got ${custom.doc.meta.width}×${custom.doc.meta.height}`);
+  await renderAndAssert(custom.doc, 0.5, "verify-1600x900.png");
+
+  // Every new named aspect has EVEN dims (libx264/yuv420p safe), and reframeTo
+  // rounds odd requests to even.
+  for (const key of ["21:9", "4:3", "2.39:1", "2:3"] as const) {
+    const a = ASPECTS[key];
+    assert(a.width % 2 === 0 && a.height % 2 === 0, `aspect ${key} should have even dims, got ${a.width}×${a.height}`);
+  }
+  const odd = reframeTo(parseEditDoc({ version: 1, meta: { width: 1920, height: 1080 }, tracks: [] }), 1601, 901);
+  assert(odd.meta.width % 2 === 0 && odd.meta.height % 2 === 0, `reframeTo should round to even, got ${odd.meta.width}×${odd.meta.height}`);
+
+  console.log(`  [32m✔[0m check 23 (frame sizes): 21:9 (2560×1080) + custom 1600×900 render; new aspects even-dim; reframeTo rounds odd→even`);
+}
+
+async function checkMoreLooks(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+
+  // golden-hour: warm + brighter (routes to apply_look, renders).
+  const gh = await new StubDirector().interpret("give it a golden-hour look", project);
+  assert(gh.toolCalls.some((c) => c.name === "apply_look"), "expected apply_look for golden-hour");
+  const ghClip = gh.doc.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(ghClip && ghClip.look.warmth > 0.5, `golden-hour should be warm, got ${ghClip?.kind === "video" ? ghClip.look.warmth : "?"}`);
+  const n = await renderAndAssert(gh.doc, docDurationSec(gh.doc) / 2, "verify-golden-hour.png");
+
+  // bleach-bypass: high contrast + desaturated silver look.
+  const bb = await new StubDirector().interpret("apply a bleach-bypass look", project);
+  assert(bb.toolCalls.some((c) => c.name === "apply_look"), "expected apply_look for bleach-bypass");
+  const bbClip = bb.doc.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(bbClip && bbClip.look.saturation < 0.7 && bbClip.look.contrast > 1.2, `bleach-bypass should be desaturated+contrasty, got ${JSON.stringify(bbClip?.look)}`);
+
+  console.log(`  [32m✔[0m check 24 (more looks): golden-hour (warm) renders (${n}b) + bleach-bypass (silver, high-contrast) via apply_look`);
+}
+
+async function checkMoreTransitions(): Promise<void> {
+  const imgs: MediaAsset[] = Array.from({ length: 4 }, (_, i) => ({
+    id: `photo-${i}`, kind: "image" as const, src: `/media/p${i}.jpg`, width: 1920, height: 1080, label: `p${i}.jpg`,
+  }));
+  const project = new ProjectState({ media: imgs });
+
+  // New transition names map to the confirmed xfade transitions on slideshow export.
+  const diss = await new StubDirector().interpret("make a slideshow from my photos with dissolve transitions", project);
+  assert(diss.toolCalls.some((c) => c.name === "set_transition"), "expected set_transition (dissolve)");
+  const dp = buildExportPlan(diss.doc, (id) => `/media/${id}.mp4`, "/out/diss.mp4");
+  assert(dp.filterComplex.includes("xfade=transition=dissolve"), "dissolve → xfade dissolve");
+
+  const zoom = await new StubDirector().interpret("use zoom transitions", project);
+  const zp = buildExportPlan(zoom.doc, (id) => `/media/${id}.mp4`, "/out/zoom.mp4");
+  assert(zp.filterComplex.includes("xfade=transition=zoomin"), "zoom → xfade zoomin");
+
+  const smooth = await new StubDirector().interpret("use smooth transitions", project);
+  const smp = buildExportPlan(smooth.doc, (id) => `/media/${id}.mp4`, "/out/smooth.mp4");
+  assert(smp.filterComplex.includes("xfade=transition=smoothleft"), "smooth → xfade smoothleft");
+  assert(xfadeTransition("dissolve") === "dissolve" && xfadeTransition("zoom") === "zoomin" && xfadeTransition("smooth") === "smoothleft", "transition enum → xfade name mapping exact");
+  const n = await renderAndAssert(diss.doc, docDurationSec(diss.doc) / 2, "verify-dissolve.png");
+
+  // Title animations: bounce + pop resolve deterministically and render mid-anim.
+  const vp = videoProject();
+  vp.setTranscript(await new StubTranscriber().transcribe(vp.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", vp);
+  const bounce = await new StubDirector().interpret('add a bouncing title that says "Bounce"', vp);
+  const bClip = bounce.doc.tracks.flatMap((t) => t.clips).find((c): c is TextClip => c.kind === "text" && c.anim.style === "bounce");
+  assert(bClip, "expected a bounce title");
+  const bState = textKinetic(bClip!, bClip!.start + bClip!.anim.durationSec / 2);
+  assert(bState.dy !== 0, "bounce should still be offset mid-animation");
+  await renderAndAssert(bounce.doc, bClip!.start + bClip!.anim.durationSec / 2, "verify-bounce-title.png");
+
+  const pop = await new StubDirector().interpret('add a pop title that says "Pop"', vp);
+  const pClip = pop.doc.tracks.flatMap((t) => t.clips).find((c): c is TextClip => c.kind === "text" && c.anim.style === "pop");
+  assert(pClip, "expected a pop title");
+  const pState = textKinetic(pClip!, pClip!.start + pClip!.anim.durationSec / 2);
+  assert(pState.scaleMul > 0 && pState.scaleMul < 1.6, `pop scaleMul should be a finite growth, got ${pState.scaleMul}`);
+
+  console.log(`  [32m✔[0m check 25 (transitions + title anims): dissolve/zoom/smooth → xfade dissolve/zoomin/smoothleft (frame ${n}b); bounce+pop titles resolve + render`);
+}
+
+async function checkVfx(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const r = await new StubDirector().interpret("add a vignette and film grain and a light leak", project);
+  assert(r.toolCalls.some((c) => c.name === "apply_vfx"), "expected apply_vfx");
+  assert(r.doc.vfx.vignette > 0, "expected vignette > 0");
+  assert(r.doc.vfx.grain > 0, "expected grain > 0");
+  assert(r.doc.vfx.lightLeak === true, "expected lightLeak on");
+
+  // A rendered frame with the vignette differs from the same frame without VFX,
+  // proving the vignette (and grain/leak) actually paint pixels.
+  const mid = docDurationSec(r.doc) / 2;
+  const withVfx = await renderBytes(r.doc, mid);
+  writeFileSync(resolve(OUT_DIR, "verify-vfx.png"), withVfx);
+  const plain = applyVfx(r.doc, { vignette: 0, grain: 0, lightLeak: false });
+  const withoutVfx = await renderBytes(plain, mid);
+  assert(withVfx.length > 1000 && withVfx.subarray(0, 4).equals(PNG_MAGIC), "vfx frame should be a real PNG");
+  assert(!withVfx.equals(withoutVfx), "the vignette/grain/leak should change the rendered pixels");
+
+  // Isolate the vignette alone (no grain, no leak) and confirm it still changes pixels.
+  const vigOnly = applyVfx(plain, { vignette: 0.6 });
+  const vigBytes = await renderBytes(vigOnly, mid);
+  assert(!vigBytes.equals(withoutVfx), "the vignette alone should change the rendered pixels");
+
+  // Export honors the confirmed ffmpeg finishing filters.
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/vfx.mp4");
+  assert(plan.filterComplex.includes("vignette=angle="), "vfx: expected vignette filter on export");
+  assert(plan.filterComplex.includes("noise=alls=") && plan.filterComplex.includes("allf=t+u"), "vfx: expected noise grain on export");
+  assert(plan.filterComplex.includes("blend=all_mode=screen"), "vfx: expected screen-blended light leak on export");
+
+  console.log(`  [32m✔[0m check 26 (vfx overlays): vignette+grain+leak change the frame (${withVfx.length}b) + vignette/noise/blend on export`);
+}
+
+async function checkCaptionStyle(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const r = await new StubDirector().interpret(
+    "add white bold captions with a black outline at the top",
+    project,
+  );
+  const names = r.toolCalls.map((c) => c.name);
+  assert(names.includes("add_captions"), "expected add_captions");
+  assert(names.includes("style_captions"), "expected style_captions");
+
+  const caps = r.doc.tracks.find((t) => t.id === "captions");
+  const cap = caps?.clips.find((c): c is TextClip => c.kind === "text");
+  assert(cap, "expected a styled caption clip");
+  assert(cap!.outline && cap!.outline.width > 0, "caption should have an outline");
+  assert(cap!.color === "#ffffff", `caption should be white, got ${cap!.color}`);
+  assert(cap!.fontWeight === "bold", `caption should be bold, got ${cap!.fontWeight}`);
+  assert(cap!.transform.y < r.doc.meta.height * 0.3, "captions should sit near the top");
+
+  // The outlined caption renders and differs from the same caption without an outline.
+  const capStart = cap!.start + Math.min(0.3, cap!.duration / 2);
+  const withOutline = await renderBytes(r.doc, capStart);
+  writeFileSync(resolve(OUT_DIR, "verify-caption-outline.png"), withOutline);
+  const noOutlineDoc = structuredCloneDoc(r.doc);
+  for (const t of noOutlineDoc.tracks) {
+    if (t.id !== "captions") continue;
+    for (const c of t.clips) if (c.kind === "text") delete (c as { outline?: unknown }).outline;
+  }
+  const withoutOutline = await renderBytes(parseEditDoc(noOutlineDoc), capStart);
+  assert(withOutline.subarray(0, 4).equals(PNG_MAGIC), "caption frame should be a real PNG");
+  assert(!withOutline.equals(withoutOutline), "the caption outline should change the rendered pixels");
+
+  // Export burns the outline in via drawtext borderw/bordercolor.
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/caps.mp4");
+  assert(plan.filterComplex.includes("borderw=") && plan.filterComplex.includes("bordercolor="), "captions: expected drawtext border on export");
+
+  console.log(`  [32m✔[0m check 27 (caption style): white/bold/outline/top → outline changes the frame (${withOutline.length}b) + drawtext borderw on export`);
+}
+
+/** Structural clone of a doc (verify has no structuredClone import elsewhere). */
+function structuredCloneDoc(doc: EditDoc): EditDoc {
+  return JSON.parse(JSON.stringify(doc)) as EditDoc;
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -831,6 +1011,11 @@ async function main(): Promise<void> {
   await checkZoom();
   await checkTransitions();
   await checkColorAdjust();
+  await checkFrameSizes();
+  await checkMoreLooks();
+  await checkMoreTransitions();
+  await checkVfx();
+  await checkCaptionStyle();
   await checkWhisperParse();
   await checkTranscriberFactory();
   await checkAgenticLoop();

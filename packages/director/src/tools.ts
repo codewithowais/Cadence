@@ -27,21 +27,31 @@ import {
   addTitle,
   adjustColor,
   applyLook,
+  applyVfx,
   autoMix,
   reframe,
+  reframeTo,
   setQuality,
   setSpeed,
   setTransition,
   setZoom,
+  styleCaptions,
   type AspectKey,
   type BrollCorner,
+  type CaptionStyleOpts,
   type LookKey,
   type QualityKey,
   type SpeedTarget,
+  type TitleAnimStyle,
   type TitleStyle,
 } from "./edits";
 
-const LOOK_KEYS = ["warm", "cool", "vivid", "bw", "cinematic", "vintage", "noir", "vibrant", "none"] as const;
+const LOOK_KEYS = [
+  "warm", "cool", "vivid", "bw", "cinematic", "vintage", "noir", "vibrant",
+  "bleach-bypass", "moody", "golden-hour", "matte", "punch", "none",
+] as const;
+
+const ASPECT_ENUM = ["9:16", "1:1", "4:5", "16:9", "21:9", "4:3", "2.39:1", "2:3"] as const;
 
 export interface ToolContext {
   project: ProjectState;
@@ -153,12 +163,25 @@ export const fillerCutTool: DirectorTool<Record<string, never>> = {
 
 // ---- reframe ---------------------------------------------------------------
 
-export const reframeTool: DirectorTool<{ aspect: AspectKey }> = {
+export const reframeTool: DirectorTool<{ aspect?: AspectKey; width?: number; height?: number }> = {
   name: "reframe",
-  description: "Reframe the composition to a new aspect ratio (9:16, 1:1, 4:5, 16:9).",
-  inputSchema: z.object({ aspect: z.enum(["9:16", "1:1", "4:5", "16:9"]) }),
+  description:
+    "Reframe the composition to a new aspect ratio (9:16, 1:1, 4:5, 16:9, 21:9, 4:3, 2.39:1, 2:3) or to a custom width×height (pass width and height instead of aspect).",
+  inputSchema: z
+    .object({
+      aspect: z.enum(ASPECT_ENUM).optional(),
+      width: z.number().int().positive().optional(),
+      height: z.number().int().positive().optional(),
+    })
+    .refine((v) => v.aspect !== undefined || (v.width !== undefined && v.height !== undefined), {
+      message: "provide an aspect, or both width and height",
+    }),
   async execute(input, ctx) {
-    const doc = reframe(ctx.project.doc, input.aspect);
+    if (input.width !== undefined && input.height !== undefined) {
+      const doc = reframeTo(ctx.project.doc, input.width, input.height);
+      return commit(ctx.project, doc, `Reframed to ${doc.meta.width}×${doc.meta.height}.`);
+    }
+    const doc = reframe(ctx.project.doc, input.aspect!);
     return commit(ctx.project, doc, `Reframed to ${input.aspect}.`);
   },
 };
@@ -181,7 +204,8 @@ export const captionsTool: DirectorTool<Record<string, never>> = {
 
 export const lookTool: DirectorTool<{ look: LookKey }> = {
   name: "apply_look",
-  description: "Apply a color-grade preset (warm, cool, vivid, bw, cinematic, vintage, noir, vibrant, none).",
+  description:
+    "Apply a color-grade preset (warm, cool, vivid, bw, cinematic, vintage, noir, vibrant, bleach-bypass, moody, golden-hour, matte, punch, none).",
   inputSchema: z.object({ look: z.enum(LOOK_KEYS) }),
   async execute(input, ctx) {
     const doc = applyLook(ctx.project.doc, input.look);
@@ -326,13 +350,67 @@ export const brollTool: DirectorTool<{ mediaId?: string; atSec?: number; duratio
 
 // ---- add_kinetic_title -----------------------------------------------------
 
-export const kineticTitleTool: DirectorTool<{ text: string }> = {
+export const kineticTitleTool: DirectorTool<{ text: string; style?: TitleAnimStyle }> = {
   name: "add_kinetic_title",
-  description: "Add an animated title that slides up and scales in (kinetic).",
-  inputSchema: z.object({ text: z.string().min(1) }),
+  description:
+    "Add an animated title. style: kinetic (slide + scale in), pop (scale in with an overshoot), or bounce (drops in with a bounce). Defaults to kinetic.",
+  inputSchema: z.object({
+    text: z.string().min(1),
+    style: z.enum(["kinetic", "pop", "bounce"]).optional(),
+  }),
   async execute(input, ctx) {
-    const doc = addKineticTitle(ctx.project.doc, input.text);
-    return commit(ctx.project, doc, `Added a kinetic title: “${input.text}” (slides + scales in).`);
+    const style = input.style ?? "kinetic";
+    const doc = addKineticTitle(ctx.project.doc, input.text, style);
+    const how =
+      style === "pop" ? "pops in" : style === "bounce" ? "bounces in" : "slides + scales in";
+    return commit(ctx.project, doc, `Added a ${style} title: “${input.text}” (${how}).`);
+  },
+};
+
+// ---- apply_vfx (whole-frame overlays) --------------------------------------
+
+export const vfxTool: DirectorTool<{ vignette?: number; grain?: number; lightLeak?: boolean }> = {
+  name: "apply_vfx",
+  description:
+    "Add whole-frame finishing overlays: vignette (0–1 edge darkening), grain (0–1 film grain), and/or a warm lightLeak (on/off). Omitted fields keep their current value. Faithful — texture/tone only.",
+  inputSchema: z
+    .object({
+      vignette: z.number().min(0).max(1).optional(),
+      grain: z.number().min(0).max(1).optional(),
+      lightLeak: z.boolean().optional(),
+    })
+    .refine((v) => v.vignette !== undefined || v.grain !== undefined || v.lightLeak !== undefined, {
+      message: "provide a vignette, grain, or lightLeak value",
+    }),
+  async execute(input, ctx) {
+    const doc = applyVfx(ctx.project.doc, input);
+    const parts: string[] = [];
+    if (input.vignette !== undefined) parts.push(`vignette ${input.vignette}`);
+    if (input.grain !== undefined) parts.push(`grain ${input.grain}`);
+    if (input.lightLeak !== undefined) parts.push(input.lightLeak ? "light leak on" : "light leak off");
+    return commit(ctx.project, doc, `Applied VFX (${parts.join(", ")}).`);
+  },
+};
+
+// ---- style_captions --------------------------------------------------------
+
+export const styleCaptionsTool: DirectorTool<CaptionStyleOpts> = {
+  name: "style_captions",
+  description:
+    "Restyle the captions: fontFamily, fontWeight (normal/medium/semibold/bold), color, background (hex or null to remove), outlineColor + outlineWidth, fontSize, and position (top/center/bottom).",
+  inputSchema: z.object({
+    fontFamily: z.string().optional(),
+    fontWeight: z.enum(["normal", "medium", "semibold", "bold"]).optional(),
+    color: z.string().optional(),
+    background: z.string().nullable().optional(),
+    outlineColor: z.string().optional(),
+    outlineWidth: z.number().min(0).optional(),
+    fontSize: z.number().positive().optional(),
+    position: z.enum(["top", "center", "bottom"]).optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = styleCaptions(ctx.project.doc, input);
+    return commit(ctx.project, doc, "Styled the captions.");
   },
 };
 
@@ -458,4 +536,6 @@ export const DIRECTOR_TOOLS = {
   set_speed: speedTool,
   zoom: zoomTool,
   set_transition: transitionTool,
+  apply_vfx: vfxTool,
+  style_captions: styleCaptionsTool,
 } as const;

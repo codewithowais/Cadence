@@ -16,17 +16,39 @@ export function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url || url.trim() === "") {
     throw new Error(
-      "DATABASE_URL is not set. Copy .env.example to .env (and run Postgres via `docker compose up db`).",
+      "DATABASE_URL is not set. Copy .env.example to .env — use a managed Postgres URL " +
+        "(e.g. Neon: postgresql://…@…neon.tech/…?sslmode=require) or `docker compose up db`.",
     );
   }
   return url;
 }
 
+/**
+ * TLS config for the pool. Local/Docker Postgres runs plaintext; managed
+ * providers (Neon, Supabase, RDS, …) require TLS. Enable it when the URL asks
+ * for it or points at a known managed host, or when DATABASE_SSL is truthy —
+ * but never for localhost/docker. TLS is VERIFIED by default (Neon/Supabase/RDS
+ * present publicly-trusted certs); disabling verification (MITM-risky) is opt-in
+ * only, for providers with a custom/self-signed CA, via DATABASE_SSL_NO_VERIFY=1.
+ */
+function sslConfig(url: string): PoolConfig["ssl"] {
+  const isLocal = /@(localhost|127\.0\.0\.1|\[::1\]|db)(:\d+)?\//.test(url);
+  const wantsSsl =
+    /[?&]sslmode=(require|prefer|verify-ca|verify-full)\b/.test(url) ||
+    /\.(neon\.tech|supabase\.co|render\.com|rds\.amazonaws\.com|azure\.com|cockroachlabs\.cloud)/i.test(url) ||
+    /^(1|true|require)$/i.test(process.env.DATABASE_SSL ?? "");
+  if (isLocal || !wantsSsl) return undefined;
+  const noVerify = /^(1|true)$/i.test(process.env.DATABASE_SSL_NO_VERIFY ?? "");
+  return { rejectUnauthorized: !noVerify };
+}
+
 /** Get the process-wide pool, creating it on first use. */
 export function getPool(config?: PoolConfig): Pool {
   if (!pool) {
+    const url = databaseUrl();
     pool = new Pool({
-      connectionString: databaseUrl(),
+      connectionString: url,
+      ssl: sslConfig(url),
       // Keep connection attempts snappy so health checks degrade fast when the DB is down.
       connectionTimeoutMillis: 5_000,
       ...config,

@@ -165,9 +165,10 @@ function staticZoomFilters(
 // --- transition library (xfade names) ---------------------------------------
 
 /**
- * Map an EditDoc transitionType to the ffmpeg xfade `transition` name. Names
- * verified against the xfade filter docs (fade / fadeblack / slideleft /
- * wipeleft all valid transitions). Faithful: xfade blends existing frames.
+ * Map an EditDoc transitionType to the ffmpeg xfade `transition` name. Every
+ * name verified against the ffmpeg xfade transition enum (vf_xfade.c, doxygen
+ * 7.0): fade, fadeblack, slideleft, wipeleft, dissolve, zoomin, smoothleft are
+ * all valid transitions. Faithful: xfade blends existing frames.
  */
 export function xfadeTransition(type: TransitionType): string {
   switch (type) {
@@ -177,6 +178,12 @@ export function xfadeTransition(type: TransitionType): string {
       return "slideleft";
     case "wipe":
       return "wipeleft";
+    case "dissolve":
+      return "dissolve";
+    case "zoom":
+      return "zoomin";
+    case "smooth":
+      return "smoothleft";
     case "crossfade":
     default:
       return "fade";
@@ -240,6 +247,12 @@ function drawtextFor(clip: TextClip): string {
     `fontsize=${Math.round(clip.fontSize)}`,
     `fontcolor=${color}${alpha < 1 ? `@${alpha}` : ""}`,
   ];
+  // Stroked outline (drawtext border) behind the glyphs, for readability.
+  if (clip.outline && clip.outline.width > 0) {
+    const oc = hexToFfColor(clip.outline.color);
+    parts.push(`borderw=${Math.max(1, Math.round(clip.outline.width))}`);
+    parts.push(`bordercolor=${oc.color}${oc.alpha < 1 ? `@${oc.alpha}` : ""}`);
+  }
   // Pill background behind captions.
   if (clip.background) {
     const bg = hexToFfColor(clip.background);
@@ -561,6 +574,35 @@ export function buildExportPlan(
   if (qParts.length > 0) {
     filters.push(`[${videoLabel}]${qParts.join(",")}[vout]`);
     videoLabel = "vout";
+  }
+
+  // ---- VFX finishing pass (vignette / grain / warm light-leak) ------------
+  // Filter names verified against ffmpeg docs: `vignette` (angle darkens edges),
+  // `noise=alls=N:allf=t+u` (temporal+uniform grain), and a warm color source
+  // `blend=all_mode=screen:all_opacity=…` (the light leak). Faithful: tone/texture
+  // only, mirroring the canvas finishing pass.
+  const vfx = doc.vfx;
+  const vfxParts: string[] = [];
+  if (vfx.grain > 0) {
+    // strength 0..1 → noise 0..100 (kept modest so grain stays filmic, not harsh).
+    vfxParts.push(`noise=alls=${Math.round(clamp(vfx.grain, 0, 1) * 40)}:allf=t+u`);
+  }
+  if (vfx.vignette > 0) {
+    // strength 0..1 → angle from the default PI/5 up to ~PI/2.2 (stronger falloff).
+    const a = r3(Math.PI / 5 + clamp(vfx.vignette, 0, 1) * (Math.PI / 2.2 - Math.PI / 5));
+    vfxParts.push(`vignette=angle=${a}`);
+  }
+  if (vfxParts.length > 0) {
+    filters.push(`[${videoLabel}]${vfxParts.join(",")}[vvfx]`);
+    videoLabel = "vvfx";
+  }
+  if (vfx.lightLeak) {
+    // A warm color source screen-blended over the frame — a broad warm leak wash.
+    const dur = total > 0 ? total : 1;
+    const li = addInput(["-f", "lavfi"], `color=c=0xffb060:s=${W}x${H}:r=${fps}:d=${r3(dur)}`, false);
+    filters.push(`[${li}:v]format=yuv420p[leaksrc]`);
+    filters.push(`[${videoLabel}][leaksrc]blend=all_mode=screen:all_opacity=0.16[vleak]`);
+    videoLabel = "vleak";
   }
 
   // ---- Extra audio-track clips (e.g. music), delayed + mixed --------------

@@ -26,13 +26,8 @@ const TRUST_POINTS: { title: string; body: string }[] = [
  * cookie session and redirects to /dashboard. No password — the caller asserts
  * identity (this is dev auth; swappable for real SSO behind the same AuthProvider).
  */
-export default async function LoginPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ error?: string }>;
-}) {
+export default async function LoginPage() {
   if (await getSession()) redirect("/dashboard");
-  const { error } = await searchParams;
 
   return (
     <main className="grid min-h-dvh lg:grid-cols-2">
@@ -109,7 +104,7 @@ export default async function LoginPage({
           </div>
 
           <div className="mt-6">
-            <SignInForm initialError={error} />
+            <SignInForm />
           </div>
 
           <p className="mt-8 text-center text-xs leading-relaxed text-faint">

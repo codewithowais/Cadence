@@ -20,10 +20,9 @@ export async function POST(req: NextRequest) {
   const email = String(form?.get("email") ?? "").trim();
   const name = String(form?.get("name") ?? "").trim() || null;
 
-  const loginUrl = new URL("/login", req.url);
+  // Return errors as JSON (the client shows them inline) — never in the URL.
   if (!isValidEmail(email)) {
-    loginUrl.searchParams.set("error", "Enter a valid email address.");
-    return NextResponse.redirect(loginUrl, 303);
+    return NextResponse.json({ error: "Enter a valid email address." }, { status: 400 });
   }
 
   const auth = getAuthProvider();
@@ -35,5 +34,6 @@ export async function POST(req: NextRequest) {
     await auth.signIn({ userId: deterministicUserId(email), email });
   }
 
-  return NextResponse.redirect(new URL("/dashboard", req.url), 303);
+  // Cookie is set via auth.signIn; the client navigates to /dashboard on ok.
+  return NextResponse.json({ ok: true });
 }

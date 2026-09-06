@@ -70,8 +70,9 @@ export function Stage(props: StageProps) {
   const activeOnTracks = useMemo(() => activeClipsAt(doc, timeSec), [doc, timeSec]);
   const scale = frameH > 0 ? frameH / doc.meta.height : 0;
 
-  // The main (full-frame) video is the first video clip on a non-b-roll track.
-  const videoMediaId = useMemo(() => {
+  // The first video clip on a non-b-roll track — the fallback source shown before
+  // playback and between cuts.
+  const firstVideoMediaId = useMemo(() => {
     for (const track of doc.tracks) {
       if (track.id === "broll") continue;
       for (const c of track.clips) if (c.kind === "video") return c.mediaId;
@@ -82,6 +83,10 @@ export function Stage(props: StageProps) {
   const activeVideo = activeOnTracks.find((c) => c.track.id !== "broll" && c.clip.kind === "video")?.clip as
     | VideoClip
     | undefined;
+  // With several videos combined on one timeline, the preview <video> must play
+  // whichever clip is active — not a single fixed source. Falls back to the first
+  // clip's media between cuts. For a single-video project this equals the base.
+  const videoMediaId = activeVideo?.mediaId ?? firstVideoMediaId;
   const activeImages = activeOnTracks
     .filter((c) => c.track.id !== "broll")
     .map((c) => c.clip)

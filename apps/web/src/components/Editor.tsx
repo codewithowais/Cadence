@@ -14,7 +14,15 @@ import { Stage } from "./Stage";
 import { CutsStrip } from "./CutsStrip";
 import { CodeDrawer } from "./CodeDrawer";
 import { ShortcutsHelp } from "./ShortcutsHelp";
-import { emptyDoc, fullClipDoc } from "@/lib/doc";
+import {
+  emptyDoc,
+  combinedVideoDoc,
+  appendVideos,
+  moveMediaInDoc,
+  removeMediaFromDoc,
+  addVoiceover,
+  setTrackVolume,
+} from "@/lib/doc";
 import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
 import { useDocHistory } from "@/lib/history";
@@ -137,6 +145,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // no video (e.g. a photo slideshow) → the waveform simply isn't drawn.
   const waveformSource = useMemo(() => {
     let mediaId: string | null = null;
+    // Prefer the base (full-frame) video's own audio.
     for (const track of doc.tracks) {
       if (track.id === "broll") continue;
       for (const c of track.clips) {
@@ -144,12 +153,30 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       }
       if (mediaId) break;
     }
+    // Fallback: a voice-over / music-only project still gets a waveform.
+    if (!mediaId) {
+      for (const track of doc.tracks) {
+        for (const c of track.clips) {
+          if (c.kind === "audio") { mediaId = c.mediaId; break; }
+        }
+        if (mediaId) break;
+      }
+    }
     if (!mediaId) return null;
     return { mediaId, file: files[mediaId], url: urls[mediaId] };
   }, [doc, files, urls]);
-  const mode: "video" | "images" | "none" = mediaList.some((m) => m.kind === "video")
+  // The project's full media set = the registry (mediaList) plus anything the doc
+  // references that isn't in it (e.g. media restored by undo after a remove). Used
+  // for every "what's in the project" read so undo/redo stays consistent.
+  const projectMedia = useMemo(() => {
+    const ids = new Set(mediaList.map((m) => m.id));
+    const extras = doc.media.filter((m) => !ids.has(m.id));
+    return extras.length ? [...mediaList, ...extras] : mediaList;
+  }, [mediaList, doc.media]);
+  const hasMedia = projectMedia.length > 0;
+  const mode: "video" | "images" | "none" = projectMedia.some((m) => m.kind === "video")
     ? "video"
-    : mediaList.some((m) => m.kind === "image")
+    : projectMedia.some((m) => m.kind === "image")
       ? "images"
       : "none";
 
@@ -209,34 +236,82 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setPlaying(false);
     try {
       if (videos.length > 0) {
-        const file = videos[0]!;
-        const url = URL.createObjectURL(file);
-        const meta = await probeVideo(url);
-        const asset: MediaAsset = {
-          id: `media-${Date.now()}`,
-          kind: "video",
-          src: file.name,
-          durationSec: Math.round(meta.duration * 1000) / 1000,
-          width: meta.width,
-          height: meta.height,
-          label: file.name,
-        };
-        for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u);
-        setUrls({ [asset.id]: url });
-        setFiles({ [asset.id]: file });
-        setMediaList([asset]);
-        setTranscripts({});
-        reset(fullClipDoc(asset)); // new media → fresh doc + fresh history
+        // Probe every selected video and register each as its own media asset.
+        const newUrls: Record<string, string> = {};
+        const newFiles: Record<string, File> = {};
+        const added: MediaAsset[] = [];
+        for (let i = 0; i < videos.length; i++) {
+          const file = videos[i]!;
+          const url = URL.createObjectURL(file);
+          const meta = await probeVideo(url);
+          const asset: MediaAsset = {
+            id: `media-${Date.now()}-${i}`,
+            kind: "video",
+            src: file.name,
+            durationSec: Math.round(meta.duration * 1000) / 1000,
+            width: meta.width,
+            height: meta.height,
+            label: file.name,
+          };
+          newUrls[asset.id] = url;
+          newFiles[asset.id] = file;
+          added.push(asset);
+        }
+
+        const appending = hasVideoClip; // an existing video timeline → append, don't reset
+        if (appending) {
+          setUrls((u) => ({ ...u, ...newUrls }));
+          setFiles((f) => ({ ...f, ...newFiles }));
+          setMediaList((list) => [...list, ...added]);
+          commit(appendVideos(doc, added)); // undoable append onto the combined timeline
+        } else {
+          // Fresh video project — replace whatever was loaded (revoke old blobs).
+          for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u);
+          setUrls(newUrls);
+          setFiles(newFiles);
+          setMediaList(added);
+          setTranscripts({});
+          reset(combinedVideoDoc(added)); // one combined doc + fresh history
+        }
         setTimeSec(0);
-        say("you", `Added ${file.name}`);
-        const tr = await transcribe(asset);
-        setTranscripts({ [asset.id]: tr });
-        say(
-          "director",
-          `Loaded “${file.name}” — ${Math.round(asset.durationSec ?? 0)}s, ${tr.segments.length} spoken segments. ` +
-            `Tell me what you want, or tap a one-tap action above.`,
-          "info",
+        say("you", added.length === 1 ? `Added ${added[0]!.label}` : `Added ${added.length} videos`);
+
+        // Transcribe each video (per media) so highlights & captions work per clip.
+        const results = await Promise.all(
+          added.map((a) =>
+            transcribe(a)
+              .then((tr) => [a.id, tr] as const)
+              .catch(() => null),
+          ),
         );
+        const okResults = results.filter((r): r is readonly [string, Transcript] => r !== null);
+        if (okResults.length > 0) {
+          setTranscripts((prev) => {
+            const next = { ...prev };
+            for (const [id, tr] of okResults) next[id] = tr;
+            return next;
+          });
+        }
+
+        if (added.length === 1) {
+          const only = added[0]!;
+          const tr = okResults.find(([id]) => id === only.id)?.[1];
+          say(
+            "director",
+            `Loaded “${only.label}” — ${Math.round(only.durationSec ?? 0)}s, ${tr?.segments.length ?? 0} spoken segments. ` +
+              `Tell me what you want, or tap a one-tap action above.`,
+            "info",
+          );
+        } else {
+          const totalSec = added.reduce((s, a) => s + (a.durationSec ?? 0), 0);
+          const segs = okResults.reduce((s, [, tr]) => s + tr.segments.length, 0);
+          say(
+            "director",
+            `${appending ? "Appended" : "Combined"} ${added.length} videos ${appending ? "onto" : "into"} one timeline — ` +
+              `${Math.round(totalSec)}s total, transcribed each (${segs} spoken segments) so highlights & captions work per clip.`,
+            "info",
+          );
+        }
       } else if (imgs.length > 0) {
         const nextUrls = { ...urlsRef.current };
         const nextFiles = { ...filesRef.current };
@@ -300,12 +375,12 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   }
 
   async function handleSend(text: string) {
-    if (mediaList.length === 0) return;
+    if (projectMedia.length === 0) return;
     say("you", text);
     setBusy(true);
     setPlaying(false);
     try {
-      const res = await askDirector({ request: text, media: mediaList, transcripts: Object.values(transcripts), doc });
+      const res = await askDirector({ request: text, media: projectMedia, transcripts: Object.values(transcripts), doc });
       commit(parseEditDoc(res.doc)); // undoable Director edit
       setTimeSec(0);
       say("director", res.summary, "edit");
@@ -329,7 +404,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   }
 
   function togglePlay() {
-    if (mediaList.length === 0) return;
+    if (!hasMedia) return;
     if (!playing && timeSec >= durationSec) setTimeSec(0);
     setPlaying((p) => !p);
   }
@@ -347,7 +422,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
    * back to the JSON edit-doc export.
    */
   async function exportDoc(overrideDoc?: EditDoc) {
-    if (mediaList.length === 0 || durationSec <= 0) return;
+    if (!hasMedia || durationSec <= 0) return;
     // `overrideDoc` lets the export-options popover render freshly-applied
     // quality settings without waiting for a state re-render.
     const source = overrideDoc ?? doc;
@@ -357,7 +432,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     try {
       // Upload every media file used by the doc; map id → server path.
       const srcById: Record<string, string> = {};
-      for (const media of mediaList) {
+      for (const media of source.media) {
         const file = files[media.id];
         if (!file) throw new Error(`Missing the uploaded file for ${media.label ?? media.id}.`);
         const { path } = await uploadMedia(file);
@@ -423,7 +498,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
 
   /** Clear the timeline and start a fresh, empty project (destructive → confirm). */
   function startOver() {
-    if (mediaList.length > 0 && typeof window !== "undefined" && !window.confirm("Start over? This clears the timeline and all loaded media.")) return;
+    if (hasMedia && typeof window !== "undefined" && !window.confirm("Start over? This clears the timeline and all loaded media.")) return;
     for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u);
     setUrls({});
     setFiles({});
@@ -440,6 +515,54 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     const name = (doc.meta.title || "cadence").replace(/\s+/g, "-");
     download(`${name}-copy.editdoc.json`, JSON.stringify(doc, null, 2));
     say("director", "Downloaded a copy of this project's edit-doc (JSON).", "info");
+  }
+
+  // ---- Media room (clip manager) -------------------------------------------
+
+  /** Move a media's clip earlier/later on the timeline (undoable, re-lays cuts). */
+  function reorderMedia(mediaId: string, dir: "up" | "down") {
+    setPlaying(false);
+    commit(moveMediaInDoc(doc, mediaId, dir));
+    setMediaList((list) => {
+      const i = list.findIndex((m) => m.id === mediaId);
+      const j = dir === "up" ? i - 1 : i + 1;
+      if (i < 0 || j < 0 || j >= list.length) return list;
+      const next = [...list];
+      [next[i], next[j]] = [next[j]!, next[i]!];
+      return next;
+    });
+  }
+
+  /** Remove a media and its clips (undoable); keep its blob so undo can restore it. */
+  function removeMedia(mediaId: string) {
+    setPlaying(false);
+    commit(removeMediaFromDoc(doc, mediaId));
+    setMediaList((list) => list.filter((m) => m.id !== mediaId));
+    setTimeSec(0);
+  }
+
+  // ---- Audio room -----------------------------------------------------------
+
+  /** Register a recorded/added voice-over as an audio clip on the voiceover track. */
+  async function addVoiceoverFile(file: File, durationSec: number) {
+    const url = URL.createObjectURL(file);
+    const asset: MediaAsset = {
+      id: `voiceover-${Date.now()}`,
+      kind: "audio",
+      src: file.name,
+      durationSec: Math.round(durationSec * 1000) / 1000,
+      label: file.name.startsWith("voiceover-") ? "Voice-over" : file.name,
+    };
+    setUrls((u) => ({ ...u, [asset.id]: url }));
+    setFiles((f) => ({ ...f, [asset.id]: file }));
+    setMediaList((list) => [...list, asset]);
+    commit(addVoiceover(doc, asset)); // undoable; renderer mixes it on export
+    say("director", `Added a voice-over (${Math.round(asset.durationSec ?? 0)}s) on its own track. It plays over your video and mixes in on export.`, "edit");
+  }
+
+  /** Set the volume of every audio clip on a track (music / voiceover) — undoable. */
+  function setAudioTrackVolume(trackId: string, volume: number) {
+    commit(setTrackVolume(doc, trackId, volume), { coalesce: `vol-${trackId}` });
   }
 
   // Keyboard shortcuts. The ref always holds the latest closures, so we bind the
@@ -475,7 +598,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (typing || mod || e.altKey) return;
 
     if (e.key === "?") { e.preventDefault(); setHelpOpen((h) => !h); return; }
-    if (mediaList.length === 0) return;
+    if (!hasMedia) return;
     if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); togglePlay(); return; }
     if (e.key === "ArrowLeft") { e.preventDefault(); seek(timeSec - (e.shiftKey ? 5 : 1)); return; }
     if (e.key === "ArrowRight") { e.preventDefault(); seek(timeSec + (e.shiftKey ? 5 : 1)); return; }
@@ -494,7 +617,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         className="h-full w-full shrink-0 md:w-[var(--rail-w)]"
         style={{ "--rail-w": `${railWidth}px` } as CSSProperties}
       >
-        <DirectorRail messages={messages} busy={busy} hasMedia={mediaList.length > 0} onSend={handleSend} onFiles={handleFiles} />
+        <DirectorRail messages={messages} busy={busy} hasMedia={hasMedia} onSend={handleSend} onFiles={handleFiles} />
       </div>
       <ResizeHandle
         className="hidden md:block"
@@ -510,14 +633,14 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         <TopBar
           title={doc.meta.title || projectName || "Untitled"}
           onRename={renameProject}
-          mediaLabel={mode === "images" ? `${mediaList.length} photos` : mediaList[0]?.label ?? null}
+          mediaLabel={mode === "images" ? `${projectMedia.filter((m) => m.kind === "image").length} photos` : projectMedia.find((m) => m.kind === "video")?.label ?? projectMedia[0]?.label ?? null}
           durationSec={durationSec}
           cutCount={visualClipCount}
           codeOpen={codeOpen}
           onToggleCode={() => setCodeOpen((c) => !c)}
           doc={doc}
           onExport={exportWith}
-          canExport={mediaList.length > 0 && durationSec > 0}
+          canExport={hasMedia && durationSec > 0}
           busy={busy}
           onUndo={undo}
           onRedo={redo}
@@ -530,27 +653,31 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onSave={onSave ? handleSave : undefined}
           saveState={saveState}
         />
-        <AppliedStatus doc={doc} hasMedia={mediaList.length > 0} />
+        <AppliedStatus doc={doc} hasMedia={hasMedia} />
         {room === "edit" ? (
-          <QuickActions mode={mediaList.length === 0 ? "none" : mode} busy={busy} onAction={handleSend} />
+          <QuickActions mode={hasMedia ? mode : "none"} busy={busy} onAction={handleSend} />
         ) : (
           <RoomPanel
             room={room}
             doc={doc}
-            mediaList={mediaList}
+            mediaList={projectMedia}
             busy={busy}
             onAction={handleSend}
             onApplyDoc={(d) => commit(d, { coalesce: "color" })}
             onFiles={handleFiles}
             onExport={exportDoc}
-            canExport={mediaList.length > 0 && durationSec > 0}
+            canExport={hasMedia && durationSec > 0}
             muted={muted}
             onToggleMute={() => setMuted((m) => !m)}
+            onReorderMedia={reorderMedia}
+            onRemoveMedia={removeMedia}
+            onRecordVoiceover={addVoiceoverFile}
+            onSetTrackVolume={setAudioTrackVolume}
           />
         )}
         <Stage
           urls={urls}
-          hasMedia={mediaList.length > 0}
+          hasMedia={hasMedia}
           doc={doc}
           timeSec={timeSec}
           durationSec={durationSec}

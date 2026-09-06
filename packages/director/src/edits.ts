@@ -27,44 +27,64 @@ const isMainVisualTrack = (id: string): boolean => !OVERLAY_TRACK_IDS.has(id);
 
 // ---- Aspect ratios ---------------------------------------------------------
 
-export type AspectKey = "9:16" | "1:1" | "4:5" | "16:9";
+export type AspectKey =
+  | "9:16" | "1:1" | "4:5" | "16:9" | "21:9" | "4:3" | "2.39:1" | "2:3";
 
 export const ASPECTS: Record<AspectKey, { width: number; height: number; label: string }> = {
   "9:16": { width: 1080, height: 1920, label: "vertical (Reels/Shorts/TikTok)" },
   "1:1": { width: 1080, height: 1080, label: "square (feed)" },
   "4:5": { width: 1080, height: 1350, label: "portrait (feed)" },
   "16:9": { width: 1920, height: 1080, label: "widescreen" },
+  "21:9": { width: 2560, height: 1080, label: "ultrawide / cinematic" },
+  "4:3": { width: 1440, height: 1080, label: "classic (fullscreen 4:3)" },
+  "2.39:1": { width: 2048, height: 856, label: "anamorphic scope (2.39:1)" },
+  "2:3": { width: 1080, height: 1620, label: "tall portrait (2:3)" },
 };
 
-/** Reframe to a new aspect: resize the composition and re-anchor every clip. */
-export function reframe(doc: EditDoc, aspect: AspectKey): EditDoc {
-  const target = ASPECTS[aspect];
+/** Every offered aspect key, for UI enumeration. */
+export const ASPECT_KEYS = Object.keys(ASPECTS) as AspectKey[];
+
+/**
+ * Reframe to explicit composition dimensions: resize the frame and re-anchor
+ * every clip (media re-centers frame-cover; text keeps its relative position).
+ * Dimensions are rounded to even numbers so libx264/yuv420p export stays valid.
+ */
+export function reframeTo(doc: EditDoc, width: number, height: number): EditDoc {
+  const targetW = Math.max(2, Math.round(width / 2) * 2);
+  const targetH = Math.max(2, Math.round(height / 2) * 2);
   const oldW = doc.meta.width;
   const oldH = doc.meta.height;
   const clone: EditDoc = structuredClone(doc);
-  clone.meta.width = target.width;
-  clone.meta.height = target.height;
+  clone.meta.width = targetW;
+  clone.meta.height = targetH;
 
   for (const track of clone.tracks) {
     for (const clip of track.clips) {
       if (clip.kind === "video" || clip.kind === "image") {
         // Media is frame-cover: center it in the new frame.
-        clip.transform.x = target.width / 2;
-        clip.transform.y = target.height / 2;
+        clip.transform.x = targetW / 2;
+        clip.transform.y = targetH / 2;
       } else if (clip.kind === "text") {
         // Keep text at the same relative position.
-        clip.transform.x = (clip.transform.x / oldW) * target.width;
-        clip.transform.y = (clip.transform.y / oldH) * target.height;
+        clip.transform.x = (clip.transform.x / oldW) * targetW;
+        clip.transform.y = (clip.transform.y / oldH) * targetH;
       }
     }
   }
   return parseEditDoc(clone);
 }
 
+/** Reframe to a named aspect (delegates to reframeTo with the preset dims). */
+export function reframe(doc: EditDoc, aspect: AspectKey): EditDoc {
+  const target = ASPECTS[aspect];
+  return reframeTo(doc, target.width, target.height);
+}
+
 // ---- Looks -----------------------------------------------------------------
 
 export type LookKey =
-  | "warm" | "cool" | "vivid" | "bw" | "cinematic" | "vintage" | "noir" | "vibrant" | "none";
+  | "warm" | "cool" | "vivid" | "bw" | "cinematic" | "vintage" | "noir" | "vibrant"
+  | "bleach-bypass" | "moody" | "golden-hour" | "matte" | "punch" | "none";
 
 export const LOOK_PRESETS: Record<LookKey, ColorGrade & { label: string }> = {
   warm: { brightness: 1.03, contrast: 1.05, saturation: 1.08, warmth: 0.5, label: "warm & golden" },
@@ -75,8 +95,16 @@ export const LOOK_PRESETS: Record<LookKey, ColorGrade & { label: string }> = {
   vintage: { brightness: 1.02, contrast: 0.95, saturation: 0.82, warmth: 0.55, label: "vintage film" },
   noir: { brightness: 0.96, contrast: 1.22, saturation: 0, warmth: 0, label: "high-contrast noir" },
   vibrant: { brightness: 1.04, contrast: 1.08, saturation: 1.45, warmth: 0.12, label: "vibrant pop" },
+  "bleach-bypass": { brightness: 1.04, contrast: 1.32, saturation: 0.55, warmth: 0.05, label: "bleach-bypass (silvery, high-contrast)" },
+  moody: { brightness: 0.9, contrast: 1.18, saturation: 0.85, warmth: 0.0, label: "moody & dark" },
+  "golden-hour": { brightness: 1.05, contrast: 1.04, saturation: 1.12, warmth: 0.7, label: "golden hour" },
+  matte: { brightness: 1.03, contrast: 0.88, saturation: 0.92, warmth: 0.12, label: "matte (lifted, soft)" },
+  punch: { brightness: 1.03, contrast: 1.16, saturation: 1.3, warmth: 0.08, label: "punchy contrast" },
   none: { brightness: 1, contrast: 1, saturation: 1, warmth: 0, label: "no grade" },
 };
+
+/** Every offered look key, for UI enumeration and the apply_look tool enum. */
+export const LOOK_KEYS = Object.keys(LOOK_PRESETS) as LookKey[];
 
 /** Apply a color grade preset to every visual media clip. */
 export function applyLook(doc: EditDoc, look: LookKey): EditDoc {
@@ -374,16 +402,31 @@ export function addBroll(
 
 // ---- Kinetic (animated) titles ---------------------------------------------
 
+/** Animated-title styles offered by the kinetic-title tool. */
+export type TitleAnimStyle = "kinetic" | "pop" | "bounce";
+
 /**
- * Add a kinetic title that slides up and scales in, then holds. The animation is
- * pure data on the text clip (`anim`), resolved deterministically by
- * `textKinetic` in core — so canvas, Stage, and export agree.
+ * Add an animated title, then hold. The animation is pure data on the text clip
+ * (`anim`), resolved deterministically by `textKinetic` in core — so canvas,
+ * Stage, and export agree:
+ *  - "kinetic" — slides up from below and scales in.
+ *  - "pop"     — scales in from small with an overshoot (no slide).
+ *  - "bounce"  — drops in from above with a bounce settle.
  */
-export function addKineticTitle(doc: EditDoc, text: string): EditDoc {
+export function addKineticTitle(
+  doc: EditDoc,
+  text: string,
+  style: TitleAnimStyle = "kinetic",
+): EditDoc {
   const clone: EditDoc = structuredClone(doc);
   const w = clone.meta.width;
   const h = clone.meta.height;
-  const animDur = 0.6;
+  const anim =
+    style === "pop"
+      ? { style: "pop" as const, fromX: 0, fromY: 0, fromScale: 0.4, durationSec: 0.5 }
+      : style === "bounce"
+        ? { style: "bounce" as const, fromX: 0, fromY: -Math.round(h * 0.12), fromScale: 0.85, durationSec: 0.8 }
+        : { style: "kinetic" as const, fromX: 0, fromY: Math.round(h * 0.08), fromScale: 0.6, durationSec: 0.6 };
   const clip = {
     id: `ktitle-${Date.now()}`,
     kind: "text" as const,
@@ -396,8 +439,7 @@ export function addKineticTitle(doc: EditDoc, text: string): EditDoc {
     transform: { x: w / 2, y: h / 2 },
     transitionInSec: 0.25,
     transitionOutSec: 0.4,
-    // Slide up from below (+8% of height) and grow from 0.6 over the intro.
-    anim: { style: "kinetic" as const, fromX: 0, fromY: Math.round(h * 0.08), fromScale: 0.6, durationSec: animDur },
+    anim,
   };
 
   let titles = clone.tracks.find((t) => t.id === "titles");
@@ -406,6 +448,83 @@ export function addKineticTitle(doc: EditDoc, text: string): EditDoc {
     clone.tracks.push(titles);
   }
   (titles.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+// ---- VFX overlays ----------------------------------------------------------
+
+/**
+ * Merge whole-frame VFX overlays onto the doc (vignette / grain / lightLeak).
+ * Omitted fields keep their current value, so nudges accumulate. Pure and
+ * re-parsed through the schema. Faithful: a finishing texture pass, no content
+ * change. Values are clamped to the schema ranges (0..1; boolean).
+ */
+export function applyVfx(
+  doc: EditDoc,
+  partial: { vignette?: number; grain?: number; lightLeak?: boolean },
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const cur = clone.vfx;
+  clone.vfx = {
+    vignette: round(clamp(partial.vignette ?? cur.vignette, 0, 1)),
+    grain: round(clamp(partial.grain ?? cur.grain, 0, 1)),
+    lightLeak: partial.lightLeak ?? cur.lightLeak,
+  };
+  return parseEditDoc(clone);
+}
+
+// ---- Caption styling -------------------------------------------------------
+
+export type CaptionPosition = "top" | "center" | "bottom";
+
+export interface CaptionStyleOpts {
+  fontFamily?: string;
+  fontWeight?: "normal" | "medium" | "semibold" | "bold";
+  color?: string;
+  background?: string | null;
+  outlineColor?: string;
+  outlineWidth?: number;
+  fontSize?: number;
+  position?: CaptionPosition;
+}
+
+/**
+ * Restyle the existing captions track — font family/weight, fill color, pill
+ * background, stroked outline, size, and vertical position. Pure + re-parsed
+ * through the schema. Applies to every text clip on the "captions" track; throws
+ * a helpful error when there are no captions yet.
+ */
+export function styleCaptions(doc: EditDoc, opts: CaptionStyleOpts): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const captions = clone.tracks.find((t) => t.id === "captions");
+  const clips = captions?.clips.filter((c) => c.kind === "text") ?? [];
+  if (clips.length === 0) {
+    throw new Error("Add captions first — there's nothing to style yet.");
+  }
+  const h = clone.meta.height;
+  const yFor: Record<CaptionPosition, number> = {
+    top: Math.round(h * 0.12),
+    center: Math.round(h * 0.5),
+    bottom: h - Math.round(h * 0.12),
+  };
+  for (const clip of clips) {
+    if (clip.kind !== "text") continue;
+    if (opts.fontFamily !== undefined) clip.fontFamily = opts.fontFamily;
+    if (opts.fontWeight !== undefined) clip.fontWeight = opts.fontWeight;
+    if (opts.color !== undefined) clip.color = opts.color;
+    if (opts.fontSize !== undefined) clip.fontSize = Math.max(1, Math.round(opts.fontSize));
+    if (opts.background !== undefined) {
+      if (opts.background === null) delete (clip as { background?: string }).background;
+      else clip.background = opts.background;
+    }
+    if (opts.outlineWidth !== undefined || opts.outlineColor !== undefined) {
+      clip.outline = {
+        color: opts.outlineColor ?? clip.outline?.color ?? "#000000",
+        width: opts.outlineWidth ?? clip.outline?.width ?? 0,
+      };
+    }
+    if (opts.position !== undefined) clip.transform.y = yFor[opts.position];
+  }
   return parseEditDoc(clone);
 }
 

@@ -16,6 +16,7 @@ import {
   activeClipsAt,
   cssFilter,
   emphasisScale,
+  fontWeightToCss,
   imageMotion,
   sourceTimeAt,
   textKinetic,
@@ -28,6 +29,7 @@ import {
   type SolidClip,
   type TextClip,
   type VideoClip,
+  type Vfx,
 } from "@cadence/core";
 
 const degToRad = (deg: number): number => (deg * Math.PI) / 180;
@@ -44,7 +46,7 @@ function drawText(ctx: SKRSContext2D, clip: TextClip): void {
   if (clip.transform.rotation !== 0) ctx.rotate(degToRad(clip.transform.rotation));
   if (effScale !== 1) ctx.scale(effScale, effScale);
   ctx.globalAlpha = op;
-  ctx.font = `${clip.fontSize}px ${clip.fontFamily}`;
+  ctx.font = `${fontWeightToCss(clip.fontWeight)} ${clip.fontSize}px ${clip.fontFamily}`;
   ctx.textAlign = clip.align;
   ctx.textBaseline = "middle";
 
@@ -59,6 +61,15 @@ function drawText(ctx: SKRSContext2D, clip: TextClip): void {
     ctx.beginPath();
     ctx.roundRect(bx, -h / 2, w, h, h * 0.28);
     ctx.fill();
+  }
+
+  // Stroked outline first (under the fill), for readability over busy footage.
+  if (clip.outline && clip.outline.width > 0) {
+    ctx.lineWidth = clip.outline.width * 2; // half sits under the fill → visible width
+    ctx.strokeStyle = clip.outline.color;
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 2;
+    ctx.strokeText(clip.text, 0, 0);
   }
 
   ctx.fillStyle = clip.color;
@@ -83,7 +94,8 @@ function drawMedia(
   const motion = clip.kind === "image" ? imageMotion(clip, clipTimeCache) : null;
   // Punch-in emphasis pulses a video clip's scale up over a sub-range (core helper).
   const emphasis = clip.kind === "video" ? emphasisScale(clip, clipTimeCache) : 1;
-  const effScale = clip.transform.scale * (motion ? motion.scale : 1) * emphasis;
+  // tm.scaleMul carries the "zoom" transition's scale-in (1 for every other type).
+  const effScale = clip.transform.scale * (motion ? motion.scale : 1) * emphasis * tm.scaleMul;
   const panX = motion ? motion.panXFrac * frameW : 0;
   const panY = motion ? motion.panYFrac * frameH : 0;
 
@@ -147,6 +159,65 @@ function drawSolid(ctx: SKRSContext2D, clip: SolidClip, frameW: number, frameH: 
   ctx.restore();
 }
 
+/**
+ * Whole-frame VFX finishing pass, painted AFTER every clip so it sits over the
+ * fully composited frame. Mirrors the ffmpeg finishing chain (vignette / noise /
+ * screen-blended warm leak) so the preview matches the export. Deterministic: the
+ * grain uses a seeded PRNG so a given frame always renders identically.
+ */
+function drawVfx(ctx: SKRSContext2D, vfx: Vfx, w: number, h: number): void {
+  // --- vignette: radial gradient, clear center → dark edges ---
+  if (vfx.vignette > 0) {
+    const cx = w / 2;
+    const cy = h / 2;
+    const inner = Math.min(w, h) * 0.35;
+    const outer = Math.hypot(w, h) / 2;
+    const g = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, `rgba(0,0,0,${Math.min(0.85, vfx.vignette).toFixed(3)})`);
+    ctx.save();
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
+  // --- warm light-leak: a diagonal warm gradient, screen-blended over a corner ---
+  if (vfx.lightLeak) {
+    const g = ctx.createLinearGradient(w, 0, w * 0.2, h);
+    g.addColorStop(0, "rgba(255,176,96,0.42)");
+    g.addColorStop(0.4, "rgba(255,120,80,0.16)");
+    g.addColorStop(1, "rgba(255,120,80,0)");
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
+  // --- film grain: seeded procedural noise (deterministic per frame size) ---
+  if (vfx.grain > 0) {
+    let seed = 0x9e3779b9 ^ (w * 73856093) ^ (h * 19349663);
+    const rand = (): number => {
+      // xorshift32 → 0..1
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      return ((seed >>> 0) % 100000) / 100000;
+    };
+    const count = Math.floor(w * h * 0.03 * vfx.grain);
+    ctx.save();
+    for (let i = 0; i < count; i++) {
+      const x = Math.floor(rand() * w);
+      const y = Math.floor(rand() * h);
+      const v = rand() < 0.5 ? 255 : 0;
+      const a = (0.06 + rand() * 0.14) * vfx.grain;
+      ctx.fillStyle = `rgba(${v},${v},${v},${a.toFixed(3)})`;
+      ctx.fillRect(x, y, 1, 1);
+    }
+    ctx.restore();
+  }
+}
+
 /** Deterministic-ish tint from a string so different media read differently. */
 function tintFor(id: string): string {
   let hash = 0;
@@ -187,6 +258,9 @@ export class CanvasRenderEngine implements RenderEngine {
           break;
       }
     }
+
+    // Whole-frame finishing overlays (vignette / grain / light-leak), over everything.
+    drawVfx(ctx, doc.vfx, width, height);
 
     const data = canvas.toBuffer("image/png");
     return { width, height, format: "png", data };

@@ -5,12 +5,56 @@
  * on export (ffmpeg). Keeping this math in one place is what makes the preview
  * trustworthy.
  */
-import type { ColorGrade, ImageClip, SolidClip, TextClip, VideoClip } from "./schema";
+import type { ColorGrade, FontWeight, ImageClip, SolidClip, TextClip, VideoClip } from "./schema";
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 
 /** Ease-out cubic — fast start, gentle settle. Deterministic; p is 0..1. */
 const easeOutCubic = (p: number): number => 1 - Math.pow(1 - clamp01(p), 3);
+
+/**
+ * Ease-out-back — overshoots past 1 then settles, giving a "pop". Deterministic;
+ * the standard constants (c1 = 1.70158). p is 0..1.
+ */
+const easeOutBack = (p: number): number => {
+  const x = clamp01(p);
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+};
+
+/**
+ * Ease-out-bounce — a damped bounce settling to 1. Deterministic; the standard
+ * piecewise constants (n1 = 7.5625, d1 = 2.75). p is 0..1.
+ */
+const easeOutBounce = (p: number): number => {
+  let x = clamp01(p);
+  const n1 = 7.5625;
+  const d1 = 2.75;
+  if (x < 1 / d1) return n1 * x * x;
+  if (x < 2 / d1) return n1 * (x -= 1.5 / d1) * x + 0.75;
+  if (x < 2.5 / d1) return n1 * (x -= 2.25 / d1) * x + 0.9375;
+  return n1 * (x -= 2.625 / d1) * x + 0.984375;
+};
+
+/**
+ * Resolve a named FontWeight to a CSS/canvas `font` weight token. Named mid
+ * weights map to their numeric equivalents so the canvas, the browser preview,
+ * and (where a weighted face is available) export all agree. Pure + deterministic.
+ */
+export function fontWeightToCss(weight: FontWeight): string {
+  switch (weight) {
+    case "medium":
+      return "500";
+    case "semibold":
+      return "600";
+    case "bold":
+      return "bold";
+    case "normal":
+    default:
+      return "normal";
+  }
+}
 
 /** A CSS/canvas `filter` string for a color grade ("none" when neutral). */
 export function cssFilter(look: ColorGrade): string {
@@ -75,15 +119,32 @@ export interface KineticState {
 }
 
 /**
- * Kinetic title state at `timeSec` — the text slides from (fromX, fromY) and
+ * Animated title state at `timeSec` — the text moves from (fromX, fromY) and
  * grows from `fromScale` toward its resting transform over the first
- * `durationSec`, eased. Identity when the clip has no kinetic animation, so it
- * is safe to call for every text clip. Deterministic, mirroring transitionOpacity.
+ * `durationSec`, using the easing for its `anim.style`:
+ *  - "kinetic" — ease-out cubic (slide + scale in).
+ *  - "pop"     — ease-out-back on the scale (overshoots past 1, then settles).
+ *  - "bounce"  — ease-out-bounce on the offset (drops in with a bounce settle).
+ * Identity for "none" (or a zero duration), so it is safe to call for every text
+ * clip. Deterministic, mirroring transitionOpacity.
  */
 export function textKinetic(clip: TextClip, timeSec: number): KineticState {
   const a = clip.anim;
-  if (a.style !== "kinetic" || a.durationSec <= 0) return { dx: 0, dy: 0, scaleMul: 1 };
-  const e = easeOutCubic((timeSec - clip.start) / a.durationSec);
+  if (a.style === "none" || a.durationSec <= 0) return { dx: 0, dy: 0, scaleMul: 1 };
+  const p = (timeSec - clip.start) / a.durationSec;
+  if (a.style === "pop") {
+    // Scale overshoots past its resting 1 then settles; offsets follow the same curve.
+    const e = easeOutBack(p);
+    return { dx: a.fromX * (1 - e), dy: a.fromY * (1 - e), scaleMul: a.fromScale + (1 - a.fromScale) * e };
+  }
+  if (a.style === "bounce") {
+    // Offset bounces into place; scale eases in normally (cubic) alongside it.
+    const eb = easeOutBounce(p);
+    const ec = easeOutCubic(p);
+    return { dx: a.fromX * (1 - eb), dy: a.fromY * (1 - eb), scaleMul: a.fromScale + (1 - a.fromScale) * ec };
+  }
+  // "kinetic": ease-out cubic on both offset and scale.
+  const e = easeOutCubic(p);
   return {
     dx: a.fromX * (1 - e),
     dy: a.fromY * (1 - e),
@@ -109,6 +170,8 @@ export interface TransitionMotion {
   dy: number;
   wipeFrac: number;
   fadeOpacity: boolean;
+  /** Extra scale multiplier for the "zoom" reveal (settles to 1); 1 otherwise. */
+  scaleMul: number;
 }
 
 export function transitionMotion(
@@ -121,19 +184,29 @@ export function transitionMotion(
   const inP = clip.transitionInSec > 0 ? clamp01((timeSec - clip.start) / clip.transitionInSec) : 1;
   const end = clip.start + clip.duration;
   const outP = clip.transitionOutSec > 0 ? clamp01((end - timeSec) / clip.transitionOutSec) : 1;
-  if (type === "crossfade" || type === "dip-to-black") {
-    return { dx: 0, dy: 0, wipeFrac: 1, fadeOpacity: true };
+  // crossfade / dip-to-black / dissolve are all opacity ramps in the preview
+  // (they differ only in the xfade name used on export).
+  if (type === "crossfade" || type === "dip-to-black" || type === "dissolve") {
+    return { dx: 0, dy: 0, wipeFrac: 1, fadeOpacity: true, scaleMul: 1 };
   }
-  if (type === "slide") {
-    // Enter from the right (in-ramp), exit to the left (out-ramp), eased.
+  if (type === "slide" || type === "smooth") {
+    // Enter from the right (in-ramp), exit to the left (out-ramp), eased. "smooth"
+    // shares the slide motion in the preview (feathered on export via smoothleft).
     let dx = 0;
     if (inP < 1) dx = (1 - easeOutCubic(inP)) * frameW;
     else if (outP < 1) dx = -(1 - easeOutCubic(outP)) * frameW;
     void frameH;
-    return { dx, dy: 0, wipeFrac: 1, fadeOpacity: false };
+    return { dx, dy: 0, wipeFrac: 1, fadeOpacity: false, scaleMul: 1 };
+  }
+  if (type === "zoom") {
+    // Incoming frame scales in from slightly larger while it fades (a punchy reveal).
+    let scaleMul = 1;
+    if (inP < 1) scaleMul = 1 + (1 - easeOutCubic(inP)) * 0.18;
+    else if (outP < 1) scaleMul = 1 + (1 - easeOutCubic(outP)) * 0.18;
+    return { dx: 0, dy: 0, wipeFrac: 1, fadeOpacity: true, scaleMul };
   }
   // wipe: reveal from the left; hardest edge is the smaller of the two ramps.
-  return { dx: 0, dy: 0, wipeFrac: Math.min(inP, outP), fadeOpacity: false };
+  return { dx: 0, dy: 0, wipeFrac: Math.min(inP, outP), fadeOpacity: false, scaleMul: 1 };
 }
 
 /**

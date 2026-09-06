@@ -1,51 +1,50 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useId, useRef, useState, type FormEvent } from "react";
 import { SsoButtons } from "@/components/auth/SsoButtons";
 
-/** Same loose check the server uses (lib/session.isValidEmail) — mirrored client-side. */
-function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
-}
-
 /**
- * Dev sign-in form. Progressive enhancement over a native form POST:
- * without JS the browser submits to /api/auth/login and follows the 303 to
- * /dashboard exactly as before. With JS we add inline email validation, a
- * loading state, and inline error display — but still let the browser perform
- * the real submit + redirect, so the DevAuthProvider cookie flow is untouched.
+ * Dev sign-in form. Submits via fetch and navigates client-side — no error ever
+ * leaks into the URL. The browser's native email/required validation covers
+ * empties; we only surface a message if the server itself reports a problem.
  */
-export function SignInForm({ initialError }: { initialError?: string }) {
+export function SignInForm() {
+  const router = useRouter();
   const emailId = useId();
   const nameId = useId();
   const errorId = useId();
 
   const emailRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
-  // Seeded from a server round-trip (JS-off fallback), then owned client-side.
-  const [error, setError] = useState<string | null>(initialError ?? null);
+  const [error, setError] = useState<string | null>(null);
 
-  function handleSubmit(e: FormEvent<HTMLFormElement>) {
-    const email = emailRef.current?.value ?? "";
-    if (!isValidEmail(email)) {
-      e.preventDefault();
-      setError("Enter a valid email address.");
-      emailRef.current?.focus();
-      return;
-    }
-    // Valid: let the native submit + server redirect proceed; show loading.
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const data = new FormData(e.currentTarget);
     setError(null);
     setBusy(true);
+    try {
+      const res = await fetch("/api/auth/login", { method: "POST", body: data });
+      if (res.ok) {
+        router.push("/dashboard");
+        router.refresh();
+        return;
+      }
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      setError(body.error ?? "Couldn't sign in — please try again.");
+      setBusy(false);
+    } catch {
+      setError("Network problem — please try again.");
+      setBusy(false);
+    }
   }
 
   return (
     <div>
       <form
-        action="/api/auth/login"
-        method="post"
         onSubmit={handleSubmit}
-        noValidate
         className="space-y-4"
         aria-describedby={error ? errorId : undefined}
       >

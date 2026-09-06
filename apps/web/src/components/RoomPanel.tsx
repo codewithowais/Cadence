@@ -1,10 +1,11 @@
 "use client";
 
 import { useRef } from "react";
-import type { ColorGrade, EditDoc, MediaAsset, QualityPreset } from "@cadence/core";
+import type { AudioClip, ColorGrade, EditDoc, MediaAsset, QualityPreset } from "@cadence/core";
 import { adjustColor, currentGrade, NEUTRAL_GRADE } from "@cadence/director";
 import { fmtTime } from "@/lib/format";
 import { LOOKS, describeDoc } from "@/lib/status";
+import { VoiceOverRecorder } from "./VoiceOverRecorder";
 import type { RoomKey } from "./RoomsRail";
 
 interface RoomPanelProps {
@@ -27,6 +28,14 @@ interface RoomPanelProps {
   /** Preview mute state (lifted to the editor; also toggled in the transport). */
   muted: boolean;
   onToggleMute: () => void;
+  /** Media room: move a media's clip earlier/later on the timeline (undoable). */
+  onReorderMedia: (mediaId: string, dir: "up" | "down") => void;
+  /** Media room: remove a media and its clips from the project (undoable). */
+  onRemoveMedia: (mediaId: string) => void;
+  /** Audio room: register a recorded voice-over (blob + measured duration). */
+  onRecordVoiceover: (file: File, durationSec: number) => void;
+  /** Audio room: set the volume of every audio clip on a track (music/voiceover). */
+  onSetTrackVolume: (trackId: string, volume: number) => void;
 }
 
 /** Shared wrapper so every room reads as the same contextual strip. */
@@ -68,6 +77,41 @@ function Pill({
   );
 }
 
+/** Compact 0..1 volume slider for an audio track (music / voice-over). */
+function VolumeSlider({
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  disabled?: boolean;
+  onChange: (v: number) => void;
+}) {
+  const pct = Math.round(value * 100);
+  return (
+    <label className="flex w-[132px] shrink-0 flex-col gap-1">
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wider text-faint">
+        <span>{label} vol</span>
+        <span className="tabular-nums text-muted">{pct}%</span>
+      </span>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.01}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={`${label} volume: ${pct}%`}
+        style={{ accentColor: "var(--color-teal)" }}
+        className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-line disabled:cursor-not-allowed disabled:opacity-40"
+      />
+    </label>
+  );
+}
+
 const QUALITY_PRESETS: { key: QualityPreset; label: string; prompt: string }[] = [
   { key: "standard", label: "Standard", prompt: "set standard quality (1080p)" },
   { key: "high", label: "High", prompt: "make it high quality" },
@@ -75,7 +119,23 @@ const QUALITY_PRESETS: { key: QualityPreset; label: string; prompt: string }[] =
 ];
 
 export function RoomPanel(props: RoomPanelProps) {
-  const { room, doc, mediaList, busy, onAction, onApplyDoc, onFiles, onExport, canExport, muted, onToggleMute } = props;
+  const {
+    room,
+    doc,
+    mediaList,
+    busy,
+    onAction,
+    onApplyDoc,
+    onFiles,
+    onExport,
+    canExport,
+    muted,
+    onToggleMute,
+    onReorderMedia,
+    onRemoveMedia,
+    onRecordVoiceover,
+    onSetTrackVolume,
+  } = props;
   const fileRef = useRef<HTMLInputElement>(null);
   const openPicker = () => fileRef.current?.click();
 
@@ -100,7 +160,7 @@ export function RoomPanel(props: RoomPanelProps) {
     return (
       <Shell label="media">
         {mediaList.length === 0 && <span className="shrink-0 text-xs text-faint">No media yet.</span>}
-        {mediaList.map((m) => {
+        {mediaList.map((m, i) => {
           const detail =
             m.kind === "audio" || m.kind === "video"
               ? m.durationSec != null
@@ -113,17 +173,52 @@ export function RoomPanel(props: RoomPanelProps) {
             <span
               key={m.id}
               title={m.label ?? m.src}
-              className="flex max-w-[220px] shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-muted"
+              className="flex max-w-[260px] shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated py-1 pl-2 pr-1 text-xs text-muted"
             >
               <span className="rounded bg-panel px-1.5 py-0.5 text-[10px] uppercase text-faint">{m.kind}</span>
               <span className="truncate">{m.label ?? m.src}</span>
               {detail && <span className="shrink-0 tabular-nums text-faint">{detail}</span>}
+              <span className="ml-0.5 flex shrink-0 items-center">
+                <button
+                  type="button"
+                  onClick={() => onReorderMedia(m.id, "up")}
+                  disabled={busy || i === 0}
+                  aria-label={`Move ${m.label ?? m.src} earlier`}
+                  title="Move earlier"
+                  className="grid h-6 w-6 place-items-center rounded-md text-faint transition hover:bg-line hover:text-text disabled:opacity-30"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onReorderMedia(m.id, "down")}
+                  disabled={busy || i === mediaList.length - 1}
+                  aria-label={`Move ${m.label ?? m.src} later`}
+                  title="Move later"
+                  className="grid h-6 w-6 place-items-center rounded-md text-faint transition hover:bg-line hover:text-text disabled:opacity-30"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRemoveMedia(m.id)}
+                  disabled={busy}
+                  aria-label={`Remove ${m.label ?? m.src}`}
+                  title="Remove"
+                  className="grid h-6 w-6 place-items-center rounded-md text-faint transition hover:bg-red-500/15 hover:text-red-300 disabled:opacity-30"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                </button>
+              </span>
             </span>
           );
         })}
         <Pill onClick={openPicker} disabled={busy}>
           + Add media
         </Pill>
+        {mediaList.length > 1 && (
+          <span className="shrink-0 text-[11px] text-faint">Reorder to change clip order · remove to drop a clip.</span>
+        )}
         {hiddenInput}
       </Shell>
     );
@@ -162,17 +257,39 @@ export function RoomPanel(props: RoomPanelProps) {
   }
 
   if (room === "audio") {
+    const hasAudioMedia = mediaList.some((m) => m.kind === "audio");
+    const musicClip = doc.tracks.find((t) => t.id === "music")?.clips.find((c): c is AudioClip => c.kind === "audio");
+    const voiceClip = doc.tracks.find((t) => t.id === "voiceover")?.clips.find((c): c is AudioClip => c.kind === "audio");
     return (
       <Shell label="audio">
         <Pill onClick={openPicker} disabled={busy}>
-          + Add music
+          + Add music / audio
         </Pill>
-        <Pill onClick={() => onAction("add background music")} disabled={busy || mediaList.length === 0}>
+        <VoiceOverRecorder disabled={busy} onRecorded={onRecordVoiceover} />
+        <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
+        <Pill onClick={() => onAction("add background music")} disabled={busy || !hasAudioMedia}>
           Use as music
         </Pill>
         <Pill onClick={() => onAction("auto-mix the audio")} disabled={busy || mediaList.length === 0}>
-          Auto-mix
+          Duck under speech
         </Pill>
+        {musicClip && (
+          <VolumeSlider
+            label="Music"
+            value={musicClip.volume}
+            disabled={busy}
+            onChange={(v) => onSetTrackVolume("music", v)}
+          />
+        )}
+        {voiceClip && (
+          <VolumeSlider
+            label="Voice"
+            value={voiceClip.volume}
+            disabled={busy}
+            onChange={(v) => onSetTrackVolume("voiceover", v)}
+          />
+        )}
+        <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
         <Pill onClick={onToggleMute} active={!muted}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
             {muted ? (
@@ -189,7 +306,7 @@ export function RoomPanel(props: RoomPanelProps) {
           </svg>
           {muted ? "Preview muted" : "Preview sound on"}
         </Pill>
-        <span className="shrink-0 text-[11px] text-faint">Music &amp; mix render on export.</span>
+        <span className="shrink-0 text-[11px] text-faint">Music, voice-over &amp; mix render on export.</span>
         {hiddenInput}
       </Shell>
     );

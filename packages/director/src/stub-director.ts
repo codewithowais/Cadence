@@ -25,13 +25,15 @@ import {
   reframeTool,
   slideshowTool,
   speedTool,
+  styleCaptionsTool,
   titleTool,
   transitionTool,
+  vfxTool,
   zoomTool,
   type ToolCall,
 } from "./tools";
 import { currentGrade } from "./edits";
-import type { BrollCorner, TitleStyle } from "./edits";
+import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle } from "./edits";
 import type { AspectKey, LookKey, QualityKey } from "./edits";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
@@ -60,21 +62,42 @@ function parseTargetSeconds(req: string): number {
 
 function parseAspect(req: string): AspectKey | null {
   if (/9:16|vertical|reels?|shorts|tik ?tok|story|stories/.test(req)) return "9:16";
+  if (/2\.39|2\.40|2\.35|anamorphic|cinemascope|\bscope\b|letterbox/.test(req)) return "2.39:1";
+  if (/21:9|ultra ?wide/.test(req)) return "21:9";
   if (/1:1|square/.test(req)) return "1:1";
+  if (/2:3|tall portrait/.test(req)) return "2:3";
   if (/4:5|portrait/.test(req)) return "4:5";
+  if (/4:3|fullscreen|full ?screen|\bclassic\b/.test(req)) return "4:3";
   if (/16:9|widescreen|landscape|horizontal/.test(req)) return "16:9";
   if (/reframe|resize|aspect/.test(req)) return "9:16";
   return null;
 }
 
+/**
+ * Parse a custom width×height ("reframe to 1600x900", "make it 1200 by 675").
+ * Requires both dimensions to be 3–5 digits so it never collides with a speed /
+ * zoom factor like "1.5x". Returns null when no explicit WxH is present.
+ */
+function parseCustomReframe(req: string): { width: number; height: number } | null {
+  const m = req.match(/(\d{3,5})\s*(?:[x×]|by)\s*(\d{3,5})/);
+  if (!m) return null;
+  return { width: parseInt(m[1]!, 10), height: parseInt(m[2]!, 10) };
+}
+
 function parseLook(req: string): LookKey | null {
   if (/\b(no|remove|reset)\s+(look|grade|colou?r|filter)\b/.test(req)) return "none";
+  if (/bleach.?bypass|silver.?retention/.test(req)) return "bleach-bypass";
+  if (/golden.?hour|sunset|magic hour/.test(req)) return "golden-hour";
+  if (/\bmatte\b|faded look|lifted blacks?|washed film/.test(req)) return "matte";
+  if (/\bmoody\b|dark and? moody|somber|broody/.test(req)) return "moody";
   if (/noir/.test(req)) return "noir";
   if (/black.?and.?white|b\s?&\s?w|grayscale|greyscale|monochrome/.test(req)) return "bw";
-  if (/vintage|retro|old ?film|film ?grain|nostalg/.test(req)) return "vintage";
+  if (/vintage|retro|old ?film|nostalg/.test(req)) return "vintage";
   if (/cinematic|film(ic)?|movie/.test(req)) return "cinematic";
   if (/vibrant/.test(req)) return "vibrant";
-  if (/vivid|punchy|pop|saturat/.test(req)) return "vivid";
+  // "punch/punchy" as a LOOK only when it isn't a punch-IN emphasis request.
+  if (/\bpunch(y)?\b/.test(req) && !/punch.?in|push in/.test(req)) return "punch";
+  if (/vivid|saturat/.test(req)) return "vivid";
   if (/warm|golden|cozy|cosy/.test(req)) return "warm";
   if (/cool|cold|blue/.test(req)) return "cool";
   if (/look|grade|colou?r|filter/.test(req)) return "warm";
@@ -93,17 +116,24 @@ function parseTitle(req: string, original: string): { text: string; style: Title
   return { text: text ?? "Title", style };
 }
 
-function parseKineticTitle(req: string, original: string): { text: string } | null {
+function parseKineticTitle(req: string, original: string): { text: string; style: TitleAnimStyle } | null {
   const wantsKinetic =
-    /\bkinetic\b|animated title|title that (slides|animates|pops|moves|flies)|slide.?in title|animate (the )?title/.test(req);
+    /\bkinetic\b|animated title|title that (slides|animates|pops|bounces|moves|flies)|slide.?in title|pop.?in title|bounce.?in title|animate (the )?title|(pop|bounce|bouncing|bouncy)\s+title|title that pops/.test(
+      req,
+    );
   if (!wantsKinetic) return null;
+  const style: TitleAnimStyle = /\bbounce|bouncing|bouncy\b/.test(req)
+    ? "bounce"
+    : /\bpops?\b|pop.?in/.test(req)
+      ? "pop"
+      : "kinetic";
   const quoted = original.match(/["“'“”]([^"“”']{1,60})["“”']/);
   let text = quoted?.[1] ?? null;
   if (!text) {
     const m = original.match(/(?:titled|that says|called|saying|title:?)\s+(.+)$/i);
     if (m) text = m[1]!.trim().replace(/[.]+$/, "");
   }
-  return { text: text ?? "Title" };
+  return { text: text ?? "Title", style };
 }
 
 function parseBrollCorner(req: string): BrollCorner | undefined {
@@ -181,14 +211,70 @@ function parseZoomReframe(req: string): { scale?: number; panXFrac?: number; pan
   return { scale, panXFrac: panXFrac || undefined, panYFrac: panYFrac || undefined };
 }
 
-/** Parse a transition style ("dip to black / slide / wipe transitions"). */
+/** Parse a transition style ("dip to black / slide / wipe / dissolve / zoom / smooth"). */
 function parseTransition(req: string): TransitionType | null {
   if (/dip.?to.?black|dip to black|fade through black/.test(req)) return "dip-to-black";
   if (/wipe/.test(req)) return "wipe";
+  if (/dissolve/.test(req)) return "dissolve";
+  if (/zoom (transition|between)|zoom.?in transition|zooming transition/.test(req)) return "zoom";
+  if (/smooth (transition|slide|between)|smooth transitions?/.test(req)) return "smooth";
   if (/slide (transition|between)|sliding transition|slide transitions?/.test(req)) return "slide";
-  if (/cross.?fade|dissolve/.test(req)) return "crossfade";
+  if (/cross.?fade/.test(req)) return "crossfade";
   if (/transition/.test(req)) return "crossfade";
   return null;
+}
+
+/**
+ * Parse whole-frame VFX overlays ("add a vignette", "film grain", "light leak").
+ * Returns null when the request mentions none. Strengths are sensible defaults.
+ */
+function parseVfx(req: string): { vignette?: number; grain?: number; lightLeak?: boolean } | null {
+  const out: { vignette?: number; grain?: number; lightLeak?: boolean } = {};
+  if (/vignette|darken (the )?edges|dark edges|edge darkening/.test(req)) out.vignette = 0.5;
+  if (/grain|film.?grain|grainy|noise texture|add noise/.test(req)) out.grain = 0.35;
+  if (/light.?leak|lens flare|leak of light|warm leak/.test(req)) out.lightLeak = true;
+  return Object.keys(out).length ? out : null;
+}
+
+const CAPTION_COLORS: Record<string, string> = {
+  white: "#ffffff",
+  black: "#000000",
+  yellow: "#ffe14d",
+  red: "#ff4d4d",
+  green: "#4dff88",
+  blue: "#4db4ff",
+  orange: "#ff9f40",
+  pink: "#ff6fb5",
+};
+
+/**
+ * Parse a caption STYLE request ("white captions", "bold yellow captions with a
+ * black outline", "captions at the top"). Returns null unless the request is
+ * about captions AND names at least one style attribute (color / weight / outline
+ * / position / font), so a plain "add captions" still routes to add_captions only.
+ */
+function parseCaptionStyle(req: string): CaptionStyleOpts | null {
+  if (!/caption|subtitle/.test(req)) return null;
+  const out: CaptionStyleOpts = {};
+  for (const [name, hex] of Object.entries(CAPTION_COLORS)) {
+    if (new RegExp(`\\b${name}\\b`).test(req)) {
+      out.color = hex;
+      break;
+    }
+  }
+  if (/\bbold\b/.test(req)) out.fontWeight = "bold";
+  else if (/semi.?bold/.test(req)) out.fontWeight = "semibold";
+  else if (/\bmedium weight|medium captions?\b/.test(req)) out.fontWeight = "medium";
+  if (/outline|stroke|border|outlined/.test(req)) {
+    out.outlineWidth = 6;
+    out.outlineColor = /white outline/.test(req) ? "#ffffff" : "#000000";
+  }
+  if (/at the top|on top|up top|top of (the )?(screen|frame)/.test(req)) out.position = "top";
+  else if (/in the (middle|cent(er|re))|cent(er|re)ed captions?/.test(req)) out.position = "center";
+  else if (/at the bottom|bottom of (the )?(screen|frame)/.test(req)) out.position = "bottom";
+  if (/big(ger)? captions?|large captions?/.test(req)) out.fontSize = 84;
+  else if (/small(er)? captions?|tiny captions?/.test(req)) out.fontSize = 40;
+  return Object.keys(out).length ? out : null;
 }
 
 /**
@@ -265,8 +351,16 @@ export class StubDirector {
     }
 
     // ---- transforms (apply on the current doc, in a sensible order) ----
+    // A custom width×height ("reframe to 1600x900") wins over a named aspect.
+    const custom = parseCustomReframe(req);
     const aspect = parseAspect(req);
-    if (aspect) {
+    if (custom) {
+      const input = { width: custom.width, height: custom.height };
+      steps.push({
+        run: (p) => reframeTool.execute(input, { project: p }),
+        call: { name: reframeTool.name, input },
+      });
+    } else if (aspect) {
       steps.push({
         run: (p) => reframeTool.execute({ aspect }, { project: p }),
         call: { name: reframeTool.name, input: { aspect } },
@@ -296,6 +390,16 @@ export class StubDirector {
       steps.push({
         run: (p) => captionsTool.execute({}, { project: p }),
         call: { name: captionsTool.name, input: {} },
+      });
+    }
+
+    // Caption styling ("white bold captions with an outline", "captions at the top")
+    // — runs after add_captions so it styles the freshly-generated caption clips.
+    const captionStyle = parseCaptionStyle(req);
+    if (captionStyle) {
+      steps.push({
+        run: (p) => styleCaptionsTool.execute(captionStyle, { project: p }),
+        call: { name: styleCaptionsTool.name, input: captionStyle },
       });
     }
 
@@ -357,13 +461,23 @@ export class StubDirector {
       });
     }
 
-    // Transition style between clips/photos (crossfade/dip-to-black/slide/wipe).
+    // Transition style between clips/photos (crossfade/dip-to-black/slide/wipe/
+    // dissolve/zoom/smooth).
     const transition = parseTransition(req);
     if (transition) {
       const input = { type: transition };
       steps.push({
         run: (p) => transitionTool.execute(input, { project: p }),
         call: { name: transitionTool.name, input },
+      });
+    }
+
+    // Whole-frame VFX overlays ("add a vignette", "film grain", "light leak").
+    const vfx = parseVfx(req);
+    if (vfx) {
+      steps.push({
+        run: (p) => vfxTool.execute(vfx, { project: p }),
+        call: { name: vfxTool.name, input: vfx },
       });
     }
 
@@ -431,7 +545,7 @@ export class StubDirector {
     const hasImages = project.media.some((m) => m.kind === "image");
     if (!hasVideo && !hasImages) return "Add a video or some photos to begin.";
     if (hasImages && !hasVideo)
-      return 'Try: "make a slideshow", "make it vertical", "warm look", "use dip-to-black transitions", or "make it high quality".';
-    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "cinematic look", "make it brighter", "warmer", "slow motion", "zoom in 1.5x", "punch in at 5s", "wipe transitions", "add b-roll", "an animated title that says …", "add background music", or "make it 4K".';
+      return 'Try: "make a slideshow", "make it 21:9", "reframe to 1600x900", "golden-hour look", "use dissolve transitions", "add a vignette", or "make it high quality".';
+    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "white bold captions with an outline", "captions at the top", "cinematic look", "bleach-bypass look", "make it 2.39:1", "reframe to 1600x900", "slow motion", "zoom in 1.5x", "punch in at 5s", "smooth transitions", "add a vignette and film grain", "a bouncing title that says …", "add background music", or "make it 4K".';
   }
 }

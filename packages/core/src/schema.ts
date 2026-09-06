@@ -57,8 +57,15 @@ export type KenBurns = z.infer<typeof KenBurns>;
  * export (drawtext x/y expressions). Faithful: moves/scales the title only.
  */
 export const TextAnim = z.object({
-  /** "none" (static) or "kinetic" (slide + scale in over `durationSec`). */
-  style: z.enum(["none", "kinetic"]).default("none"),
+  /**
+   * How the title animates in over `durationSec`, resolved by the PURE
+   * `textKinetic` helper in grade.ts so canvas, Stage, and export agree:
+   *  - "none"    — static (the default).
+   *  - "kinetic" — slide + scale in, eased (ease-out cubic).
+   *  - "pop"     — scale in with a small overshoot (ease-out-back).
+   *  - "bounce"  — slide in with a damped bounce settle (ease-out-bounce).
+   */
+  style: z.enum(["none", "kinetic", "pop", "bounce"]).default("none"),
   /** Offset (composition px) the text slides FROM, toward its resting x. */
   fromX: z.number().default(0),
   /** Offset (composition px) the text slides FROM, toward its resting y. */
@@ -124,11 +131,24 @@ const transitionOutSec = z.number().nonnegative().default(0);
  *                     black composition background), i.e. a dip.
  *  - "slide"        — the frame slides in from the right / out to the left.
  *  - "wipe"         — the frame is revealed left-to-right (a hard-edged wipe).
+ *  - "dissolve"     — a soft grain dissolve; opacity-based like crossfade in the
+ *                     preview, its own xfade look on export.
+ *  - "zoom"         — the frame scales in while it fades (a punchy reveal).
+ *  - "smooth"       — a soft, feathered horizontal slide/reveal.
  * Resolved by PURE helpers in grade.ts (transitionMotion) so canvas, Stage and
  * the ffmpeg xfade map (crossfade→fade, dip-to-black→fadeblack, slide→slideleft,
- * wipe→wipeleft) all agree.
+ * wipe→wipeleft, dissolve→dissolve, zoom→zoomin, smooth→smoothleft — every name
+ * verified against the ffmpeg xfade transition enum) all agree.
  */
-export const TransitionType = z.enum(["crossfade", "dip-to-black", "slide", "wipe"]);
+export const TransitionType = z.enum([
+  "crossfade",
+  "dip-to-black",
+  "slide",
+  "wipe",
+  "dissolve",
+  "zoom",
+  "smooth",
+]);
 export type TransitionType = z.infer<typeof TransitionType>;
 const transitionType = TransitionType.default("crossfade");
 
@@ -171,6 +191,27 @@ export const ImageClip = z.object({
 });
 export type ImageClip = z.infer<typeof ImageClip>;
 
+/**
+ * Font-weight for a text/caption clip. Named weights resolve to a CSS/canvas
+ * weight by `fontWeightToCss` in grade.ts (medium→500, semibold→600) so the
+ * canvas, the browser preview, and export agree. Defaulted so existing docs stay
+ * valid.
+ */
+export const FontWeight = z.enum(["normal", "medium", "semibold", "bold"]);
+export type FontWeight = z.infer<typeof FontWeight>;
+
+/**
+ * A stroked outline behind caption/title text — drawn with strokeText on the
+ * canvas and `borderw`/`bordercolor` on the ffmpeg drawtext. `width` is 0 (no
+ * outline) by default; the whole object is optional so existing docs are valid.
+ */
+export const TextOutline = z.object({
+  color: HexColor.default("#000000"),
+  /** Stroke width in composition px (0 = no outline). */
+  width: z.number().min(0).default(0),
+});
+export type TextOutline = z.infer<typeof TextOutline>;
+
 /** A text / title clip drawn directly by the renderer (no media needed). */
 export const TextClip = z.object({
   ...clipBase,
@@ -178,6 +219,7 @@ export const TextClip = z.object({
   text: z.string(),
   fontFamily: z.string().default("sans-serif"),
   fontSize: z.number().positive().default(64),
+  fontWeight: FontWeight.default("normal"),
   color: HexColor.default("#ffffff"),
   align: z.enum(["left", "center", "right"]).default("center"),
   transform: Transform.prefault({}),
@@ -186,10 +228,33 @@ export const TextClip = z.object({
   transitionType,
   /** Optional pill background behind the text (used by captions). */
   background: HexColor.optional(),
+  /** Optional stroked outline behind the text (readability over busy footage). */
+  outline: TextOutline.optional(),
   /** Kinetic intro animation (slide + scale in); "none" by default. */
   anim: TextAnim.prefault({}),
 });
 export type TextClip = z.infer<typeof TextClip>;
+
+/**
+ * Curated caption/title fonts offered in the UI. Every entry is a stack backed
+ * by a CSS GENERIC FAMILY (sans-serif / serif / monospace / cursive) so it
+ * always resolves — in the browser preview and on the canvas — even when the
+ * named face is not installed. Real TTF bundling for the ffmpeg export is a
+ * follow-up; export falls back to the platform's default drawtext font.
+ */
+export const CAPTION_FONTS = [
+  "sans-serif",
+  "Inter, sans-serif",
+  "Helvetica, Arial, sans-serif",
+  "Arial, sans-serif",
+  "Roboto, sans-serif",
+  "Montserrat, sans-serif",
+  "Georgia, serif",
+  "Times New Roman, serif",
+  "Courier New, monospace",
+  "Impact, sans-serif",
+] as const;
+export type CaptionFont = (typeof CAPTION_FONTS)[number];
 
 /** An audio-only clip (has no visual representation). */
 export const AudioClip = z.object({
@@ -268,6 +333,27 @@ export const Quality = z.object({
 export type Quality = z.infer<typeof Quality>;
 
 /**
+ * Whole-composition VFX overlays — a finishing pass applied on top of the fully
+ * composited frame (all clips already drawn). Expressed as data so it previews on
+ * the canvas exactly as it renders on export:
+ *  - vignette  — 0..1 darkening toward the frame edges (radial gradient on the
+ *                canvas; the `vignette` filter, angle-scaled, on export).
+ *  - grain     — 0..1 procedural film grain (seeded noise on the canvas; the
+ *                `noise=alls=N:allf=t+u` filter on export).
+ *  - lightLeak — a warm light-leak wash (a diagonal warm gradient screen-blended
+ *                on the canvas; a warm color source `blend=all_mode=screen` on
+ *                export).
+ * All DEFAULTED (off) so existing docs stay valid. Faithful: tone/texture only,
+ * never a content change.
+ */
+export const Vfx = z.object({
+  vignette: z.number().min(0).max(1).default(0),
+  grain: z.number().min(0).max(1).default(0),
+  lightLeak: z.boolean().default(false),
+});
+export type Vfx = z.infer<typeof Vfx>;
+
+/**
  * The whole project as a declarative document. `version` is the schema version
  * so stored docs can be migrated. This object is what the Director emits and
  * what the DB versions.
@@ -278,6 +364,8 @@ export const EditDoc = z.object({
   media: z.array(MediaAsset).default([]),
   tracks: z.array(Track).default([]),
   quality: Quality.prefault({}),
+  /** Whole-frame finishing overlays (vignette / grain / light-leak); off by default. */
+  vfx: Vfx.prefault({}),
 });
 export type EditDoc = z.infer<typeof EditDoc>;
 
