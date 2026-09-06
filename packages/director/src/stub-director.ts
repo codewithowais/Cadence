@@ -41,9 +41,10 @@ interface PlannedStep {
 }
 
 function parseTargetSeconds(req: string): number {
-  const min = req.match(/(\d+(?:\.\d+)?)\s*(?:m|min|minute)/i);
+  // Allow a hyphen or space between the number and its unit ("45-second", "2 min").
+  const min = req.match(/(\d+(?:\.\d+)?)[-\s]*(?:m|min|minute)/i);
   if (min) return Math.round(parseFloat(min[1]!) * 60);
-  const sec = req.match(/(\d+(?:\.\d+)?)\s*(?:s|sec|second)/i);
+  const sec = req.match(/(\d+(?:\.\d+)?)[-\s]*(?:s|sec|second)/i);
   if (sec) return Math.round(parseFloat(sec[1]!));
   return 60;
 }
@@ -139,7 +140,10 @@ export class StubDirector {
 
     // ---- builders (replace the doc); pick at most one ----
     const wantsSlideshow = /slide ?show|photo montage|from (my |these |the )?(photos|pictures|images)|make.*(video|clip).*(photos|pictures|images)/.test(req);
-    const wantsHighlight = /highlight|best (parts|bits|moments)|shorten|make it \d|trim to|\bcut\b.*\d/.test(req);
+    // "make it <n> seconds/minutes" means a highlight; "make it 4K/1080p" does
+    // NOT (that's a quality change), so the duration unit is required here.
+    const wantsHighlight =
+      /highlight|best (parts|bits|moments)|shorten|make it [\d.]+[-\s]*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes)\b|trim to|\bcut\b.*\d/.test(req);
     const wantsFiller = /filler|remove (the )?(um|uh|ums|uhs|pauses|silence|dead ?air)|tighten|clean ?up|remove pauses/.test(req);
 
     if (wantsSlideshow && project.media.some((m) => m.kind === "image")) {

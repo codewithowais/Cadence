@@ -74,10 +74,12 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 
 ## 9. The Director (AI brain)
 - ✅ **Stub Director** — deterministic, offline, free (default). Detects intents from plain language and chains tools.
+- ✅ **Self-correcting agentic loop** (`runDirectorLoop`) — PLAN→ACT (interpret) → VERIFY (schema-parse the doc + render probe frames through the injected `RenderEngine`) → CORRECT (capture the error, feed it forward, fall back to the last known-good / a minimal valid doc). Returns `{ result, verified, attempts, corrections }`. Engine-agnostic: it never imports a renderer, so it's the exact seam the real Claude Director self-corrects through. Covered by the verify gate (check 17) and a 5-prompt eval suite (`npm run evals`).
 - ⛔ **Real Claude Director** (Anthropic API, metered) — planned drop-in behind the money gate; stub stays as fallback.
 
 ## 10. Engineering / quality gates
-- ✅ **Verify gate** — `npm run typecheck` + `npm run verify` renders real frames and asserts (currently **16 checks**: trivial, highlight, edit tools, slideshow, titles/fades/looks, enhance providers, export plan, ffmpeg-graceful, DB builders, migrations, music, b-roll, kinetic, punch-in, whisper-parse, transcriber-factory).
+- ✅ **Verify gate** — `npm run typecheck` + `npm run verify` renders real frames and asserts (currently **17 checks**: trivial, highlight, edit tools, slideshow, titles/fades/looks, enhance providers, export plan, ffmpeg-graceful, DB builders, migrations, music, b-roll, kinetic, punch-in, whisper-parse, transcriber-factory, agentic-loop).
+- ✅ **Eval suite** — `npm run evals` runs the agentic loop over 5 capability prompts, asserting each verifies, calls the right tools, and renders a proof frame (`.cadence/`).
 - ✅ Pinned dependencies + committed lockfile; small verified commits; `TASKS.md` + `CHANGELOG.md` trail.
 
 ---

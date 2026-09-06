@@ -23,6 +23,8 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 
 ## Phase 1 — Social MVP (see AGENTS.md §11 for done)
 
+- ✅ **S1.8 Agentic loop hardening (Ask 4) — plan→act→verify→correct + evals.** `@cadence/director/agentic.ts`: `runDirectorLoop(request, project, { engine, probeTimes?, maxAttempts?, director? })` — calls the Director's `interpret` (PLAN/ACT), `parseEditDoc`s + renders probe frames through an injected `RenderEngine` (VERIFY), and on any schema/render throw captures the error, feeds it forward (`DirectorFeedback`), and falls back to the last-good / a minimal valid doc (CORRECT). Returns `{ result, verified, attempts, corrections }`. **Engine-agnostic** (imports only the `@cadence/core` interface — never `@cadence/render-node`; caller injects `CanvasRenderEngine`). `scripts/evals.ts` (`npm run evals`): 5 capability prompts (highlight · vertical+captions+cinematic · kinetic title+punch-in+fades · slideshow · filler+4K), each asserts `verified===true` + expected tools + a rendered proof frame in `.cadence/`. Verify gate **check 17** covers the loop (clean run + broken-Director recovery). Also fixed two StubDirector parse gaps the evals exposed (hyphenated "45-second"; "make it 4K" no longer means highlight). — *verified: typecheck + verify 17/17 + evals 5/5 + `apps/web` next build all green.*
+
 - ✅ **S1.1 Next.js editor app.** web + 3 api routes; north-star dark/amber conversation-first UI with rooms rail, live preview (seeks real uploaded footage), cuts timeline, nudge, code drawer, JSON export. — *verified: `next build` clean, UI renders, HTTP pipeline returns valid PNG.*
 - ✅ **S1.2 Director edit tools + photo→video + quality.** Tools: create_highlight, filler_cut, reframe (9:16/1:1/4:5/16:9), add_captions, apply_look (warm/cool/vivid/bw/cinematic), auto_mix, make_slideshow, set_quality. Multi-intent chaining for custom scenarios. — *verified: 4 rendered scenarios + chained-tool + 4K asserts.*
 - ✅ **S1.3 Features wired into the UI.** Video-or-photos upload, generic live preview (Ken Burns/crossfade/looks/captions), one-tap QuickActions bar. — *verified: next build clean, in-browser layout.*
@@ -35,7 +37,7 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ Local dev auth behind an auth interface (`DevAuthProvider`, signed HTTP-only cookie). *(Real SSO left as a documented swap; Auth.js/OIDC not wired.)*
 - ⬜ Director tools: filler cut · reframe 9:16 · burn-in captions · one warm look · basic auto-mix.
 - ✅ Export renders a real file (ffmpeg; free, needs ffmpeg installed — see S1.4).
-- ⬜ Agentic loop hardening (plan→act→verify→correct) + 5 eval prompts.
+- ✅ Agentic loop hardening (plan→act→verify→correct) + 5 eval prompts. **See S1.8.**
 
 ## Open money gates
 - _None yet._ Real Claude Director (Anthropic API, metered) will be raised at S-Director-real. Free stub is the default until then.

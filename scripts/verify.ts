@@ -15,6 +15,9 @@
  *   14 punch-in emphasis: add_emphasis → increased scale in-window + zoompan on export
  *   15 whisper parse: parseWhisperJson (OpenAI + whisper.cpp shapes) → valid Transcript
  *   16 transcriber factory: real Whisper when available, else graceful StubTranscriber
+ *   17 agentic loop: runDirectorLoop (plan→act→verify→correct) verifies + renders,
+ *      and recovers a broken Director output to a safe doc (full 5-prompt suite:
+ *      `npm run evals`)
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -36,7 +39,12 @@ import {
   parseWhisperJson,
   pickTranscriber,
 } from "@cadence/understanding";
-import { ProjectState, StubDirector } from "@cadence/director";
+import {
+  ProjectState,
+  StubDirector,
+  runDirectorLoop,
+  type DirectorLike,
+} from "@cadence/director";
 import { allProviders, buildCliArgs, configFromEnv, selectProvider } from "@cadence/enhance";
 import {
   buildExportPlan,
@@ -588,6 +596,57 @@ async function checkTranscriberFactory(): Promise<void> {
   console.log(`  [32m✔[0m check 16 (transcriber factory): Whisper ${whisperUp ? "available → selected" : "absent → graceful StubTranscriber fallback"}`);
 }
 
+async function checkAgenticLoop(): Promise<void> {
+  // (a) Happy path: a valid Director output verifies on the first attempt and
+  // renders real probe frames (t=0 + mid-duration).
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  const loop = await runDirectorLoop(
+    "cut a 45 second highlight, make it vertical with captions",
+    project,
+    { engine },
+  );
+  assert(loop.verified === true, `agentic loop should verify, corrections: ${loop.corrections.join("; ")}`);
+  assert(loop.attempts === 1, `clean run should take 1 attempt, took ${loop.attempts}`);
+  assert(loop.corrections.length === 0, "clean run should record no corrections");
+  const names = loop.result.toolCalls.map((c) => c.name);
+  assert(names.includes("create_highlight") && names.includes("reframe"), "loop lost the chained tool calls");
+  // The loop's own render-verify passed; prove a real frame independently too.
+  const n = await renderAndAssert(loop.result.doc, docDurationSec(loop.result.doc) / 2, "verify-agentic-loop.png");
+
+  // (b) Correct path: a Director that emits an INVALID doc must be caught by
+  // VERIFY and recovered (fall back to a safe doc) — verified stays true, with
+  // the captured error recorded as a correction fed forward.
+  const broken: DirectorLike = {
+    async interpret() {
+      return {
+        // fps must be positive — this fails parseEditDoc in the VERIFY step.
+        doc: { version: 1, meta: { fps: -1 }, media: [], tracks: [] } as unknown as EditDoc,
+        summary: "intentionally broken",
+        toolCalls: [],
+        durationSec: 0,
+      };
+    },
+  };
+  const recovered = await runDirectorLoop("do something impossible", videoProject(), {
+    engine,
+    director: broken,
+    maxAttempts: 2,
+  });
+  assert(recovered.verified === true, "loop should recover a broken Director output to a verifiable doc");
+  assert(recovered.attempts === 2, `broken run should exhaust attempts before recovery, got ${recovered.attempts}`);
+  assert(recovered.corrections.length > 0, "recovery should record the captured error as a correction");
+  assert(
+    recovered.corrections.some((c) => /recovered with/.test(c)),
+    "recovery should note the fallback it used",
+  );
+  await renderAndAssert(recovered.result.doc, 0, "verify-agentic-recover.png");
+
+  console.log(
+    `  [32m✔[0m check 17 (agentic loop): plan→act→verify→correct — clean run verifies+renders (${n}b, 1 attempt); broken output caught by VERIFY → recovered (2 attempts, ${recovered.corrections.length} correction[s])`,
+  );
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -606,6 +665,7 @@ async function main(): Promise<void> {
   await checkEmphasis();
   await checkWhisperParse();
   await checkTranscriberFactory();
+  await checkAgenticLoop();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 
