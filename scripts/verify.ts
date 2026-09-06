@@ -63,6 +63,7 @@ import {
   type CursorClip,
   type EditDoc,
   type Keyframe,
+  type KeyframeProp,
   type MediaAsset,
   type TextClip,
   type VideoClip,
@@ -148,6 +149,7 @@ import {
   buildExportPlan,
   detectFfmpeg,
   ffBlendMode,
+  keyframeTransformExpr,
   runExport,
   xfadeTransition,
   FfmpegNotFoundError,
@@ -2825,6 +2827,125 @@ async function checkAdjustmentLayer(): Promise<void> {
   console.log(`  [32m✔[0m check 62 (adjustment layer): addAdjustment → own topmost track + real frame (${nIn}b); ffmpeg grades the composite gated by enable='between(t,2,6)'; in-window frame differs from out; additive (no adjustment ⇒ base graph byte-identical); add_adjustment tool`);
 }
 
+/**
+ * Evaluate the SUBSET of ffmpeg expression syntax that keyframeTransformExpr emits
+ * (numbers, `t`/`T`, + - * /, parentheses, PI, and if/lt/pow/clip), so the gate can
+ * assert the emitted expression agrees with the PURE valueAt. NOT a general ffmpeg
+ * evaluator — only the constructs this codebase generates.
+ */
+function evalFfExpr(expr: string, tVal: number): number {
+  const js = expr
+    .replace(/\\,/g, ",") // un-escape filtergraph commas
+    .replace(/\bif\(/g, "iff(") // if() → helper (if is reserved)
+    .replace(/\bclip\(/g, "clipf(")
+    .replace(/\bpow\(/g, "Math.pow(")
+    .replace(/\bPI\b/g, "Math.PI");
+  const iff = (c: number, a: number, b: number): number => (c ? a : b);
+  const lt = (a: number, b: number): number => (a < b ? 1 : 0);
+  const clipf = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
+  // t and T both map to the timeline sample (overlay/rotate read t; geq reads T).
+  const fn = new Function("t", "T", "iff", "lt", "clipf", `return (${js});`);
+  return fn(tVal, tVal, iff, lt, clipf) as number;
+}
+
+async function checkTransformKeyframes(): Promise<void> {
+  const resolveP = (id: string) => `/media/${id}.mp4`;
+  const dur = 6;
+  const startSec = 0;
+
+  // A base video track + an UPPER visual layer (a plain PiP) that animates x/y,
+  // rotation AND opacity via keyframes — the common animated-layer case. The base is
+  // the single-clip fast path (v0); the PiP composites over it as [v0][bov0].
+  const kfDoc = (): EditDoc =>
+    parseEditDoc({
+      version: 1,
+      meta: { title: "xform-kf", width: 1920, height: 1080, fps: 30 },
+      media: [
+        { id: "base", kind: "video", src: "/media/base.mp4" },
+        { id: "top", kind: "video", src: "/media/top.mp4" },
+      ],
+      tracks: [
+        { id: "video", kind: "visual", clips: [{ id: "b0", kind: "video", start: 0, duration: dur, mediaId: "base", transform: { x: 960, y: 540 } }] },
+        {
+          id: "layer2",
+          kind: "visual",
+          clips: [
+            {
+              id: "u0", kind: "video", start: startSec, duration: dur, mediaId: "top",
+              transform: { x: 200, y: 200, scale: 0.5 },
+              keyframes: [
+                { prop: "x", t: 0, value: 200, easing: "linear" },
+                { prop: "x", t: 1, value: 1400, easing: "linear" },
+                { prop: "y", t: 0, value: 200, easing: "linear" },
+                { prop: "y", t: 1, value: 800, easing: "linear" },
+                { prop: "rotation", t: 0, value: 0, easing: "linear" },
+                { prop: "rotation", t: 1, value: 90, easing: "linear" },
+                { prop: "opacity", t: 0, value: 0, easing: "linear" },
+                { prop: "opacity", t: 1, value: 1, easing: "ease-in" },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+  const doc = kfDoc();
+  const plan = buildExportPlan(doc, resolveP, "/out/xformkf.mp4");
+  const fc = plan.filterComplex;
+
+  // (a) x/y → a TIME-VARYING overlay position (overlay=x='…t…':y='…t…').
+  const ovMatch = fc.match(/overlay=x='([^']*)':y='([^']*)':enable=/);
+  assert(ovMatch, `x/y keyframes: expected overlay=x='…':y='…', got: ${fc.slice(0, 400)}`);
+  assert(ovMatch![1]!.includes("t") && ovMatch![2]!.includes("t"), "x/y keyframes: overlay x/y must be t-dependent expressions");
+
+  // (b) rotation → rotate=a='…t…' in radians (*PI/180), alpha-safe (c=none).
+  const rotMatch = fc.match(/rotate=a='([^']*)':ow=\d+:oh=\d+:c=none/);
+  assert(rotMatch, `rotation keyframes: expected rotate=a='…':ow=…:oh=…:c=none, got: ${fc.slice(0, 500)}`);
+  assert(rotMatch![1]!.includes("t") && rotMatch![1]!.includes("PI/180"), "rotation keyframes: rotate angle must be a t-expr in radians");
+
+  // (c) opacity → a per-frame alpha expr (geq …:a='…T…').
+  const opMatch = fc.match(/geq=[^]*?:a='([^']*)'/);
+  assert(opMatch, `opacity keyframes: expected a geq alpha expr, got: ${fc.slice(0, 600)}`);
+  assert(opMatch![1]!.includes("T"), "opacity keyframes: the alpha expr must be a T-dependent expression");
+
+  // (d) The animated PiP carries an alpha plane (rgba) so rotate/opacity composite.
+  assert(fc.includes("format=rgba"), "transform keyframes: the animated PiP must run in rgba (alpha-safe)");
+
+  // (e) A REAL frame renders mid-animation.
+  const n = await renderAndAssert(doc, startSec + dur / 2, "verify-xform-keyframes.png");
+
+  // (f) NO transform keyframes ⇒ byte-identical to the pre-existing STATIC overlay:
+  // the emitted overlay is the plain `overlay=<ox>:<oy>:enable=` form (no x=/rotate/geq).
+  const plain = kfDoc();
+  for (const t of plain.tracks) for (const c of t.clips) delete (c as { keyframes?: unknown }).keyframes;
+  const planPlain = buildExportPlan(plain, resolveP, "/out/xformkf-plain.mp4");
+  assert(/\[v0\]\[bov0\]overlay=-?\d+:-?\d+:enable=/.test(planPlain.filterComplex), "no-keyframe fast path: expected the static overlay form");
+  assert(
+    !planPlain.filterComplex.includes("overlay=x=") && !planPlain.filterComplex.includes("rotate=a=") && !planPlain.filterComplex.includes("geq="),
+    "no-keyframe fast path: must emit NO time-varying transform filters",
+  );
+  assert(planPlain.filterComplex !== fc, "keyframes must change the export graph vs the no-keyframe fast path");
+
+  // (g) The emitted EXPRESSION agrees with the PURE valueAt at t=start/mid/end (the
+  // parity contract) — evaluate the ffmpeg expr subset in JS and compare.
+  const layerClip = doc.tracks[1]!.clips[0] as VideoClip;
+  const samples: { prop: KeyframeProp; base: number }[] = [
+    { prop: "x", base: 200 }, { prop: "y", base: 200 }, { prop: "rotation", base: 0 }, { prop: "opacity", base: 1 },
+  ];
+  for (const { prop, base } of samples) {
+    const expr = keyframeTransformExpr(layerClip, prop, "t");
+    assert(expr, `keyframeTransformExpr should emit for ${prop}`);
+    for (const prog of [0, 0.5, 1]) {
+      const timeline = startSec + prog * dur;
+      const want = valueAt(layerClip.keyframes, prop, prog, base);
+      const got = evalFfExpr(expr!, timeline);
+      assert(Math.abs(got - want) < 1e-6, `${prop} @prog ${prog}: expr ${got} must match valueAt ${want}`);
+    }
+  }
+
+  console.log(`  \x1b[32m✔\x1b[0m check 63 (transform keyframes): animated PiP exports x/y → overlay=x/y(t), rotation → rotate=a(t) rad (alpha-safe c=none), opacity → geq alpha(T); real frame (${n}b); no-keyframe overlay byte-identical (fast path); emitted expr matches valueAt at t=start/mid/end`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -2889,6 +3010,7 @@ async function main(): Promise<void> {
   await checkTransitionLibrary();
   await checkLutImport();
   await checkAdjustmentLayer();
+  await checkTransformKeyframes();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

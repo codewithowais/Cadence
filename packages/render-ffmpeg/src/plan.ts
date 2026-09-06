@@ -30,6 +30,9 @@ import {
   type CursorClip,
   type EditDoc,
   type ImageClip,
+  type Keyframe,
+  type KeyframeEasing,
+  type KeyframeProp,
   type Mask,
   type RegionFx,
   type SolidClip,
@@ -632,6 +635,87 @@ function keyframeVolumeFilter(clip: VideoClip | Extract<Clip, { kind: "audio" }>
   if (volKfs.length === 0) return `volume=${r3(clip.volume)}`;
   const points = volKfs.map((k) => ({ at: r3(k.t * clip.duration), v: clamp(k.value, 0, 1) }));
   return `volume='${piecewiseLinearExpr(points, "t")}':eval=frame`;
+}
+
+// --- transform keyframes (x / y / rotation / opacity time expressions) --------
+
+/**
+ * ONE easing curve as an ffmpeg expression over a clamped local progress `lp`
+ * (a 0..1 sub-expression). MIRRORS core's keyframeEase EXACTLY so the export
+ * matches the eased `valueAt` curve the canvas/Stage draw (unlike the cursor path
+ * and the scale zoompan, which linearize):
+ *  - linear      → lp
+ *  - ease-in     → lp^3                              (easeInCubic)
+ *  - ease-out    → 1-(1-lp)^3                         (easeOutCubic)
+ *  - ease-in-out → lp<0.5 ? 4·lp^3 : 1-(-2·lp+2)^3/2 (easeInOutCubic)
+ * Commas inside the fn-calls are escaped for the filtergraph.
+ */
+function keyframeEaseExpr(easing: KeyframeEasing, lp: string): string {
+  switch (easing) {
+    case "ease-in":
+      return `pow(${lp}\\,3)`;
+    case "ease-out":
+      return `(1-pow(1-(${lp})\\,3))`;
+    case "ease-in-out":
+      return `if(lt(${lp}\\,0.5)\\,4*pow(${lp}\\,3)\\,1-pow(-2*(${lp})+2\\,3)/2)`;
+    case "linear":
+    default:
+      return lp;
+  }
+}
+
+/**
+ * A piecewise EASED ffmpeg expression (in the variable `varName` — `t` for
+ * overlay/rotate seconds, `T` for geq seconds) through transform keyframe points,
+ * matching the PURE `valueAt` resolver SEGMENT-FOR-SEGMENT: hold the first value
+ * before the first point, hold the last after the last, and between a→b use
+ * a.v+(b.v-a.v)·ease(b.easing, clip((var-a.at)/span,0,1)) — the easing belongs to
+ * the INCOMING keyframe, exactly as `valueAt` does. Built last-segment-first so the
+ * nested `if(lt(...))` reads first→last. Commas are escaped for the filtergraph.
+ */
+function piecewiseKeyframeExpr(
+  points: { at: number; v: number; easing: KeyframeEasing }[],
+  varName: string,
+): string {
+  const pts = [...points].sort((a, b) => a.at - b.at);
+  const last = pts[pts.length - 1]!;
+  let expr = `${r3(last.v)}`;
+  for (let i = pts.length - 2; i >= 0; i--) {
+    const a = pts[i]!;
+    const b = pts[i + 1]!;
+    const span = Math.max(1e-6, b.at - a.at);
+    const lp = `clip((${varName}-${r3(a.at)})/${r3(span)}\\,0\\,1)`;
+    const seg = `${r3(a.v)}+(${r3(b.v - a.v)})*(${keyframeEaseExpr(b.easing, lp)})`;
+    expr = `if(lt(${varName}\\,${r3(b.at)})\\,${seg}\\,${expr})`;
+  }
+  const first = pts[0]!;
+  return `if(lt(${varName}\\,${r3(first.at)})\\,${r3(first.v)}\\,${expr})`;
+}
+
+/**
+ * THE pure helper closing the keyframe export-fidelity gap for x/y/rotation/
+ * opacity: an ffmpeg time expression (variable `varName`, seconds — `t` for
+ * overlay/rotate, `T` for geq) for a keyframed transform `prop` over the clip's
+ * ON-TIMELINE span, matching `valueAt` (eased). Keyframe `t` (0..1 clip-progress)
+ * maps to ABSOLUTE timeline seconds (clip.start + t·duration). Returns null when
+ * the clip has NO keyframes for `prop`, so callers keep their byte-identical fast
+ * path. Shared by plan.ts (below) and the verify gate, so preview and export agree
+ * (the "one pure helper → parity" rule). Faithful: moves/rotates/fades the existing
+ * layer only, never a content change.
+ */
+export function keyframeTransformExpr(
+  clip: { start: number; duration: number; keyframes?: Keyframe[] },
+  prop: KeyframeProp,
+  varName = "t",
+): string | null {
+  const kfs = (clip.keyframes ?? []).filter((k) => k.prop === prop);
+  if (kfs.length === 0) return null;
+  const points = kfs.map((k) => ({
+    at: r3(clip.start + k.t * clip.duration),
+    v: k.value,
+    easing: k.easing,
+  }));
+  return piecewiseKeyframeExpr(points, varName);
 }
 
 /**
@@ -1293,6 +1377,23 @@ export function buildExportPlan(
     const boxH = isFull ? H : Math.max(2, Math.round(H * clip.transform.scale));
     const st = r3(clip.start);
     const en = r3(clip.start + clip.duration);
+
+    // TRANSFORM KEYFRAMES (x/y/rotation/opacity) export for a PLAIN PiP overlay
+    // (no blend / chroma / mask): those force full-frame compositing where per-frame
+    // position/rotation is ill-defined, and a plain PiP (the b-roll / layer clip) is
+    // the common animated case. Each expr is null when the clip has no keyframes for
+    // that prop (via keyframeTransformExpr), so a clip with NONE keeps the byte-
+    // identical static overlay below — the fast path. `t`/`T` are TIMELINE seconds
+    // (the setpts shift comes first), matching the absolute-time mapping. Faithful.
+    const kfEligible = !isFull;
+    const xExpr = kfEligible ? keyframeTransformExpr(clip, "x") : null;
+    const yExpr = kfEligible ? keyframeTransformExpr(clip, "y") : null;
+    const rotExpr = kfEligible ? keyframeTransformExpr(clip, "rotation") : null; // degrees
+    const opExpr = kfEligible ? keyframeTransformExpr(clip, "opacity", "T") : null; // geq uses T
+    const hasXformKf = !!(xExpr || yExpr || rotExpr || opExpr);
+    // A rotated box grows to a CONSTANT square big enough to hold the PiP box at any
+    // angle, so the (static or time-varying) overlay centering stays valid per frame.
+    const rotBox = Math.round(Math.hypot(boxW, boxH));
     // A blend layer spans the whole timeline so both blend inputs are equal length.
     const inDur = isBlend ? total || clip.duration : clip.duration;
     const idx =
@@ -1316,6 +1417,22 @@ export function buildExportPlan(
       chain.push(`setpts=PTS-STARTPTS+${st}/TB`);
     } else if (isBlend) {
       chain.push("format=yuv420p", "setpts=PTS-STARTPTS");
+    } else if (hasXformKf) {
+      // Rotation/opacity need an alpha plane (transparent rotate corners + a per-frame
+      // alpha); operate in rgba (like the mask path) so geq's r/g/b/a apply. The setpts
+      // shift comes FIRST so geq's `T` and rotate's `t` read TIMELINE seconds — matching
+      // keyframeTransformExpr's absolute-time mapping (and the overlay x/y `t`).
+      chain.push(rotExpr || opExpr ? "format=rgba" : "format=yuv420p");
+      chain.push(`setpts=PTS-STARTPTS+${st}/TB`);
+      if (opExpr) {
+        // Per-frame alpha: opacity 0..1 → 0..255, riding the eased valueAt over time.
+        chain.push(`geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)':a='(${opExpr})*255'`);
+      }
+      if (rotExpr) {
+        // Rotate about the box center into the constant rotBox square; c=none keeps the
+        // exposed corners transparent (alpha-safe). Keyframe degrees → radians.
+        chain.push(`rotate=a='(${rotExpr})*PI/180':ow=${rotBox}:oh=${rotBox}:c=none`);
+      }
     } else {
       chain.push("format=yuv420p", `setpts=PTS-STARTPTS+${st}/TB`);
     }
@@ -1324,6 +1441,17 @@ export function buildExportPlan(
     if (isBlend) {
       const op = r3(clip.transform.opacity);
       filters.push(`[${videoLabel}][bov${i}]blend=all_mode=${ffBlendMode(blend)}:all_opacity=${op}[${out}]`);
+    } else if (hasXformKf) {
+      // Center the (possibly time-varying) box at (x,y): overlay x/y = center − half.
+      // A rotated clip grew to rotBox×rotBox; otherwise the PiP box. x/y default to the
+      // static transform when they have no keyframes, so one animated axis still works.
+      const ovW = rotExpr ? rotBox : boxW;
+      const ovH = rotExpr ? rotBox : boxH;
+      const ox = xExpr ? `(${xExpr})-${r3(ovW / 2)}` : String(Math.round(clip.transform.x - ovW / 2));
+      const oy = yExpr ? `(${yExpr})-${r3(ovH / 2)}` : String(Math.round(clip.transform.y - ovH / 2));
+      filters.push(
+        `[${videoLabel}][bov${i}]overlay=x='${ox}':y='${oy}':enable='between(t\\,${st}\\,${en})'[${out}]`,
+      );
     } else {
       // Full-frame alpha layers overlay at 0:0; a PiP at its box center.
       const ox = isFull ? 0 : Math.round(clip.transform.x - boxW / 2);

@@ -158,15 +158,22 @@ export type Emphasis = z.infer<typeof Emphasis>;
  *
  * All keyframes are resolved by the ONE PURE `valueAt(keyframes, prop, progress,
  * base)` helper in grade.ts, so the canvas preview, the browser Stage, and the
- * ffmpeg export all read the same interpolation (export approximates it with a
- * piecewise-LINEAR time expression — the eased curve is a preview nicety, exactly
- * as the cursor path is eased in preview but linear on export). Faithful: keyframes
- * only move/scale/rotate/fade or re-level the existing clip, never a content change.
+ * ffmpeg export all read the same interpolation. On export, x/y/rotation/opacity on
+ * an OVERLAY layer clip carry the EASED curve (a piecewise time expression matching
+ * `valueAt` segment-for-segment — see `keyframeTransformExpr` in render-ffmpeg), so
+ * a moving/rotating/fading PiP renders at parity with preview; scale (zoompan) and
+ * volume are approximated with a piecewise-LINEAR time expression (the eased curve
+ * is a preview nicety there, exactly as the cursor path is eased in preview but
+ * linear on export). Faithful: keyframes only move/scale/rotate/fade or re-level the
+ * existing clip, never a content change.
  *
- *  - x | y     — the clip's transform anchor (composition px).
- *  - scale     — uniform scale multiplier (1 = native).
- *  - rotation  — clockwise degrees.
- *  - opacity   — 0..1 (multiplies any transition ramp).
+ *  - x | y     — the clip's transform anchor (composition px). Exported on overlay
+ *                layer clips (time-varying overlay position); base-track full-frame
+ *                clips honor x/y statically (documented export limit).
+ *  - scale     — uniform scale multiplier (1 = native); exported via zoompan.
+ *  - rotation  — clockwise degrees. Exported on overlay layer clips (rotate filter).
+ *  - opacity   — 0..1 (multiplies any transition ramp); exported on overlay layer
+ *                clips (per-frame alpha).
  *  - volume    — 0..1 audio level (video/audio clips only).
  */
 export const KeyframeProp = z.enum(["x", "y", "scale", "rotation", "opacity", "volume"]);

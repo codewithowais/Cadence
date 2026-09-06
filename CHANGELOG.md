@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.19 — keyframe export fidelity (x/y/rotation/opacity)
+- x/y/rotation/opacity keyframes now **render on ffmpeg export** for overlay/PiP/title/layer clips (were preview-only) — via one shared `keyframeTransformExpr` helper that emits eased ffmpeg time expressions matching the preview's `valueAt` (x/y → `overlay=x/y(t)`, rotation → `rotate=a(t)` alpha-safe, opacity → `geq` alpha). No-keyframe path byte-identical; scale (zoompan)/volume unchanged. Base full-frame clips keep static x/y/rotation (documented, uncommon).
+- *verified:* typecheck + test:unit 49 + verify **63/63** (+check 63, expr matches `valueAt` to 1e-6) + evals 5/5.
+
 ### S4.18 — LUT import + adjustment-layer UI (Design room)
 - **LUT import** (Design → Color grade): "Import LUT (.cube)" uploads via `/api/upload` and applies via `applyLut`; shows the active LUT + Remove/Replace; honest "applies on export" note. Fixed the **export route** so LUT file paths resolve through the same SSRF-guarded uploads resolver as media (was throwing on any LUT).
 - **Adjustment layers** (Design → Color grade): "+ Adjustment layer" + a look picker → `addAdjustment(atSec, durationSec, look)`; renders as its own timeline lane (distinct color) you can drag to set the range.
