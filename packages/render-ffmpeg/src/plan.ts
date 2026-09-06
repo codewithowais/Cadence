@@ -1648,6 +1648,25 @@ export function buildExportPlan(
     audioLabel = "amix";
   }
 
+  // ---- Clean audio (noise reduction) --------------------------------------
+  // Reduce steady background noise on the final mix. Placed BEFORE loudnorm so we
+  // denoise, THEN normalize the cleaned signal. Default is the model-free FFT
+  // denoiser `afftdn` (nr≈12dB reduction, nt=w = white-noise profile — both
+  // verified against ffmpeg-filters.html), which needs no model file and ships as
+  // the default. If an `arnndn` model path is configured via env (ARNNDN_MODEL) the
+  // stronger, setup-gated model-based `arnndn=m=<path>` is used instead (the path is
+  // escaped for the filtergraph, same as media/LUT paths). Gated on `doc.cleanAudio`
+  // AND an existing `audioLabel`, so it is a byte-identical no-op when off and on an
+  // audioless doc (no mix to clean). Faithful: attenuates noise only, no content change.
+  if (audioLabel && doc.cleanAudio) {
+    const arnndnModel = process.env.ARNNDN_MODEL?.trim();
+    const denoise = arnndnModel
+      ? `arnndn=m=${escapeFilterPath(arnndnModel)}`
+      : "afftdn=nr=12:nt=w";
+    filters.push(`[${audioLabel}]${denoise}[aden]`);
+    audioLabel = "aden";
+  }
+
   // ---- Loudness normalization (EBU R128) ----------------------------------
   // Normalize the final mix to a streaming loudness target via `loudnorm`
   // (I/TP/LRA verified against ffmpeg-filters.html). Single-pass, applied last so

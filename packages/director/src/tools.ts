@@ -57,6 +57,7 @@ import {
   carryOverAudio,
   chromaKey,
   clearTransition,
+  setCleanAudio,
   editByTranscript,
   freezeFrame,
   moveKeyframe,
@@ -1238,6 +1239,26 @@ export const normalizeLoudnessTool: DirectorTool<{ on?: boolean }> = {
   },
 };
 
+// ---- clean_audio -----------------------------------------------------------
+
+export const cleanAudioTool: DirectorTool<{ on?: boolean }> = {
+  name: "clean_audio",
+  description:
+    "Toggle clean-audio noise reduction (denoise) of the final mix on export via ffmpeg afftdn (FFT denoise — reduces steady background hiss/hum; a stronger arnndn model is used automatically when ARNNDN_MODEL is configured). Off by default. (Applied at export — the preview is unchanged.)",
+  inputSchema: z.object({ on: z.boolean().optional() }),
+  async execute(input, ctx) {
+    const on = input.on ?? true;
+    const doc = setCleanAudio(ctx.project.doc, on);
+    return commit(
+      ctx.project,
+      doc,
+      on
+        ? "Clean audio on — the export will denoise the mix (afftdn). (Applied at export — the preview is unchanged.)"
+        : "Clean audio off.",
+    );
+  },
+};
+
 // ---- edit_by_transcript (text-based editing) -------------------------------
 
 export const editByTranscriptTool: DirectorTool<{ phrase: string; mode?: TranscriptEditMode; unit?: TranscriptEditUnit }> = {
@@ -1548,6 +1569,7 @@ export const DIRECTOR_TOOLS = {
   audio_fade: audioFadeTool,
   set_pan: setPanTool,
   normalize_loudness: normalizeLoudnessTool,
+  clean_audio: cleanAudioTool,
   add_track: addTrackTool,
   remove_track: removeTrackTool,
   set_track: setTrackTool,

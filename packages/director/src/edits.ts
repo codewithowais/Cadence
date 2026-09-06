@@ -2041,6 +2041,19 @@ export function normalizeLoudness(doc: EditDoc, on = true): EditDoc {
   return parseEditDoc(clone);
 }
 
+/**
+ * Toggle clean-audio noise reduction of the final mix. On export this inserts an
+ * FFT denoise (`afftdn`) into the mixed-audio chain BEFORE `loudnorm` — a faithful,
+ * model-free default (a stronger `arnndn` model is used automatically when
+ * ARNNDN_MODEL is configured). EXPORT-ONLY, exactly like `normalizeLoudness`: the
+ * canvas/browser preview is unchanged. Faithful: attenuates noise only.
+ */
+export function setCleanAudio(doc: EditDoc, on = true): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  clone.cleanAudio = on;
+  return parseEditDoc(clone);
+}
+
 // ---- Transcript-based (text) editing ---------------------------------------
 
 /** Lowercase alphanumeric+apostrophe tokens of a phrase (for word matching). */

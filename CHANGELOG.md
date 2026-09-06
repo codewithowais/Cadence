@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.29 — clean audio (noise reduction) on export
+- Additive doc-level `cleanAudio` flag (beside `loudnorm`). On export, inserts ffmpeg **`afftdn`** (FFT denoise ~12dB, no model) into the final audio chain before loudnorm (denoise → normalize); `arnndn=m=<path>` used instead when `ARNNDN_MODEL` is set (setup-gated). Off ⇒ byte-identical; audioless-safe. Pure `setCleanAudio` + `clean_audio` tool. Export-only (preview note). Real-encode check 64 covers it (13 docs).
+- *verified:* typecheck (root+web) + test:unit 49 + verify 64 + evals 5/5.
+
 ### S4.28 — custom subtitles UI (Words room)
 - New **Caption style** section with a **live preview chip**: font, size, color, **Bold/Italic/UPPERCASE**, **L/C/R** alignment, letter-spacing; **outline + shadow**; **background None/Pill/Box** (color/opacity/radius/padding); **position Top/Center/Bottom + offset** and **Place on preview** (drag the caption where you want); **6 one-tap presets** (Clean, Bold Pop, YouTube, TikTok, Minimal, Boxed). Styles all captions or "this caption only" when a caption clip is selected. All undoable; renders identically in preview + export.
 - *verified:* typecheck (root+web) + `next build` + Playwright e2e **18/18**.

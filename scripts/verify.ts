@@ -118,6 +118,7 @@ import {
   reframe,
   reframeTo,
   removeKeyframe,
+  setCleanAudio,
   removeSilence,
   reverseClip,
   rollEdit,
@@ -3394,6 +3395,36 @@ async function checkRealEncode(): Promise<void> {
     ] }],
   });
 
+  // ---- CLEAN AUDIO (noise reduction) -------------------------------------
+  // (l) doc.cleanAudio on a source WITH audio must insert an FFT denoise (afftdn)
+  //     into the FINAL mixed-audio chain, placed BEFORE loudnorm (denoise → normalize),
+  //     and still encode to a real, non-empty mp4. OFF ⇒ NO afftdn (byte-identical
+  //     audio graph — the historical fast path). The pure `setCleanAudio` op toggles
+  //     the doc flag. Denoise is EXPORT-ONLY (like loudnorm) — no preview change.
+  const cleanBase = {
+    version: 1 as const,
+    meta: { title: "l", width: 1080, height: 1920, fps: 30 },
+    media: [{ id: "clip-001", kind: "video" as const, src: srcMp4 }],
+    tracks: [{ id: "video", kind: "visual" as const, clips: [
+      { id: "c0", kind: "video" as const, start: 0, duration: 2, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } },
+    ] }],
+  };
+  const cleanOff = parseEditDoc(cleanBase);
+  const cleanOn = setCleanAudio(cleanOff, true);
+  assert(cleanOn.cleanAudio === true, "clean audio: setCleanAudio must toggle the doc flag on");
+  assert(setCleanAudio(cleanOn, false).cleanAudio === false, "clean audio: setCleanAudio(false) must clear the flag");
+  const cleanAudioMap = await detectMediaAudio(bin, cleanOn, resolveMedia);
+  const cleanOnPlan = buildExportPlan(cleanOn, resolveMedia, resolve(encDir, "enc-l_clean_on.mp4"), undefined, cleanAudioMap);
+  const cleanOffPlan = buildExportPlan(cleanOff, resolveMedia, resolve(encDir, "enc-l_clean_off.mp4"), undefined, cleanAudioMap);
+  assert(cleanOnPlan.filterComplex.includes("afftdn="), "clean audio: ON must insert afftdn into the audio graph");
+  assert(
+    cleanOnPlan.filterComplex.indexOf("afftdn=") < cleanOnPlan.filterComplex.indexOf("[aden]") + 1 ||
+      cleanOnPlan.filterComplex.includes("afftdn=nr=12:nt=w[aden]"),
+    "clean audio: afftdn should feed the denoised [aden] label",
+  );
+  assert(!cleanOffPlan.filterComplex.includes("afftdn="), "clean audio: OFF must NOT emit afftdn (byte-identical audio graph)");
+  await encode("l_clean_audio", { ...cleanBase, cleanAudio: true });
+
   // (4) regression guard: a plain, simple single-clip export must still encode.
   await encode("plain_simple", {
     version: 1, meta: { title: "plain", width: 1080, height: 1920, fps: 30 },
@@ -3402,7 +3433,7 @@ async function checkRealEncode(): Promise<void> {
   });
 
   console.log(
-    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades+CAPTIONS), captions+title (user's case), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, AUDIOLESS e2e (highlight+9:16+4K+look+captions+fades+emphasis on a no-audio source), audioless+music, audioless↔audio mix, plain; audio presence detected without ffprobe (ffmpeg -i stderr parse) and audioless inputs padded with anullsrc silence; all text burned in as PNG overlays (works on the bundled freetype-less ffmpeg)`,
+    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades+CAPTIONS), captions+title (user's case), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, AUDIOLESS e2e (highlight+9:16+4K+look+captions+fades+emphasis on a no-audio source), audioless+music, audioless↔audio mix, CLEAN-AUDIO denoise (afftdn before loudnorm; OFF byte-identical), plain; audio presence detected without ffprobe (ffmpeg -i stderr parse) and audioless inputs padded with anullsrc silence; all text burned in as PNG overlays (works on the bundled freetype-less ffmpeg)`,
   );
 }
 

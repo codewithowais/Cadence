@@ -1004,6 +1004,18 @@ export const EditDoc = z.object({
    * unchanged. Faithful: levels only, no content change.
    */
   loudnorm: z.boolean().default(false),
+  /**
+   * Clean the final mix's audio (noise reduction) on export. When on, the export
+   * inserts an FFT denoise (`afftdn`) into the final mixed-audio chain BEFORE
+   * `loudnorm` (denoise, then normalize) — a good, model-free default. If an
+   * `arnndn` model path is configured via env (`ARNNDN_MODEL`), the export prefers
+   * the stronger model-based `arnndn` denoiser instead; otherwise `afftdn` ships as
+   * the default. Off by default so existing docs/exports are byte-identical, and a
+   * no-op on audioless docs (nothing to denoise). Like `loudnorm`, this is
+   * EXPORT-ONLY — the canvas/browser preview does not denoise (documented). Faithful:
+   * attenuates steady background noise only, never a content change.
+   */
+  cleanAudio: z.boolean().default(false),
 });
 export type EditDoc = z.infer<typeof EditDoc>;
 
