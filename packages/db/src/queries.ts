@@ -40,6 +40,37 @@ export function createUserQuery(email: string, name: string | null): SqlQuery {
   };
 }
 
+/**
+ * Idempotent sign-in root: find-or-create a user by (case-insensitive) email.
+ * Re-signing in never creates a duplicate — the unique `lower(email)` index makes
+ * this an upsert that refreshes the display name when a new one is supplied.
+ */
+export function upsertUserQuery(email: string, name: string | null): SqlQuery {
+  return {
+    text: `INSERT INTO users (email, name) VALUES ($1, $2)
+           ON CONFLICT (lower(email)) DO UPDATE
+             SET name = COALESCE(EXCLUDED.name, users.name), updated_at = now()
+           RETURNING id, email, name, created_at, updated_at`,
+    values: [email, name],
+  };
+}
+
+/**
+ * The user's first (oldest) org membership — the tenant a session lands in on
+ * sign-in. Scoped to the user via the memberships join; returns at most one row.
+ */
+export function firstOrgForUserQuery(userId: string): SqlQuery {
+  return {
+    text: `SELECT o.id, o.name, o.created_at, o.updated_at
+           FROM orgs o
+           JOIN memberships m ON m.org_id = o.id
+           WHERE m.user_id = $1
+           ORDER BY m.created_at ASC
+           LIMIT 1`,
+    values: [userId],
+  };
+}
+
 export function addMembershipQuery(
   userId: string,
   orgId: string,

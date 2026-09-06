@@ -53,6 +53,9 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - ffmpeg is **baked into the Docker image**, so export works in the container even where the host can't install it. On the host, set `FFMPEG_PATH` to any ffmpeg binary.
 
 ## 7. The app / UI (north-star design)
+- ✅ **Multi-page app (App Router):** a polished **landing page** (`/`), **dev sign-in** (`/login`), an auth-gated **projects dashboard** (`/dashboard`, "New project"), the **scratch editor** (`/editor`, no account/persistence), the **project-bound editor** (`/project/[id]` — loads the latest edit-doc; **Save** appends a new version), and **account/org settings** (`/settings`, sign out). A shared top nav / account menu spans the authed pages.
+- ✅ **Reusable `<Editor/>`** — one component powers both the scratch editor and the project-bound editor (optional `initialDoc`/`onSave`/`notice` props); no duplication.
+- ✅ **Graceful without a database** — every DB-backed page/route degrades to a friendly "connect a database" / scratch-mode state (never a crash) when Postgres is down; `next build` and page loads stay green.
 - ✅ Graded dark palette, **amber** action / **teal** selection, **Fraunces** italic for your words, **Space Grotesk** chrome.
 - ✅ **Director conversation spine** + composer with suggestions.
 - ✅ **One-tap QuickActions** (context-aware for video vs photos): Highlight, Remove filler, 9:16, Captions, Cinematic, Punch-in, B-roll, Kinetic title, Music, Fade, Auto-mix, Make 4K…
@@ -65,7 +68,7 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 ## 8. Enterprise bones
 - ✅ **Multi-tenant Postgres** (`@cadence/db`) — orgs → users → memberships → projects → media → edit-docs, with an **append-only version history**.
 - ✅ **Tenant isolation + injection-safe** — every query is parameterized and scoped by `org_id`/`project_id` (verified).
-- ✅ **Dev auth** (`DevAuthProvider`) — HMAC-signed, httpOnly/sameSite/secure cookies, constant-time compare; swappable for enterprise SSO.
+- ✅ **Dev auth** (`DevAuthProvider`) — HMAC-signed, httpOnly/sameSite/secure cookies, constant-time compare; swappable for enterprise SSO. Sign-in **provisions a tenant** (`provisionAccount`: idempotent find-or-create user by email + a personal workspace org + `owner` membership). Auth-gated pages/routes derive tenant scope (`orgId`) from the session only — never from the client.
 - 🔒 **`docker compose up`** — web + Postgres (api/worker as split-later placeholders); `/api/health` DB ping. (Needs Docker installed.)
 - ✅ Config via env; `.env.example` committed, secrets gitignored.
 

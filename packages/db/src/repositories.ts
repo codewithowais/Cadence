@@ -22,6 +22,7 @@ import {
   createOrgQuery,
   createProjectQuery,
   createUserQuery,
+  firstOrgForUserQuery,
   getEditDocVersionQuery,
   getLatestEditDocQuery,
   getMembershipQuery,
@@ -30,6 +31,7 @@ import {
   listEditDocVersionsQuery,
   listMediaQuery,
   listProjectsQuery,
+  upsertUserQuery,
   type MediaInput,
   type MembershipRole,
 } from "./queries";
@@ -127,6 +129,45 @@ export async function addMembership(
 export async function getMembership(userId: string, orgId: string): Promise<MembershipRow | null> {
   const res = await run<MembershipRow>(getMembershipQuery(userId, orgId));
   return res.rows[0] ?? null;
+}
+
+/** The identity + active tenant a session is scoped to after sign-in. */
+export interface Account {
+  readonly user: UserRow;
+  readonly org: OrgRow;
+}
+
+/**
+ * Sign-in provisioning root, idempotent and transactional. Find-or-creates the
+ * user by (case-insensitive) email; if they belong to no org yet, creates a
+ * personal workspace org + an `owner` membership. Returns the user and the org
+ * the session will be scoped to. Never trusts a client-supplied user/org id —
+ * identity comes only from the verified email.
+ */
+export async function provisionAccount(email: string, name: string | null = null): Promise<Account> {
+  const client: PoolClient = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const userRes = await run<UserRow>(upsertUserQuery(email, name), client);
+    const user = userRes.rows[0]!;
+
+    const existing = await run<OrgRow>(firstOrgForUserQuery(user.id), client);
+    let org = existing.rows[0];
+    if (!org) {
+      const orgName = `${(name && name.trim()) || email.split("@")[0] || "My"}'s workspace`;
+      const created = await run<OrgRow>(createOrgQuery(orgName), client);
+      org = created.rows[0]!;
+      await run<MembershipRow>(addMembershipQuery(user.id, org.id, "owner"), client);
+    }
+
+    await client.query("COMMIT");
+    return { user, org };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // --- Projects (tenant-scoped) -----------------------------------------------

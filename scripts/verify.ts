@@ -41,10 +41,12 @@ import {
 import {
   addMembershipQuery,
   createProjectQuery,
+  firstOrgForUserQuery,
   getEditDocVersionQuery,
   insertEditDocVersionQuery,
   listProjectsQuery,
   createMediaQuery,
+  upsertUserQuery,
   type SqlQuery,
 } from "@cadence/db/queries";
 import { orderMigrations, listMigrations } from "@cadence/db";
@@ -352,6 +354,18 @@ async function checkDbQueries(): Promise<void> {
   assert(!evil.text.includes("DROP TABLE media"), "createMedia must not interpolate src into SQL");
   assert(evil.values.includes("'; DROP TABLE media;--"), "createMedia must bind src as a value");
   assertParameterized("createMediaQuery", evil);
+
+  // Sign-in provisioning: user upsert is idempotent (ON CONFLICT on lower(email))
+  // and the tenant lookup is scoped to the user — both fully parameterized.
+  const upsert = upsertUserQuery("Owais@Example.com", "Owais");
+  assert(upsert.text.includes("ON CONFLICT (lower(email))"), "upsertUser must be idempotent on lower(email)");
+  assert(JSON.stringify(upsert.values) === JSON.stringify(["Owais@Example.com", "Owais"]), "upsertUser values");
+  assertParameterized("upsertUserQuery", upsert);
+
+  const firstOrg = firstOrgForUserQuery("user-77");
+  assert(firstOrg.text.includes("m.user_id = $1"), "firstOrgForUser must scope by user_id");
+  assert(JSON.stringify(firstOrg.values) === JSON.stringify(["user-77"]), "firstOrgForUser values");
+  assertParameterized("firstOrgForUserQuery", firstOrg);
 
   console.log(`  [32m✔[0m check 9 (db query builders): tenant-scoped + fully parameterized (no interpolation)`);
 }

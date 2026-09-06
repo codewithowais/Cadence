@@ -47,19 +47,39 @@ function probeAudio(url: string): Promise<{ duration: number }> {
   });
 }
 
-export function Editor() {
-  const [mediaList, setMediaList] = useState<MediaAsset[]>([]);
+export interface EditorProps {
+  /** Seed the editor with a persisted edit-doc (e.g. a project's latest version). */
+  initialDoc?: EditDoc;
+  /** Title shown in the top bar (falls back to the doc's title). */
+  projectName?: string;
+  /**
+   * If provided, a "Save" button appears in the top bar and calls this with the
+   * current doc. Omit it (e.g. the scratch /editor) to keep the editor stateless.
+   */
+  onSave?: (doc: EditDoc) => Promise<void>;
+  /** Optional link back (e.g. to /dashboard) shown in the top bar. */
+  backHref?: string;
+  /** A one-line banner (e.g. a graceful-degradation notice). */
+  notice?: string | null;
+}
+
+export function Editor({ initialDoc, projectName, onSave, backHref, notice }: EditorProps = {}) {
+  // When bound to a project we seed from its saved doc + media metadata. The
+  // media binaries aren't persisted, so preview stays blank until re-added — the
+  // doc still loads, edits still apply, and Save writes a new version.
+  const [mediaList, setMediaList] = useState<MediaAsset[]>(() => initialDoc?.media ?? []);
   const [urls, setUrls] = useState<Record<string, string>>({});
   // Raw uploaded File objects, kept by media id so Export can POST them to the
   // server (object URLs alone can't be re-read server-side).
   const [files, setFiles] = useState<Record<string, File>>({});
   const [transcripts, setTranscripts] = useState<Record<string, Transcript>>({});
-  const [doc, setDoc] = useState<EditDoc>(() => emptyDoc());
+  const [doc, setDoc] = useState<EditDoc>(() => initialDoc ?? emptyDoc());
   const [messages, setMessages] = useState<Message[]>([]);
   const [timeSec, setTimeSec] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   const urlsRef = useRef(urls);
   urlsRef.current = urls;
@@ -284,6 +304,21 @@ export function Editor() {
     }
   }
 
+  /** Persist the current doc as a new version (project-bound editor only). */
+  async function handleSave() {
+    if (!onSave) return;
+    setSaveState("saving");
+    try {
+      await onSave(doc);
+      setSaveState("saved");
+      say("director", "Saved a new version of this project.", "info");
+      setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 2500);
+    } catch (err) {
+      setSaveState("error");
+      say("director", err instanceof Error ? err.message : "Couldn't save.", "error");
+    }
+  }
+
   const seek = (t: number) => { setPlaying(false); setTimeSec(t); };
 
   return (
@@ -291,8 +326,13 @@ export function Editor() {
       <RoomsRail />
       <DirectorRail messages={messages} busy={busy} hasMedia={mediaList.length > 0} onSend={handleSend} onFiles={handleFiles} />
       <main className="flex min-w-0 flex-1 flex-col">
+        {notice && (
+          <div className="border-b border-amber/25 bg-amber/10 px-4 py-2 text-xs text-amber-bright">
+            {notice}
+          </div>
+        )}
         <TopBar
-          projectTitle={doc.meta.title || "Untitled"}
+          projectTitle={projectName || doc.meta.title || "Untitled"}
           mediaLabel={mode === "images" ? `${mediaList.length} photos` : mediaList[0]?.label ?? null}
           durationSec={durationSec}
           cutCount={visualClipCount}
@@ -300,6 +340,9 @@ export function Editor() {
           onToggleCode={() => setCodeOpen((c) => !c)}
           onExport={exportDoc}
           canExport={mediaList.length > 0 && durationSec > 0}
+          backHref={backHref}
+          onSave={onSave ? handleSave : undefined}
+          saveState={saveState}
         />
         <QuickActions mode={mediaList.length === 0 ? "none" : mode} busy={busy} onAction={handleSend} />
         <Stage
