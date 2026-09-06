@@ -5,6 +5,7 @@
  * Claude Director will call the same operations.
  */
 import {
+  captionAnchorY,
   docDurationSec,
   parseEditDoc,
   sourceSpanSec,
@@ -552,55 +553,210 @@ export function applyVfx(
 
 // ---- Caption styling -------------------------------------------------------
 
-export type CaptionPosition = "top" | "center" | "bottom";
+/** Vertical anchor for a caption. "free" leaves the clip's transform.y as-is. */
+export type CaptionPosition = "top" | "center" | "bottom" | "free";
+
+/** A drop-shadow spec for caption/title text (null clears any existing shadow). */
+export interface CaptionShadowOpts {
+  color?: string;
+  blur?: number;
+  offsetX?: number;
+  offsetY?: number;
+}
+
+/** A background-panel spec (null on `box` clears it back to no panel / legacy pill). */
+export interface CaptionBoxOpts {
+  style?: "none" | "pill" | "box";
+  color?: string;
+  opacity?: number;
+  radius?: number;
+  padX?: number;
+  padY?: number;
+}
 
 export interface CaptionStyleOpts {
   fontFamily?: string;
   fontWeight?: "normal" | "medium" | "semibold" | "bold";
   color?: string;
+  /** Legacy pill color; null removes it (see also `box` for full control). */
   background?: string | null;
   outlineColor?: string;
   outlineWidth?: number;
   fontSize?: number;
+  /** Vertical position preset; combined with `offset` (px) via captionAnchorY. */
   position?: CaptionPosition;
+  /** Vertical offset (composition px) applied on top of `position`. */
+  offset?: number;
+  /** Horizontal text alignment. */
+  align?: "left" | "center" | "right";
+  italic?: boolean;
+  uppercase?: boolean;
+  letterSpacing?: number;
+  lineHeight?: number;
+  /** Word-wrap width (composition px); null clears wrapping (single line). */
+  maxWidth?: number | null;
+  /** Drop shadow; null clears it. */
+  shadow?: CaptionShadowOpts | null;
+  /** Background panel (none/pill/box); null clears it. */
+  box?: CaptionBoxOpts | null;
+  /** Restyle ONLY this caption clip (by id); otherwise every caption clip. */
+  clipId?: string;
+}
+
+/** The mutable text-clip shape used while restyling inside a structuredClone. */
+type MutableTextClip = {
+  kind: string;
+  id: string;
+  fontFamily: string;
+  fontWeight: string;
+  fontSize: number;
+  color: string;
+  align: "left" | "center" | "right";
+  italic: boolean;
+  uppercase: boolean;
+  letterSpacing: number;
+  lineHeight: number;
+  maxWidth?: number;
+  position?: CaptionPosition;
+  positionOffset: number;
+  background?: string;
+  outline?: { color: string; width: number };
+  shadow?: { color: string; blur: number; offsetX: number; offsetY: number };
+  box?: { style: string; color?: string; opacity: number; radius?: number; padX?: number; padY?: number };
+  transform: { x: number; y: number; scale: number; rotation: number; opacity: number };
+};
+
+/**
+ * The caption text clips to restyle: every text clip on the "captions" track, or —
+ * when `clipId` is given — just that one clip (searched on the captions track
+ * first, then anywhere so a title/demo text clip can be targeted too). Returns
+ * mutable references INSIDE `clone`.
+ */
+function captionStyleTargets(clone: EditDoc, clipId?: string): MutableTextClip[] {
+  if (clipId) {
+    for (const track of clone.tracks) {
+      for (const clip of track.clips) {
+        if (clip.kind === "text" && clip.id === clipId) return [clip as unknown as MutableTextClip];
+      }
+    }
+    return [];
+  }
+  const captions = clone.tracks.find((t) => t.id === "captions");
+  return (captions?.clips.filter((c) => c.kind === "text") ?? []) as unknown as MutableTextClip[];
 }
 
 /**
- * Restyle the existing captions track — font family/weight, fill color, pill
- * background, stroked outline, size, and vertical position. Pure + re-parsed
- * through the schema. Applies to every text clip on the "captions" track; throws
+ * Restyle caption text clips — font family/size/weight, italic, fill color,
+ * alignment, letter spacing, uppercase, line height, wrap width, stroked outline,
+ * drop shadow, background panel (none/pill/box + color/opacity/radius/padding), and
+ * vertical position (preset + offset). Applies to every text clip on the
+ * "captions" track, or ONE clip when `opts.clipId` is set. Every field is optional
+ * and merges with the clip's current style, so the default caption look is
+ * unchanged when nothing new is passed. Pure + re-parsed through the schema; throws
  * a helpful error when there are no captions yet.
  */
 export function styleCaptions(doc: EditDoc, opts: CaptionStyleOpts): EditDoc {
   const clone: EditDoc = structuredClone(doc);
-  const captions = clone.tracks.find((t) => t.id === "captions");
-  const clips = captions?.clips.filter((c) => c.kind === "text") ?? [];
+  const clips = captionStyleTargets(clone, opts.clipId);
   if (clips.length === 0) {
-    throw new Error("Add captions first — there's nothing to style yet.");
+    throw new Error(
+      opts.clipId
+        ? `No caption/text clip "${opts.clipId}" to style.`
+        : "Add captions first — there's nothing to style yet.",
+    );
   }
   const h = clone.meta.height;
-  const yFor: Record<CaptionPosition, number> = {
-    top: Math.round(h * 0.12),
-    center: Math.round(h * 0.5),
-    bottom: h - Math.round(h * 0.12),
-  };
   for (const clip of clips) {
     if (clip.kind !== "text") continue;
     if (opts.fontFamily !== undefined) clip.fontFamily = opts.fontFamily;
     if (opts.fontWeight !== undefined) clip.fontWeight = opts.fontWeight;
     if (opts.color !== undefined) clip.color = opts.color;
+    if (opts.align !== undefined) clip.align = opts.align;
+    if (opts.italic !== undefined) clip.italic = opts.italic;
+    if (opts.uppercase !== undefined) clip.uppercase = opts.uppercase;
+    if (opts.letterSpacing !== undefined) clip.letterSpacing = round(opts.letterSpacing);
+    if (opts.lineHeight !== undefined) clip.lineHeight = Math.max(0.5, round(opts.lineHeight));
     if (opts.fontSize !== undefined) clip.fontSize = Math.max(1, Math.round(opts.fontSize));
+    if (opts.maxWidth !== undefined) {
+      if (opts.maxWidth === null) delete clip.maxWidth;
+      else clip.maxWidth = Math.max(1, Math.round(opts.maxWidth));
+    }
     if (opts.background !== undefined) {
-      if (opts.background === null) delete (clip as { background?: string }).background;
+      if (opts.background === null) delete clip.background;
       else clip.background = opts.background;
     }
     if (opts.outlineWidth !== undefined || opts.outlineColor !== undefined) {
       clip.outline = {
         color: opts.outlineColor ?? clip.outline?.color ?? "#000000",
-        width: opts.outlineWidth ?? clip.outline?.width ?? 0,
+        width: Math.max(0, opts.outlineWidth ?? clip.outline?.width ?? 0),
       };
     }
-    if (opts.position !== undefined) clip.transform.y = yFor[opts.position];
+    if (opts.shadow !== undefined) {
+      if (opts.shadow === null) delete clip.shadow;
+      else {
+        clip.shadow = {
+          color: opts.shadow.color ?? clip.shadow?.color ?? "#000000",
+          blur: Math.max(0, opts.shadow.blur ?? clip.shadow?.blur ?? 6),
+          offsetX: opts.shadow.offsetX ?? clip.shadow?.offsetX ?? 0,
+          offsetY: opts.shadow.offsetY ?? clip.shadow?.offsetY ?? 2,
+        };
+      }
+    }
+    if (opts.box !== undefined) {
+      if (opts.box === null) delete clip.box;
+      else {
+        clip.box = {
+          style: opts.box.style ?? clip.box?.style ?? "pill",
+          ...(opts.box.color ?? clip.box?.color ? { color: opts.box.color ?? clip.box?.color } : {}),
+          opacity: clamp(opts.box.opacity ?? clip.box?.opacity ?? 1, 0, 1),
+          ...(opts.box.radius ?? clip.box?.radius ? { radius: Math.max(0, opts.box.radius ?? clip.box!.radius!) } : {}),
+          ...(opts.box.padX ?? clip.box?.padX ? { padX: Math.max(0, opts.box.padX ?? clip.box!.padX!) } : {}),
+          ...(opts.box.padY ?? clip.box?.padY ? { padY: Math.max(0, opts.box.padY ?? clip.box!.padY!) } : {}),
+        };
+      }
+    }
+    if (opts.position !== undefined || opts.offset !== undefined) {
+      const anchor = opts.position ?? clip.position ?? "bottom";
+      const offset = opts.offset ?? clip.positionOffset ?? 0;
+      clip.position = anchor;
+      clip.positionOffset = round(offset);
+      const y = captionAnchorY(anchor, h, offset);
+      if (y !== null) clip.transform.y = y;
+    }
+  }
+  return parseEditDoc(clone);
+}
+
+/**
+ * Position caption clips at a vertical anchor preset (top/center/bottom) with an
+ * optional `offset` (composition px), resolved by the shared PURE `captionAnchorY`
+ * (safe-margin aware) — so the caption sits at the same place in preview, canvas,
+ * and export. Sets both the `position`/`positionOffset` metadata and the resolved
+ * `transform.y`. Applies to every caption clip, or ONE when `clipId` is set. The
+ * caption default is bottom; free x/y is still available via the transform. Pure +
+ * re-parsed through the schema.
+ */
+export function positionCaptions(
+  doc: EditDoc,
+  opts: { anchor: CaptionPosition; offset?: number; clipId?: string },
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const clips = captionStyleTargets(clone, opts.clipId);
+  if (clips.length === 0) {
+    throw new Error(
+      opts.clipId
+        ? `No caption/text clip "${opts.clipId}" to position.`
+        : "Add captions first — there's nothing to position yet.",
+    );
+  }
+  const h = clone.meta.height;
+  const offset = round(opts.offset ?? 0);
+  for (const clip of clips) {
+    if (clip.kind !== "text") continue;
+    clip.position = opts.anchor;
+    clip.positionOffset = offset;
+    const y = captionAnchorY(opts.anchor, h, offset);
+    if (y !== null) clip.transform.y = y;
   }
   return parseEditDoc(clone);
 }

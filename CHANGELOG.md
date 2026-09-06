@@ -4,6 +4,12 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.27 — custom subtitles: styles + position (engine)
+- Additive `TextClip` fields: `italic`, `letterSpacing`, `uppercase`, `lineHeight`, `maxWidth` (word-wrap), `shadow` (color/blur/offset), `box` (none/pill/box + color/opacity/radius/padding), `position` (top/center/bottom/free) + `positionOffset`; existing font/size/weight/color/align/outline/background/transform kept. Shared pure `captionAnchorY` (safe-margin anchors).
+- Canvas `drawText` rewritten to honor all of them (wrap, multi-line, shadow, box vs pill, letter-spacing, uppercase, alignment) — default look byte-identical when unset; export inherits it via the PNG-overlay path (preview↔export parity).
+- Director: `styleCaptions` extended (+ `clipId?` to target one vs all) + new `positionCaptions`; tools `style_captions` (extended) + `position_captions`; new types exported for the UI.
+- *verified:* typecheck (root+web) + test:unit 49 + verify (+27b) + evals 5/5.
+
 ### S4.26 — fix: export works on audioless inputs (export now fully working E2E)
 - Exporting a video with **no audio track** failed (`Stream specifier ':a' … matches no streams`). Now `runExport` detects audio presence per input without ffprobe (`ffmpeg -i` stderr parse + `MediaAsset.hasAudio`), and the plan substitutes **silence** (`anullsrc`) for audioless inputs in concat/mix/ramp paths — with-audio path byte-identical. Handles single audioless clip, audioless+music, and mixed audio/audioless concat.
 - Real-encode check 64 now covers 12 docs incl. 3 audioless cases. **Playwright e2e 18/18 — the export test downloads a real `.mp4`.** Export is fully working end-to-end (bundled ffmpeg; no Docker/install), the culmination of S4.21/23/25/26.

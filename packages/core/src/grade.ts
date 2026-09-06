@@ -82,6 +82,36 @@ export function fontWeightToCss(weight: FontWeight): string {
   }
 }
 
+/** The safe-margin inset (fraction of the frame height) for top/bottom captions. */
+export const CAPTION_SAFE_MARGIN_FRAC = 0.12;
+
+/**
+ * Resolve a caption POSITION preset (top/center/bottom) + a vertical `offset`
+ * (composition px) into a `transform.y` for a `frameHeight`, kept inside the
+ * title-safe area. This is the ONE place the position math lives, so the director
+ * op, the canvas, and the UI wave all place captions at the same anchor:
+ *  - "top"    → the top safe line, then + offset.
+ *  - "center" → the vertical middle, then + offset.
+ *  - "bottom" → the bottom safe line, then + offset (the caption default).
+ *  - "free"   → returns null (the clip's existing transform.y is authoritative).
+ * The result is clamped to a 4%..96% safe band so an offset can nudge but never
+ * push the caption off-frame. Pure + deterministic.
+ */
+export function captionAnchorY(
+  anchor: "top" | "center" | "bottom" | "free",
+  frameHeight: number,
+  offset = 0,
+): number | null {
+  if (anchor === "free") return null;
+  const margin = Math.round(frameHeight * CAPTION_SAFE_MARGIN_FRAC);
+  const base =
+    anchor === "top" ? margin : anchor === "center" ? Math.round(frameHeight / 2) : frameHeight - margin;
+  const y = base + offset;
+  const lo = Math.round(frameHeight * 0.04);
+  const hi = Math.round(frameHeight * 0.96);
+  return Math.max(lo, Math.min(hi, y));
+}
+
 /** A CSS/canvas `filter` string for a color grade ("none" when neutral). */
 export function cssFilter(look: ColorGrade): string {
   const parts: string[] = [];

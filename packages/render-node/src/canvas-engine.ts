@@ -69,6 +69,77 @@ function keyframeTransformState(
   };
 }
 
+/**
+ * Word-wrap `text` into lines no wider than `maxWidth` (composition px), by whole
+ * words. Deterministic; measured with the ctx's current font. A word longer than
+ * `maxWidth` is left on its own line (never broken mid-word). Returns [text] when
+ * there is nothing to wrap.
+ */
+function wrapText(ctx: SKRSContext2D, text: string, maxWidth: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [text];
+  const lines: string[] = [];
+  let cur = words[0]!;
+  for (let i = 1; i < words.length; i++) {
+    const test = `${cur} ${words[i]}`;
+    if (ctx.measureText(test).width <= maxWidth) cur = test;
+    else {
+      lines.push(cur);
+      cur = words[i]!;
+    }
+  }
+  lines.push(cur);
+  return lines;
+}
+
+/** Width of one line accounting for extra letter spacing (0 = native measure). */
+function lineWidth(ctx: SKRSContext2D, line: string, letterSpacing: number): number {
+  if (letterSpacing === 0) return ctx.measureText(line).width;
+  const chars = [...line];
+  let w = 0;
+  for (const ch of chars) w += ctx.measureText(ch).width;
+  return w + letterSpacing * Math.max(0, chars.length - 1);
+}
+
+/**
+ * Draw a stack of text lines (fill or stroke) centered vertically about y=0, with
+ * optional per-character letter spacing. With `letterSpacing === 0` this is a plain
+ * fillText/strokeText per line (byte-identical to the historical single-line path),
+ * so the default caption look is unchanged; with spacing it lays each glyph out by
+ * hand (honoring alignment) since the 2D context has no reliable tracking control.
+ */
+function drawTextLines(
+  ctx: SKRSContext2D,
+  lines: string[],
+  lineStep: number,
+  letterSpacing: number,
+  mode: "fill" | "stroke",
+  align: "left" | "center" | "right",
+): void {
+  const n = lines.length;
+  for (let i = 0; i < n; i++) {
+    const line = lines[i]!;
+    const y = (i - (n - 1) / 2) * lineStep;
+    if (letterSpacing === 0) {
+      if (mode === "fill") ctx.fillText(line, 0, y);
+      else ctx.strokeText(line, 0, y);
+      continue;
+    }
+    const chars = [...line];
+    const widths = chars.map((c) => ctx.measureText(c).width);
+    const total = widths.reduce((a, b) => a + b, 0) + letterSpacing * Math.max(0, chars.length - 1);
+    let x = align === "center" ? -total / 2 : align === "right" ? -total : 0;
+    const prevAlign = ctx.textAlign;
+    ctx.textAlign = "left";
+    for (let k = 0; k < chars.length; k++) {
+      if (mode === "fill") ctx.fillText(chars[k]!, x, y);
+      else ctx.strokeText(chars[k]!, x, y);
+      x += widths[k]! + letterSpacing;
+    }
+    ctx.textAlign = prevAlign;
+  }
+}
+
 function drawText(ctx: SKRSContext2D, clip: TextClip): void {
   // Keyframes (if any) override the static transform; opacity keyframes multiply
   // the transition ramp — all resolved by the shared PURE valueAt helper.
@@ -84,27 +155,49 @@ function drawText(ctx: SKRSContext2D, clip: TextClip): void {
   if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
   if (effScale !== 1) ctx.scale(effScale, effScale);
   ctx.globalAlpha = op;
-  ctx.font = `${fontWeightToCss(clip.fontWeight)} ${clip.fontSize}px ${clip.fontFamily}`;
+  // weight + optional italic (italic prefix is absent by default → font string is
+  // byte-identical to the historical one, so the default look is unchanged).
+  const style = clip.italic ? "italic " : "";
+  ctx.font = `${style}${fontWeightToCss(clip.fontWeight)} ${clip.fontSize}px ${clip.fontFamily}`;
   ctx.textAlign = clip.align;
   ctx.textBaseline = "middle";
 
   // Typewriter: reveal only the substring visible at this time (shared core
   // helper), and optionally a blinking caret — mirrors the export's drawtext slices.
   const tw = clip.anim.style === "typewriter" ? typewriterText(clip, clipTimeCache) : null;
-  const shown = tw ? tw.text + (tw.caretVisible ? "|" : "") : clip.text;
+  const rawShown = tw ? tw.text + (tw.caretVisible ? "|" : "") : clip.text;
+  const upper = (s: string): string => (clip.uppercase ? s.toUpperCase() : s);
+  const shownText = upper(rawShown);
+  // Size the panel to the FULL text so it doesn't grow while typing.
+  const fullText = upper(tw ? clip.text : rawShown);
 
-  if (clip.background) {
-    // Size the pill to the FULL text so the field box doesn't grow while typing.
-    const m = ctx.measureText(tw ? clip.text : shown);
-    const padX = clip.fontSize * 0.4;
-    const padY = clip.fontSize * 0.28;
-    const w = m.width + padX * 2;
-    const h = clip.fontSize + padY * 2;
+  const ls = clip.letterSpacing ?? 0;
+  const lineStep = clip.fontSize * (clip.lineHeight ?? 1.2);
+  const shownLines = clip.maxWidth ? wrapText(ctx, shownText, clip.maxWidth) : [shownText];
+  const fullLines = clip.maxWidth ? wrapText(ctx, fullText, clip.maxWidth) : [fullText];
+
+  // --- Background panel (pill / box). `box` supersedes the legacy `background`
+  // pill; with neither, nothing is drawn (unchanged). Defaults reproduce the exact
+  // historical pill geometry for a single-line caption so the default is unchanged.
+  const boxStyle = clip.box?.style ?? (clip.background ? "pill" : "none");
+  if (boxStyle !== "none") {
+    const padX = clip.box?.padX ?? clip.fontSize * 0.4;
+    const padY = clip.box?.padY ?? clip.fontSize * 0.28;
+    const nFull = fullLines.length;
+    const widest = fullLines.reduce((m, l) => Math.max(m, lineWidth(ctx, l, ls)), 0);
+    const w = widest + padX * 2;
+    const h = (nFull - 1) * lineStep + clip.fontSize + padY * 2;
     const bx = clip.align === "center" ? -w / 2 : clip.align === "right" ? -w + padX : -padX;
-    ctx.fillStyle = clip.background;
+    const radius = clip.box?.radius ?? (boxStyle === "pill" ? h * 0.28 : 0);
+    const fill = clip.box?.color ?? clip.background ?? "#0a0d12cc";
+    const boxOpacity = clip.box?.opacity ?? 1;
+    ctx.save();
+    if (boxOpacity !== 1) ctx.globalAlpha = op * boxOpacity;
+    ctx.fillStyle = fill;
     ctx.beginPath();
-    ctx.roundRect(bx, -h / 2, w, h, h * 0.28);
+    ctx.roundRect(bx, -h / 2, w, h, radius);
     ctx.fill();
+    ctx.restore();
   }
 
   // Stroked outline first (under the fill), for readability over busy footage.
@@ -113,11 +206,19 @@ function drawText(ctx: SKRSContext2D, clip: TextClip): void {
     ctx.strokeStyle = clip.outline.color;
     ctx.lineJoin = "round";
     ctx.miterLimit = 2;
-    ctx.strokeText(shown, 0, 0);
+    drawTextLines(ctx, shownLines, lineStep, ls, "stroke", clip.align);
+  }
+
+  // Optional drop shadow on the fill (cleared implicitly at ctx.restore()).
+  if (clip.shadow) {
+    ctx.shadowColor = clip.shadow.color;
+    ctx.shadowBlur = clip.shadow.blur;
+    ctx.shadowOffsetX = clip.shadow.offsetX;
+    ctx.shadowOffsetY = clip.shadow.offsetY;
   }
 
   ctx.fillStyle = clip.color;
-  ctx.fillText(shown, 0, 0);
+  drawTextLines(ctx, shownLines, lineStep, ls, "fill", clip.align);
   ctx.restore();
 }
 

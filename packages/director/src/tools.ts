@@ -75,6 +75,7 @@ import {
   setSpeedRamp,
   setTransition,
   setZoom,
+  positionCaptions,
   styleCaptions,
   typeText,
   type AspectKey,
@@ -464,20 +465,70 @@ export const vfxTool: DirectorTool<{ vignette?: number; grain?: number; lightLea
 export const styleCaptionsTool: DirectorTool<CaptionStyleOpts> = {
   name: "style_captions",
   description:
-    "Restyle the captions: fontFamily, fontWeight (normal/medium/semibold/bold), color, background (hex or null to remove), outlineColor + outlineWidth, fontSize, and position (top/center/bottom).",
+    "Fully restyle captions: fontFamily, fontSize, fontWeight (normal/medium/semibold/bold), italic, color, align (left/center/right), letterSpacing (px), uppercase, lineHeight, maxWidth (px word-wrap; null clears), outlineColor + outlineWidth, shadow ({color,blur,offsetX,offsetY} or null), background panel via box ({style:none/pill/box, color, opacity, radius, padX, padY} or null) or the legacy background (hex or null), and position (top/center/bottom/free) + offset (px). Pass clipId to style ONE caption clip; omit to style all. Omitted fields keep their value.",
   inputSchema: z.object({
     fontFamily: z.string().optional(),
     fontWeight: z.enum(["normal", "medium", "semibold", "bold"]).optional(),
+    italic: z.boolean().optional(),
     color: z.string().optional(),
+    align: z.enum(["left", "center", "right"]).optional(),
+    letterSpacing: z.number().optional(),
+    uppercase: z.boolean().optional(),
+    lineHeight: z.number().positive().optional(),
+    maxWidth: z.number().positive().nullable().optional(),
     background: z.string().nullable().optional(),
+    box: z
+      .object({
+        style: z.enum(["none", "pill", "box"]).optional(),
+        color: z.string().optional(),
+        opacity: z.number().min(0).max(1).optional(),
+        radius: z.number().min(0).optional(),
+        padX: z.number().min(0).optional(),
+        padY: z.number().min(0).optional(),
+      })
+      .nullable()
+      .optional(),
     outlineColor: z.string().optional(),
     outlineWidth: z.number().min(0).optional(),
+    shadow: z
+      .object({
+        color: z.string().optional(),
+        blur: z.number().min(0).optional(),
+        offsetX: z.number().optional(),
+        offsetY: z.number().optional(),
+      })
+      .nullable()
+      .optional(),
     fontSize: z.number().positive().optional(),
-    position: z.enum(["top", "center", "bottom"]).optional(),
+    position: z.enum(["top", "center", "bottom", "free"]).optional(),
+    offset: z.number().optional(),
+    clipId: z.string().optional(),
   }),
   async execute(input, ctx) {
     const doc = styleCaptions(ctx.project.doc, input);
     return commit(ctx.project, doc, "Styled the captions.");
+  },
+};
+
+// ---- position_captions -----------------------------------------------------
+
+export const positionCaptionsTool: DirectorTool<{
+  anchor: "top" | "center" | "bottom" | "free";
+  offset?: number;
+  clipId?: string;
+}> = {
+  name: "position_captions",
+  description:
+    "Move captions to a vertical anchor preset — top, center, or bottom (the subtitle default) — with an optional offset in composition px (negative = up). Safe-margin aware. Pass clipId to move ONE caption clip; omit to move all.",
+  inputSchema: z.object({
+    anchor: z.enum(["top", "center", "bottom", "free"]),
+    offset: z.number().optional(),
+    clipId: z.string().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = positionCaptions(ctx.project.doc, input);
+    const where = input.anchor === "free" ? "their free position" : `the ${input.anchor}`;
+    return commit(ctx.project, doc, `Moved the captions to ${where}.`);
   },
 };
 
@@ -1472,6 +1523,7 @@ export const DIRECTOR_TOOLS = {
   clear_transition: clearTransitionTool,
   apply_vfx: vfxTool,
   style_captions: styleCaptionsTool,
+  position_captions: positionCaptionsTool,
   build_demo: buildDemoTool,
   add_cursor: addCursorTool,
   type_text: typeTextTool,

@@ -603,6 +603,62 @@ export const TextOutline = z.object({
 });
 export type TextOutline = z.infer<typeof TextOutline>;
 
+/**
+ * A drop shadow behind caption/title text — drawn with the canvas `shadow*`
+ * context props (color / blur / offset) and mirrored into the ffmpeg export
+ * because captions rasterize through the SAME canvas `drawText`. Whole object is
+ * optional so existing docs are valid; `blur` 0 with 0 offset is effectively off.
+ */
+export const TextShadow = z.object({
+  color: HexColor.default("#000000"),
+  /** Gaussian blur radius in composition px. */
+  blur: z.number().min(0).default(6),
+  /** Horizontal shadow offset in composition px. */
+  offsetX: z.number().default(0),
+  /** Vertical shadow offset in composition px. */
+  offsetY: z.number().default(2),
+});
+export type TextShadow = z.infer<typeof TextShadow>;
+
+/**
+ * Background panel behind caption/title text. Supersedes the simple `background`
+ * pill on a TextClip when present (that field still works when `box` is absent, so
+ * existing docs are unchanged):
+ *  - "none" — no panel (even if a legacy `background` is set).
+ *  - "pill" — a rounded capsule sized to the text (the classic caption look).
+ *  - "box"  — a rectangle with an explicit corner `radius`.
+ * `color` falls back to the clip's `background` (then a default) when omitted, and
+ * `opacity` multiplies the fill alpha. Padding is in composition px; when absent it
+ * derives from the font size (matching the historical pill padding).
+ */
+export const CaptionBoxStyle = z.enum(["none", "pill", "box"]);
+export type CaptionBoxStyle = z.infer<typeof CaptionBoxStyle>;
+
+export const TextBackground = z.object({
+  style: CaptionBoxStyle.default("pill"),
+  /** Panel fill color; falls back to the clip's `background`, then a dark default. */
+  color: HexColor.optional(),
+  /** 0..1 opacity multiplier on the panel fill. */
+  opacity: z.number().min(0).max(1).default(1),
+  /** Corner radius (composition px). Absent ⇒ pill uses an auto capsule radius. */
+  radius: z.number().min(0).optional(),
+  /** Horizontal padding (composition px). Absent ⇒ derives from font size. */
+  padX: z.number().min(0).optional(),
+  /** Vertical padding (composition px). Absent ⇒ derives from font size. */
+  padY: z.number().min(0).optional(),
+});
+export type TextBackground = z.infer<typeof TextBackground>;
+
+/**
+ * Caption/title vertical position preset (the common subtitle anchors). Resolved
+ * to a `transform.y` by the PURE `captionAnchorY` helper in grade.ts (shared by the
+ * director op, the canvas, and the UI wave) so the preset + offset always agree
+ * with the free x/y already carried by `transform`. "free" means the transform is
+ * authoritative (no preset). Optional so existing docs stay valid.
+ */
+export const CaptionPosition = z.enum(["top", "center", "bottom", "free"]);
+export type CaptionPosition = z.infer<typeof CaptionPosition>;
+
 /** A text / title clip drawn directly by the renderer (no media needed). */
 export const TextClip = z.object({
   ...clipBase,
@@ -611,16 +667,42 @@ export const TextClip = z.object({
   fontFamily: z.string().default("sans-serif"),
   fontSize: z.number().positive().default(64),
   fontWeight: FontWeight.default("normal"),
+  /** Italic slant. Off by default so existing docs render identically. */
+  italic: z.boolean().default(false),
   color: HexColor.default("#ffffff"),
   align: z.enum(["left", "center", "right"]).default("center"),
+  /** Extra spacing between characters, composition px (0 = normal tracking). */
+  letterSpacing: z.number().default(0),
+  /** UPPERCASE the text at render time (source text unchanged). Off by default. */
+  uppercase: z.boolean().default(false),
+  /** Line height as a multiple of font size, used when text wraps. */
+  lineHeight: z.number().positive().default(1.2),
+  /**
+   * Max text width (composition px) for word-wrap into multiple lines. Absent ⇒
+   * the text stays on a single line (the historical behavior), so existing docs
+   * are unchanged.
+   */
+  maxWidth: z.number().positive().optional(),
   transform: Transform.prefault({}),
   transitionInSec,
   transitionOutSec,
   transitionType,
-  /** Optional pill background behind the text (used by captions). */
+  /**
+   * Vertical position preset (top/center/bottom/free) — METADATA that the director
+   * resolves into `transform.y` via `captionAnchorY`; the renderer honors the
+   * resulting `transform.y`. Absent ⇒ the transform is authoritative.
+   */
+  position: CaptionPosition.optional(),
+  /** Vertical offset (composition px) applied on top of the `position` preset. */
+  positionOffset: z.number().default(0),
+  /** Optional pill background behind the text (used by captions; see also `box`). */
   background: HexColor.optional(),
+  /** Optional richer background panel (none/pill/box + color/opacity/radius/padding). */
+  box: TextBackground.optional(),
   /** Optional stroked outline behind the text (readability over busy footage). */
   outline: TextOutline.optional(),
+  /** Optional drop shadow behind the text (readability over busy footage). */
+  shadow: TextShadow.optional(),
   /** Kinetic intro animation (slide + scale in); "none" by default. */
   anim: TextAnim.prefault({}),
   /** Optional animation keyframes (x/y/scale/rotation/opacity), resolved by `valueAt`. */

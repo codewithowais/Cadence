@@ -69,7 +69,7 @@ import {
   type TextClip,
   type VideoClip,
 } from "@cadence/core";
-import { CanvasRenderEngine } from "@cadence/render-node";
+import { CanvasRenderEngine, renderTextClipPng } from "@cadence/render-node";
 import {
   StubTranscriber,
   WhisperTranscriber,
@@ -132,6 +132,8 @@ import {
   setSpeedRamp,
   SPEED_RAMP_PRESETS,
   setTransition,
+  styleCaptions,
+  positionCaptions,
   buildDemo,
   addCursor,
   addCallout,
@@ -1169,6 +1171,101 @@ async function checkCaptionStyle(): Promise<void> {
   assert(plan.filterComplex.includes("overlay=0:0:enable='between(t\\,"), "captions: expected a time-gated PNG overlay");
 
   console.log(`  [32m✔[0m check 27 (caption style): white/bold/outline/top → outline changes the frame (${withOutline.length}b) + baked into the PNG overlay on export`);
+}
+
+async function checkCaptionCustomStyle(): Promise<void> {
+  // A captioned doc with a single, long caption clip on the "captions" track.
+  const base = parseEditDoc({
+    version: 1,
+    meta: { width: 1280, height: 720, background: "#101418" },
+    tracks: [
+      {
+        id: "captions",
+        kind: "visual",
+        clips: [
+          {
+            id: "capA",
+            kind: "text",
+            start: 0,
+            duration: 3,
+            text: "hello there this is a customizable caption",
+            fontSize: 44,
+            color: "#ffffff",
+            background: "#0a0d12cc",
+            align: "center",
+            transform: { x: 640, y: 620 },
+          },
+        ],
+      },
+    ],
+  });
+  const at = 1.5;
+  const baseBytes = await renderBytes(base, at);
+
+  // (a) A full custom restyle takes effect in the rendered frame.
+  const styled = styleCaptions(base, {
+    fontWeight: "bold",
+    italic: true,
+    uppercase: true,
+    letterSpacing: 6,
+    color: "#ffe08a",
+    align: "left",
+    lineHeight: 1.3,
+    maxWidth: 700,
+    shadow: { blur: 14, offsetX: 0, offsetY: 4 },
+    box: { style: "box", color: "#301428", opacity: 0.85, radius: 24, padX: 40, padY: 24 },
+  });
+  const cap = styled.tracks
+    .find((t) => t.id === "captions")!
+    .clips.find((c): c is TextClip => c.kind === "text")!;
+  assert(cap.fontWeight === "bold", "styled caption should be bold");
+  assert(cap.italic === true, "styled caption should be italic");
+  assert(cap.uppercase === true, "styled caption should be uppercase");
+  assert(cap.letterSpacing === 6, "styled caption should carry letter spacing");
+  assert(cap.maxWidth === 700, "styled caption should carry a wrap width");
+  assert(!!cap.shadow && cap.shadow.blur > 0, "styled caption should have a shadow");
+  assert(cap.box?.style === "box" && cap.box.opacity === 0.85, "styled caption should have a box panel");
+  const styledBytes = await renderBytes(styled, at);
+  assert(styledBytes.subarray(0, 4).equals(PNG_MAGIC), "styled caption frame should be a real PNG");
+  assert(!styledBytes.equals(baseBytes), "the caption style fields should change the rendered pixels");
+
+  // (b) Position presets move the caption (metadata + resolved transform.y + pixels).
+  const bottom = positionCaptions(base, { anchor: "bottom" });
+  const top = positionCaptions(base, { anchor: "top" });
+  const yBottom = bottom.tracks.find((t) => t.id === "captions")!.clips[0] as TextClip;
+  const yTop = top.tracks.find((t) => t.id === "captions")!.clips[0] as TextClip;
+  assert(yTop.position === "top" && yBottom.position === "bottom", "position preset should be recorded");
+  assert(yTop.transform.y < yBottom.transform.y, "top caption should sit above the bottom one");
+  const topBytes = await renderBytes(top, at);
+  const bottomBytes = await renderBytes(bottom, at);
+  assert(!topBytes.equals(bottomBytes), "moving the caption position should change the frame");
+
+  // A vertical offset nudges the resolved y further.
+  const bottomUp = positionCaptions(base, { anchor: "bottom", offset: -120 });
+  const yUp = bottomUp.tracks.find((t) => t.id === "captions")!.clips[0] as TextClip;
+  assert(yUp.transform.y < yBottom.transform.y, "a negative offset should raise the bottom caption");
+
+  // (c) Targeting ONE clip by id; a bad id throws.
+  const oneRed = styleCaptions(base, { clipId: "capA", color: "#ff0000" });
+  assert((oneRed.tracks[0]!.clips[0] as TextClip).color === "#ff0000", "clipId styling should apply");
+  let threw = false;
+  try {
+    styleCaptions(base, { clipId: "nope", color: "#ff0000" });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "styling a missing clipId should throw");
+
+  // (d) The EXPORT PNG-overlay path (renderTextClipPng — the SAME canvas drawText)
+  // picks up the styles: the styled caption PNG differs from the default one.
+  const basePng = renderTextClipPng(base, base.tracks[0]!.clips[0] as TextClip);
+  const styledPng = renderTextClipPng(styled, cap);
+  assert(styledPng.subarray(0, 4).equals(PNG_MAGIC), "styled caption overlay should be a real PNG");
+  assert(!styledPng.equals(basePng), "the export PNG overlay should pick up the caption styles");
+
+  console.log(
+    `  [32m✔[0m check 27b (caption custom style): weight/italic/uppercase/spacing/wrap/shadow/box + position presets change the frame (${styledBytes.length}b) and the export PNG overlay`,
+  );
 }
 
 async function checkTypewriter(): Promise<void> {
@@ -3335,6 +3432,7 @@ async function main(): Promise<void> {
   await checkMoreTransitions();
   await checkVfx();
   await checkCaptionStyle();
+  await checkCaptionCustomStyle();
   await checkTypewriter();
   await checkCursor();
   await checkCallout();
