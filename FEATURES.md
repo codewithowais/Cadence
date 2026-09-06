@@ -18,7 +18,7 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 ## 2. Ingest & understanding
 - ✅ Upload a **video**, or a **group of photos**, or an **audio** track (music).
 - ✅ In-browser probing of duration/dimensions.
-- ✅ **Transcription** via a `Transcriber` interface — deterministic **StubTranscriber** now (offline, free). 🔒 **Local Whisper** drop-in planned.
+- ✅ **Transcription** via a `Transcriber` interface — deterministic **StubTranscriber** (offline, free, default fallback). ✅ 🔒 **Local Whisper** drop-in (`WhisperTranscriber`) — real speech-to-text from a local `whisper` / `whisper-cpp` / `faster-whisper` CLI (or `WHISPER_CMD` template; `WHISPER_MODEL`, default `base`), audio extracted via ffmpeg. A `createTranscriber()` factory picks Whisper when both it and ffmpeg are present, else the Stub — never crashes when absent. (Needs a free Whisper install + ffmpeg to run live.)
 
 ## 3. Editing tools (Director tools on the edit-doc)
 - ✅ **Highlight cut** (`create_highlight`) — pick the best segments up to a target length.
@@ -77,7 +77,7 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - ⛔ **Real Claude Director** (Anthropic API, metered) — planned drop-in behind the money gate; stub stays as fallback.
 
 ## 10. Engineering / quality gates
-- ✅ **Verify gate** — `npm run typecheck` + `npm run verify` renders real frames and asserts (currently **14 checks**: trivial, highlight, edit tools, slideshow, titles/fades/looks, enhance providers, export plan, ffmpeg-graceful, DB builders, migrations, music, b-roll, kinetic, punch-in).
+- ✅ **Verify gate** — `npm run typecheck` + `npm run verify` renders real frames and asserts (currently **16 checks**: trivial, highlight, edit tools, slideshow, titles/fades/looks, enhance providers, export plan, ffmpeg-graceful, DB builders, migrations, music, b-roll, kinetic, punch-in, whisper-parse, transcriber-factory).
 - ✅ Pinned dependencies + committed lockfile; small verified commits; `TASKS.md` + `CHANGELOG.md` trail.
 
 ---

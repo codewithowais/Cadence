@@ -13,6 +13,8 @@
  *   12 b-roll: add_broll picture-in-picture → overlay clip renders + overlay on export
  *   13 kinetic title: add_kinetic_title → mid-animation frame + slide expr on export
  *   14 punch-in emphasis: add_emphasis → increased scale in-window + zoompan on export
+ *   15 whisper parse: parseWhisperJson (OpenAI + whisper.cpp shapes) → valid Transcript
+ *   16 transcriber factory: real Whisper when available, else graceful StubTranscriber
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -28,7 +30,12 @@ import {
   type VideoClip,
 } from "@cadence/core";
 import { CanvasRenderEngine } from "@cadence/render-node";
-import { StubTranscriber } from "@cadence/understanding";
+import {
+  StubTranscriber,
+  WhisperTranscriber,
+  parseWhisperJson,
+  pickTranscriber,
+} from "@cadence/understanding";
 import { ProjectState, StubDirector } from "@cadence/director";
 import { allProviders, buildCliArgs, configFromEnv, selectProvider } from "@cadence/enhance";
 import {
@@ -498,6 +505,89 @@ async function checkEmphasis(): Promise<void> {
   console.log(`  [32m✔[0m check 14 (punch-in): mid-window scale ${Math.round(s * 100) / 100}× renders (${n}b) + zoompan pulse on export`);
 }
 
+async function checkWhisperParse(): Promise<void> {
+  // (a) OpenAI whisper / faster-whisper shape: seconds + word probabilities.
+  const openai = {
+    text: "Hello world. This is a test.",
+    language: "en",
+    duration: 3.2,
+    segments: [
+      {
+        id: 0, start: 0.0, end: 1.4, text: " Hello world.", avg_logprob: -0.22,
+        words: [
+          { word: " Hello", start: 0.0, end: 0.6, probability: 0.98 },
+          { word: " world.", start: 0.6, end: 1.4, probability: 0.95 },
+        ],
+      },
+      {
+        id: 1, start: 1.6, end: 3.2, text: " This is a test.", avg_logprob: -0.31,
+        words: [
+          { word: " This", start: 1.6, end: 1.9, probability: 0.9 },
+          { word: " is", start: 1.9, end: 2.1, probability: 0.92 },
+          { word: " a", start: 2.1, end: 2.3, probability: 0.88 },
+          { word: " test.", start: 2.3, end: 3.2, probability: 0.96 },
+        ],
+      },
+    ],
+  };
+  const t = parseWhisperJson(openai, "media-xyz");
+  assert(t.mediaId === "media-xyz", "whisper: mediaId should be carried through");
+  assert(t.language === "en", `whisper: expected language en, got ${t.language}`);
+  assert(t.segments.length === 2, `whisper: expected 2 segments, got ${t.segments.length}`);
+  assert(t.words.length === 6, `whisper: expected 6 flat words, got ${t.words.length}`);
+  assert(Math.abs(t.durationSec - 3.2) < 1e-6, `whisper: expected 3.2s duration, got ${t.durationSec}`);
+  // Words are trimmed (no leading space) and monotonic; every end >= start.
+  let prevEnd = 0;
+  for (const w of t.words) {
+    assert(w.text === w.text.trim() && w.text.length > 0, `whisper: word not trimmed/non-empty: "${w.text}"`);
+    assert(w.end >= w.start, `whisper: word end<start (${w.start}..${w.end})`);
+    assert(w.start >= prevEnd - 1e-6, `whisper: words not monotonic at "${w.text}"`);
+    prevEnd = w.end;
+  }
+  // Segments monotonic + carry a 0..1 score derived from word probabilities.
+  assert(t.segments[0]!.start <= t.segments[1]!.start, "whisper: segments not ordered by start");
+  assert((t.segments[0]!.score ?? -1) >= 0 && (t.segments[0]!.score ?? 2) <= 1, "whisper: segment score should be 0..1");
+  // Result round-trips through JSON (structurally valid / parseable).
+  const roundTrip = JSON.parse(JSON.stringify(t)) as typeof t;
+  assert(roundTrip.words.length === 6 && roundTrip.segments.length === 2, "whisper: transcript should round-trip");
+
+  // (b) whisper.cpp shape: millisecond offsets → seconds (segment-level).
+  const cpp = {
+    result: { language: "en" },
+    transcription: [
+      { offsets: { from: 0, to: 900 }, text: " Cadence", tokens: [{ text: "[_BEG_]", offsets: { from: 0, to: 0 } }, { text: " Cadence", offsets: { from: 0, to: 900 } }] },
+      { offsets: { from: 900, to: 2000 }, text: " ships", tokens: [{ text: " ships", offsets: { from: 900, to: 2000 } }] },
+    ],
+  };
+  const tc = parseWhisperJson(cpp, "m2");
+  assert(tc.segments.length === 2, `whisper.cpp: expected 2 segments, got ${tc.segments.length}`);
+  assert(Math.abs(tc.segments[0]!.end - 0.9) < 1e-6, `whisper.cpp: expected ms→s (0.9), got ${tc.segments[0]!.end}`);
+  assert(Math.abs(tc.durationSec - 2.0) < 1e-6, `whisper.cpp: expected 2.0s duration, got ${tc.durationSec}`);
+  // Special tokens ([_BEG_]) are dropped; only real words remain.
+  assert(tc.words.every((w) => !w.text.startsWith("[")), "whisper.cpp: special tokens should be filtered");
+  assert(tc.words.length === 2, `whisper.cpp: expected 2 words after filtering, got ${tc.words.length}`);
+
+  console.log(`  [32m✔[0m check 15 (whisper parse): OpenAI shape → 2 segs/6 words/3.2s + whisper.cpp ms→s + special-token filter`);
+}
+
+async function checkTranscriberFactory(): Promise<void> {
+  const chosen = await pickTranscriber();
+  const whisperUp = await new WhisperTranscriber().isAvailable();
+  if (whisperUp) {
+    assert(chosen instanceof WhisperTranscriber, "factory should pick WhisperTranscriber when available");
+  } else {
+    assert(chosen instanceof StubTranscriber, "factory should fall back to StubTranscriber when Whisper unavailable");
+  }
+  // Whichever is chosen, the Transcriber contract still yields a usable transcript.
+  const media: MediaAsset = {
+    id: "clip-001", kind: "video", src: "uploads/clip-001.mp4",
+    durationSec: 120, width: 1920, height: 1080, label: "raw.mp4",
+  };
+  const t = whisperUp ? await new StubTranscriber().transcribe(media) : await chosen.transcribe(media);
+  assert(t.words.length > 0 && t.segments.length > 0, "factory: chosen transcriber should produce segments+words");
+  console.log(`  [32m✔[0m check 16 (transcriber factory): Whisper ${whisperUp ? "available → selected" : "absent → graceful StubTranscriber fallback"}`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -514,6 +604,8 @@ async function main(): Promise<void> {
   await checkBroll();
   await checkKineticTitle();
   await checkEmphasis();
+  await checkWhisperParse();
+  await checkTranscriberFactory();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

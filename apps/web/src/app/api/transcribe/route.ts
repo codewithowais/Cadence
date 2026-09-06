@@ -1,15 +1,20 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { MediaAsset } from "@cadence/core";
-import { StubTranscriber } from "@cadence/understanding";
+import { pickTranscriber } from "@cadence/understanding";
 
 export const runtime = "nodejs";
 
-/** Understanding service (stub): media → transcript. Drop-in for local Whisper later. */
+/**
+ * Understanding service: media → transcript. Uses real local Whisper when a
+ * Whisper CLI + ffmpeg are present (see @cadence/understanding), else the
+ * deterministic offline StubTranscriber. Response shape is identical either way.
+ */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const media = MediaAsset.parse(body?.media);
-    const transcript = await new StubTranscriber().transcribe(media);
+    const transcriber = await pickTranscriber();
+    const transcript = await transcriber.transcribe(media);
     return NextResponse.json({ transcript });
   } catch (err) {
     return NextResponse.json(
