@@ -17,6 +17,7 @@ import type {
   KeyframeProp,
   SolidClip,
   TextClip,
+  TransitionType,
   VideoClip,
 } from "./schema";
 
@@ -330,6 +331,65 @@ export function transitionMotion(
   }
   // wipe: reveal from the left; hardest edge is the smaller of the two ramps.
   return { dx: 0, dy: 0, wipeFrac: Math.min(inP, outP), fadeOpacity: false, scaleMul: 1 };
+}
+
+/**
+ * CSS-ready transition state for the BROWSER preview (Stage), derived from the
+ * SAME pure `transitionMotion` + `transitionOpacity` helpers the canvas engine
+ * (drawMedia) and the ffmpeg `xfade` map read — so picking a transition type in
+ * the UI changes the preview exactly the way it will change on export (the "one
+ * pure helper" rule). It returns primitives the Stage COMPOSES into its existing
+ * per-layer transform (Ken Burns pan/scale, punch-in emphasis) instead of a
+ * whole style string, so preview motion stacks cleanly:
+ *
+ *  - opacity      : final layer opacity — the fade-style types (crossfade /
+ *                   dip-to-black / dissolve / zoom) ramp it; slide / wipe / smooth
+ *                   stay fully opaque so the motion reads as a slide / wipe.
+ *  - translateXPct/translateYPct : slide offset as a PERCENT of frame width /
+ *                   height (slide / smooth enter from the right, exit to the left).
+ *  - scaleMul     : extra scale multiplier for the "zoom" reveal (1 otherwise) —
+ *                   multiply it into the clip's own scale.
+ *  - clipPath     : a CSS `inset(...)` wipe reveal (left→right) for "wipe", else
+ *                   "none".
+ *  - type         : the resolved TransitionType (surfaced as a data-attribute so
+ *                   the preview layer is inspectable / testable).
+ *  - active       : whether the playhead is inside this clip's in/out transition
+ *                   window right now (drives the data-attribute + tests).
+ * Deterministic; mirrors the canvas engine's consumption of transitionMotion.
+ */
+export interface TransitionCss {
+  type: TransitionType;
+  opacity: number;
+  translateXPct: number;
+  translateYPct: number;
+  scaleMul: number;
+  clipPath: string;
+  active: boolean;
+}
+
+export function transitionStyle(
+  clip: VideoClip | ImageClip | TextClip | SolidClip,
+  timeSec: number,
+  frameW: number,
+  frameH: number,
+): TransitionCss {
+  const type = clip.transitionType ?? "crossfade";
+  const tm = transitionMotion(clip, timeSec, frameW, frameH);
+  // Opacity ramps only for the fade-style types (matches drawMedia); slide/wipe
+  // keep the clip's base opacity so they slide/reveal rather than dissolve.
+  const opacity = tm.fadeOpacity ? transitionOpacity(clip, timeSec) : clip.transform.opacity;
+  const end = clip.start + clip.duration;
+  const inWin = clip.transitionInSec > 0 && timeSec >= clip.start && timeSec < clip.start + clip.transitionInSec;
+  const outWin = clip.transitionOutSec > 0 && timeSec > end - clip.transitionOutSec && timeSec <= end;
+  return {
+    type,
+    opacity,
+    translateXPct: frameW > 0 ? round((tm.dx / frameW) * 100) : 0,
+    translateYPct: frameH > 0 ? round((tm.dy / frameH) * 100) : 0,
+    scaleMul: tm.scaleMul,
+    clipPath: tm.wipeFrac < 1 ? `inset(0 ${round((1 - tm.wipeFrac) * 100)}% 0 0)` : "none",
+    active: inWin || outWin,
+  };
 }
 
 /**

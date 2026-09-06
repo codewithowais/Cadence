@@ -4,6 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.10 — fix: transitions now visibly work + are always changeable
+- **Root cause:** the browser **preview ignored `transitionType`** — every type rendered as a plain opacity crossfade, so picking dissolve/slide/wipe/zoom looked like nothing changed. New pure `transitionStyle` helper (`grade.ts`, built on the existing `transitionMotion`/`transitionOpacity`) drives the Stage so the preview now renders each of the 7 types (opacity / translate / clip-path wipe / zoom), aligned with canvas + ffmpeg xfade. Layers expose `data-transition` for tests.
+- **Changeable + discoverable:** a **single/first clip gets a fade-in-from-black** chip and the **last clip a fade-out-to-black** chip (`setFadeOut`/`clearFadeOut`), so there's always a transition to set even with no interior cut; the transition popover now flips above the chip when it would overflow the viewport (was clipping controls off-screen).
+- *verified:* typecheck (root+web) + test:unit **49** + verify (+check 59) + evals 5/5 + `next build` + Playwright e2e **13/13** (2 new transitions specs).
+
 ### S4.9 — speed ramps (time remap / CapCut "Curve")
 - Additive `VideoClip.speedRamp` (`[clipProgress, multiplier]` control points; absent ⇒ scalar `speed`, unchanged). One shared pure helper `speedRampIntegral` integrates the ramp so `sourceTimeAt`/`sourceSpanSec` map non-linearly across canvas + Stage + export identically. ffmpeg export segments the clip (per-piece `setpts`/`atempo`) — single-speed fast path byte-identical. Tool `set_speed_ramp` + presets (bullet-time/hero/ease-in-out/ramp-up/ramp-down). Engine only; UI next.
 - *verified:* typecheck (root+web) + test:unit 44/44 + verify **58/58** + evals 5/5.

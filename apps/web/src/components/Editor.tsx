@@ -19,6 +19,8 @@ import {
   moveClipToTrack,
   setTransition,
   clearTransition,
+  setFadeOut,
+  clearFadeOut,
   setKeyframe,
   moveKeyframe,
   removeKeyframe,
@@ -956,6 +958,27 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     }
   }
 
+  /** Fade the LAST clip out to black (its outgoing ramp) — undoable. Gives a
+   *  discoverable transition even with no interior cut (single-clip project). */
+  function setClipFadeOut(clipId: string, durSec: number) {
+    setPlaying(false);
+    try {
+      commit(setFadeOut(doc, clipId, durSec));
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't add that fade.", "error");
+    }
+  }
+
+  /** Remove a clip's fade-out-to-black — undoable. */
+  function clearClipFadeOut(clipId: string) {
+    setPlaying(false);
+    try {
+      commit(clearFadeOut(doc, clipId));
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't clear that fade.", "error");
+    }
+  }
+
   // ---- On-timeline keyframes (P1-2) -----------------------------------------
   // All three use the FUNCTIONAL commit form so a live diamond drag reads the
   // freshest doc (not a stale closure) between coalesced steps, and swallow the
@@ -1348,6 +1371,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onMoveClipToTrack: moveClipToTrackAt,
               onSetTransition: setClipTransition,
               onClearTransition: clearClipTransition,
+              onSetFadeOut: setClipFadeOut,
+              onClearFadeOut: clearClipFadeOut,
               onSetKeyframe: setClipKeyframe,
               onMoveKeyframe: moveClipKeyframe,
               onRemoveKeyframe: removeClipKeyframe,

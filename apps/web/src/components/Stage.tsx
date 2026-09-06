@@ -8,6 +8,7 @@ import {
   imageMotion,
   textKinetic,
   transitionOpacity,
+  transitionStyle,
   type AudioClip,
   type EditDoc,
   type ImageClip,
@@ -214,29 +215,42 @@ export function Stage(props: StageProps) {
             </div>
           )}
 
-          {/* Video layer (single source in edit mode) */}
-          {hasMedia && videoMediaId && urls[videoMediaId] && (
-            <video
-              ref={videoRef}
-              src={urls[videoMediaId]}
-              muted={muted}
-              playsInline
-              preload="auto"
-              className="absolute inset-0 h-full w-full object-cover will-change-transform"
-              style={{
-                opacity: activeVideo ? transitionOpacity(activeVideo, timeSec) : 0,
-                filter: activeVideo ? cssFilter(activeVideo.look) : "none",
-                // Punch-in emphasis — same core helper as the canvas/export.
-                transform: activeVideo ? `scale(${emphasisScale(activeVideo, timeSec)})` : undefined,
-                transformOrigin: "center",
-              }}
-            />
-          )}
+          {/* Video layer (single source in edit mode). The transition TYPE is
+              honored via the shared pure `transitionStyle` helper (slide / wipe /
+              zoom / fade), so changing it in the UI visibly changes the preview. */}
+          {hasMedia && videoMediaId && urls[videoMediaId] && (() => {
+            const ts = activeVideo
+              ? transitionStyle(activeVideo, timeSec, doc.meta.width, doc.meta.height)
+              : null;
+            return (
+              <video
+                ref={videoRef}
+                src={urls[videoMediaId]}
+                muted={muted}
+                playsInline
+                preload="auto"
+                data-transition={ts?.type}
+                data-transition-active={ts?.active ? "true" : "false"}
+                className="absolute inset-0 h-full w-full object-cover will-change-transform"
+                style={{
+                  opacity: ts ? ts.opacity : 0,
+                  filter: activeVideo ? cssFilter(activeVideo.look) : "none",
+                  // Slide offset + zoom reveal + punch-in emphasis — all shared core helpers.
+                  transform: ts
+                    ? `translate(${ts.translateXPct}%, ${ts.translateYPct}%) scale(${emphasisScale(activeVideo!, timeSec) * ts.scaleMul})`
+                    : undefined,
+                  clipPath: ts && ts.clipPath !== "none" ? ts.clipPath : undefined,
+                  transformOrigin: "center",
+                }}
+              />
+            );
+          })()}
 
-          {/* Image layers (slideshow: crossfade + Ken Burns) */}
+          {/* Image layers (slideshow: Ken Burns + the chosen transition type). */}
           {hasMedia &&
             activeImages.map((clip) => {
               const m = imageMotion(clip, timeSec);
+              const ts = transitionStyle(clip, timeSec, doc.meta.width, doc.meta.height);
               const url = urls[clip.mediaId];
               if (!url) return null;
               return (
@@ -244,11 +258,14 @@ export function Stage(props: StageProps) {
                   key={clip.id}
                   src={url}
                   alt=""
+                  data-transition={ts.type}
+                  data-transition-active={ts.active ? "true" : "false"}
                   className="absolute inset-0 h-full w-full object-cover will-change-transform"
                   style={{
-                    opacity: transitionOpacity(clip, timeSec),
+                    opacity: ts.opacity,
                     filter: cssFilter(clip.look),
-                    transform: `translate(${m.panXFrac * 100}%, ${m.panYFrac * 100}%) scale(${clip.transform.scale * m.scale})`,
+                    transform: `translate(${m.panXFrac * 100 + ts.translateXPct}%, ${m.panYFrac * 100 + ts.translateYPct}%) scale(${clip.transform.scale * m.scale * ts.scaleMul})`,
+                    clipPath: ts.clipPath !== "none" ? ts.clipPath : undefined,
                   }}
                 />
               );

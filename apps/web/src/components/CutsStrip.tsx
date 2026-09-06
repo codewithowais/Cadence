@@ -71,6 +71,10 @@ export interface TimelineEdit {
   onSetTransition: (clipId: string, type: TransitionType, durSec: number) => void;
   /** Turn one cut back into a hard cut (clear its transition). */
   onClearTransition: (clipId: string) => void;
+  /** Fade the last clip out to black (its outgoing ramp) — a transition with no cut. */
+  onSetFadeOut: (clipId: string, durSec: number) => void;
+  /** Remove a clip's fade-out-to-black. */
+  onClearFadeOut: (clipId: string) => void;
   // ---- On-timeline keyframes (Wave C — P1-2) ------------------------------
   /** Upsert a keyframe on a clip (add-at-playhead / value edit / easing change). */
   onSetKeyframe: (
@@ -490,8 +494,12 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   // Inline rename editor state.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
-  // Per-cut transition popover: the clip being edited + its anchor screen rect.
-  const [transitionEdit, setTransitionEdit] = useState<{ clipId: string; x: number; y: number } | null>(null);
+  // Per-cut transition popover: the clip being edited + its anchor screen rect +
+  // which edge it targets — "in" (interior cut / first-clip fade-in-from-black)
+  // or "out" (last-clip fade-out-to-black).
+  const [transitionEdit, setTransitionEdit] = useState<
+    { clipId: string; x: number; y: number; edge: "in" | "out"; isStart: boolean } | null
+  >(null);
   // Whether the selected clip's keyframe editor is expanded (tucked by default).
   const [kfOpen, setKfOpen] = useState(false);
   // Timeline trim mode (Wave E): Normal · Roll · Slip · Slide. Local to the strip.
@@ -1175,10 +1183,28 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                         </div>
                       );
                     })}
-                    {/* Per-cut transition chips (sit over each cut boundary). */}
+                    {/* Per-cut transition chips. Interior cuts (i>0) sit over the
+                        cut boundary; the FIRST clip (i===0) carries a fade-in-from-
+                        black chip at its head — so a single-clip project still has a
+                        transition to add/change (the reported "can't change" case). */}
                     {chipClips.map((clip, i) => {
-                      if (i === 0) return null; // the first clip has no incoming cut
+                      const isStart = i === 0;
                       const on = clip.transitionInSec > 0;
+                      const selected = transitionEdit?.clipId === clip.id && transitionEdit.edge === "in";
+                      const title = isStart
+                        ? on
+                          ? `Fade in from black: ${clip.transitionType} ${clip.transitionInSec.toFixed(1)}s — click to edit`
+                          : "Fade in from black — click to add"
+                        : on
+                          ? `Transition: ${clip.transitionType} ${clip.transitionInSec.toFixed(1)}s — click to edit`
+                          : "Hard cut — click to add a transition";
+                      const aria = isStart
+                        ? on
+                          ? `Edit the fade in from black (${clip.transitionType})`
+                          : "Add a fade in from black"
+                        : on
+                          ? `Edit transition on this cut (${clip.transitionType})`
+                          : "Add a transition on this cut";
                       return (
                         <button
                           key={`xf-${clip.id}`}
@@ -1188,16 +1214,20 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                             e.stopPropagation();
                             const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                             setTransitionEdit(
-                              transitionEdit?.clipId === clip.id
+                              selected
                                 ? null
-                                : { clipId: clip.id, x: r.left + r.width / 2, y: r.bottom },
+                                : { clipId: clip.id, x: r.left + r.width / 2, y: r.bottom, edge: "in", isStart },
                             );
                           }}
-                          title={on ? `Transition: ${clip.transitionType} ${clip.transitionInSec.toFixed(1)}s — click to edit` : "Hard cut — click to add a transition"}
-                          aria-label={on ? `Edit transition on this cut (${clip.transitionType})` : "Add a transition on this cut"}
+                          title={title}
+                          aria-label={aria}
                           aria-haspopup="dialog"
-                          aria-expanded={transitionEdit?.clipId === clip.id}
-                          className="absolute top-1/2 z-30 grid h-4 w-4 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-[3px] text-amber outline-none transition hover:scale-110"
+                          aria-expanded={selected}
+                          className={[
+                            "absolute top-1/2 z-30 grid h-4 w-4 -translate-y-1/2 place-items-center rounded-[3px] text-amber outline-none transition hover:scale-110",
+                            // The head chip sits just inside the left edge; interior chips straddle the cut.
+                            isStart ? "translate-x-0.5" : "-translate-x-1/2",
+                          ].join(" ")}
                           style={{ left: secToPx(clip.start) }}
                         >
                           <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden focusable="false">
@@ -1212,6 +1242,44 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                         </button>
                       );
                     })}
+                    {/* Fade-out-to-black chip at the very end of the last clip. */}
+                    {chipClips.length > 0 && (() => {
+                      const last = chipClips[chipClips.length - 1]!;
+                      const on = "transitionOutSec" in last && last.transitionOutSec > 0;
+                      const selected = transitionEdit?.clipId === last.id && transitionEdit.edge === "out";
+                      return (
+                        <button
+                          key={`fo-${last.id}`}
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                            setTransitionEdit(
+                              selected
+                                ? null
+                                : { clipId: last.id, x: r.left + r.width / 2, y: r.bottom, edge: "out", isStart: false },
+                            );
+                          }}
+                          title={on ? `Fade out to black ${last.transitionOutSec.toFixed(1)}s — click to edit` : "Fade out to black — click to add"}
+                          aria-label={on ? "Edit the fade out to black" : "Add a fade out to black"}
+                          aria-haspopup="dialog"
+                          aria-expanded={selected}
+                          className="absolute top-1/2 z-30 grid h-4 w-4 -translate-x-full -translate-y-1/2 place-items-center rounded-[3px] text-amber outline-none transition hover:scale-110"
+                          style={{ left: secToPx(last.start + last.duration) }}
+                        >
+                          <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden focusable="false">
+                            <path
+                              d="M6 1 11 6 6 11 1 6Z"
+                              fill={on ? "var(--color-amber)" : "var(--color-panel)"}
+                              stroke="var(--color-amber)"
+                              strokeWidth={1.5}
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </button>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -1250,6 +1318,8 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
             clip={found.clip}
             x={transitionEdit.x}
             y={transitionEdit.y}
+            edge={transitionEdit.edge}
+            isStart={transitionEdit.isStart}
             edit={edit}
             onClose={() => setTransitionEdit(null)}
           />
@@ -1265,18 +1335,47 @@ function TransitionPopover({
   clip,
   x,
   y,
+  edge,
+  isStart,
   edit,
   onClose,
 }: {
   clip: Extract<Clip, { kind: "video" | "image" }>;
   x: number;
   y: number;
+  /** "in" = incoming ramp (interior cut / first-clip fade-in); "out" = fade to black. */
+  edge: "in" | "out";
+  /** The "in" edge on the FIRST clip is a fade-in-from-black, not a cut. */
+  isStart: boolean;
   edit: TimelineEdit;
   onClose: () => void;
 }) {
-  const on = clip.transitionInSec > 0;
+  const isOut = edge === "out";
+  const current = isOut ? clip.transitionOutSec : clip.transitionInSec;
+  const on = current > 0;
   // Seed the duration slider from the current transition, else a sensible 0.6s.
-  const [dur, setDur] = useState(on ? Math.max(0.1, Math.min(2, clip.transitionInSec)) : 0.6);
+  const [dur, setDur] = useState(on ? Math.max(0.1, Math.min(2, current)) : 0.6);
+
+  // The chip sits near the BOTTOM of the screen (the timeline), so a popover
+  // anchored below it would overflow off-screen with its controls unclickable.
+  // Measure the panel and flip it ABOVE the chip when there isn't room below.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number }>({
+    left: Math.max(8, typeof window !== "undefined" ? Math.min(x - 124, window.innerWidth - 260) : x - 124),
+    top: y + 6,
+  });
+  useLayoutEffect(() => {
+    const el = panelRef.current;
+    if (!el || typeof window === "undefined") return;
+    const h = el.offsetHeight;
+    const w = el.offsetWidth;
+    const left = Math.max(8, Math.min(x - w / 2, window.innerWidth - w - 8));
+    // y is the chip's BOTTOM; below by default, flipped above (past the ~22px
+    // chip) when the panel would spill past the viewport bottom.
+    const top =
+      y + 6 + h > window.innerHeight - 8 ? Math.max(8, y - 22 - h) : y + 6;
+    setPos({ left, top });
+  }, [x, y]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1286,25 +1385,33 @@ function TransitionPopover({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Keep the panel on-screen (it is ~248px wide).
-  const left = typeof window !== "undefined" ? Math.min(x - 124, window.innerWidth - 260) : x - 124;
+  const heading = isOut ? "Fade out to black" : isStart ? "Fade in from black" : "Transition";
+  const clearLabel = isOut ? "No fade out" : isStart ? "No fade in" : "Hard cut";
+  const clearFn = isOut ? () => edit.onClearFadeOut(clip.id) : () => edit.onClearTransition(clip.id);
+  // The "out" edge is always an opacity fade against black — no style gallery.
+  const setDurFn = (v: number) => {
+    if (isOut) edit.onSetFadeOut(clip.id, v);
+    else edit.onSetTransition(clip.id, clip.transitionType, v);
+  };
+
   return (
     <>
       {/* click-catcher */}
       <div className="fixed inset-0 z-40" onPointerDown={onClose} aria-hidden />
       <div
+        ref={panelRef}
         role="dialog"
-        aria-label="Cut transition"
+        aria-label={isOut ? "Fade out to black" : "Cut transition"}
         className="fixed z-50 rounded-xl border border-line bg-elevated p-3 text-xs shadow-2xl"
-        style={{ left: Math.max(8, left), top: y + 6, width: 248 }}
+        style={{ left: pos.left, top: pos.top, width: 248 }}
         onPointerDown={(e) => e.stopPropagation()}
       >
         <div className="mb-2 flex items-center justify-between">
-          <span className="font-medium text-text">Transition</span>
+          <span className="font-medium text-text">{heading}</span>
           <button
             type="button"
             onClick={() => {
-              edit.onClearTransition(clip.id);
+              clearFn();
               onClose();
             }}
             className={[
@@ -1312,34 +1419,40 @@ function TransitionPopover({
               on ? "border-line bg-panel text-muted hover:text-text" : "border-amber/40 bg-amber/10 text-amber",
             ].join(" ")}
           >
-            Hard cut
+            {clearLabel}
           </button>
         </div>
-        <div className="grid grid-cols-2 gap-1.5">
-          {TRANSITIONS.map(({ type, label }) => {
-            const active = on && clip.transitionType === type;
-            return (
-              <button
-                key={type}
-                type="button"
-                onClick={() => edit.onSetTransition(clip.id, type, dur)}
-                aria-pressed={active}
-                className={[
-                  "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition",
-                  active
-                    ? "border-amber bg-amber/10 text-amber"
-                    : "border-line bg-panel text-muted hover:border-amber/40 hover:text-text",
-                ].join(" ")}
-              >
-                <span
-                  aria-hidden
-                  className={["h-2.5 w-2.5 shrink-0 rounded-[2px]", active ? "bg-amber" : "bg-teal/50"].join(" ")}
-                />
-                <span className="truncate text-[11px]">{label}</span>
-              </button>
-            );
-          })}
-        </div>
+        {isOut ? (
+          <p className="mb-1 text-[11px] leading-snug text-faint">
+            Fade the final frame out to black over the chosen time.
+          </p>
+        ) : (
+          <div className="grid grid-cols-2 gap-1.5">
+            {TRANSITIONS.map(({ type, label }) => {
+              const active = on && clip.transitionType === type;
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => edit.onSetTransition(clip.id, type, dur)}
+                  aria-pressed={active}
+                  className={[
+                    "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition",
+                    active
+                      ? "border-amber bg-amber/10 text-amber"
+                      : "border-line bg-panel text-muted hover:border-amber/40 hover:text-text",
+                  ].join(" ")}
+                >
+                  <span
+                    aria-hidden
+                    className={["h-2.5 w-2.5 shrink-0 rounded-[2px]", active ? "bg-amber" : "bg-teal/50"].join(" ")}
+                  />
+                  <span className="truncate text-[11px]">{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
         <label className="mt-3 flex items-center gap-2">
           <span className="shrink-0 text-faint">Duration</span>
           <input
@@ -1351,15 +1464,24 @@ function TransitionPopover({
             onChange={(e) => {
               const v = Number(e.target.value);
               setDur(v);
-              // Live-update only when a transition is already set (keeps the type).
-              if (clip.transitionInSec > 0) edit.onSetTransition(clip.id, clip.transitionType, v);
+              // Live-update only when the fade/transition is already set (keeps the type).
+              if (on) setDurFn(v);
             }}
-            aria-label={`Transition duration: ${dur.toFixed(1)}s`}
+            aria-label={`${isOut ? "Fade out" : "Transition"} duration: ${dur.toFixed(1)}s`}
             style={{ accentColor: "var(--color-amber)" }}
             className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-line"
           />
           <span className="w-8 shrink-0 text-right tabular-nums text-muted">{dur.toFixed(1)}s</span>
         </label>
+        {isOut && !on && (
+          <button
+            type="button"
+            onClick={() => edit.onSetFadeOut(clip.id, dur)}
+            className="mt-3 w-full rounded-md border border-amber/40 bg-amber/10 px-2 py-1.5 text-[11px] font-medium text-amber transition hover:bg-amber/20"
+          >
+            Add fade out
+          </button>
+        )}
       </div>
     </>
   );

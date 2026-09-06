@@ -48,6 +48,7 @@ import {
   calloutScreenRect,
   calloutTransform,
   blendCompositeOperation,
+  transitionStyle,
   valueAt,
   toSrt,
   toVtt,
@@ -96,6 +97,8 @@ import {
   audioFade,
   autoReframe,
   clearTransition,
+  setFadeOut,
+  clearFadeOut,
   clipKeyframes,
   editByTranscript,
   freezeFrame,
@@ -2296,6 +2299,60 @@ function videoClips(doc: EditDoc): VideoClip[] {
   return doc.tracks.find((t) => t.id === "video")!.clips.filter((c): c is VideoClip => c.kind === "video");
 }
 
+async function checkTransitionPreview(): Promise<void> {
+  // The browser preview must HONOR the transition type — not just crossfade
+  // everything. `transitionStyle` is the one pure helper the Stage consumes; it
+  // is built on the same `transitionMotion` + `transitionOpacity` the canvas +
+  // export use, so verifying it here proves preview ↔ canvas ↔ xfade stay aligned.
+  const FW = 1920;
+  const FH = 1080;
+  const mk = (type: string) =>
+    parseEditDoc({
+      version: 1,
+      media: [{ id: "m", kind: "image", src: "a.jpg" }],
+      tracks: [
+        {
+          id: "video",
+          kind: "visual",
+          clips: [{ id: "i", kind: "image", start: 0, duration: 4, mediaId: "m", transitionInSec: 1, transitionType: type }],
+        },
+      ],
+    }).tracks[0]!.clips[0]!;
+
+  // Fade family ramps opacity; slide translates; wipe clips; zoom scales — each
+  // DISTINCT, so the preview visibly differs by type (the reported bug).
+  const cross = transitionStyle(mk("crossfade") as never, 0.5, FW, FH);
+  assert(Math.abs(cross.opacity - 0.5) < 1e-6 && cross.translateXPct === 0 && cross.clipPath === "none", "preview: crossfade is an opacity ramp");
+  const slide = transitionStyle(mk("slide") as never, 0.5, FW, FH);
+  assert(slide.opacity === 1 && slide.translateXPct > 0 && slide.translateXPct < 100, "preview: slide translates in from the right, no fade");
+  const wipe = transitionStyle(mk("wipe") as never, 0.5, FW, FH);
+  assert(wipe.opacity === 1 && wipe.clipPath === "inset(0 50% 0 0)", "preview: wipe reveals via clip-path inset");
+  const zoom = transitionStyle(mk("zoom") as never, 0, FW, FH);
+  assert(zoom.scaleMul > 1 && zoom.opacity === 0, "preview: zoom scales in while it fades");
+  // A distinct data-attribute value per type + an `active` flag only inside the ramp.
+  assert(cross.type === "crossfade" && slide.type === "slide" && wipe.type === "wipe", "preview: type surfaced for the data-attribute");
+  assert(transitionStyle(mk("wipe") as never, 2, FW, FH).active === false, "preview: not active outside the ramp window");
+
+  // Last-clip fade-out-to-black (setFadeOut): a transition where there is NO cut.
+  // Single-image doc, then fade its out edge — the ONLY visual clip fades to black.
+  const single = parseEditDoc({
+    version: 1,
+    media: [{ id: "m", kind: "image", src: "a.jpg" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "solo", kind: "image", start: 0, duration: 4, mediaId: "m" }] }],
+  });
+  const faded = setFadeOut(single, "solo", 0.6);
+  const fc = faded.tracks[0]!.clips[0]!;
+  assert(fc.kind === "image" && fc.transitionOutSec === 0.6, "fade-out: transitionOutSec set on the sole clip");
+  // Its preview opacity ramps DOWN toward the end (fade to black), 1 in the middle.
+  const outStyle = transitionStyle(fc as never, 3.7, FW, FH); // 0.3s before the 4s end → ~half faded
+  assert(outStyle.opacity > 0 && outStyle.opacity < 1 && outStyle.active, "fade-out: opacity ramps down near the end");
+  assert(transitionStyle(fc as never, 2, FW, FH).opacity === 1, "fade-out: fully opaque in the middle");
+  const cleared = clearFadeOut(faded, "solo");
+  assert(cleared.tracks[0]!.clips[0]!.kind === "image" && (cleared.tracks[0]!.clips[0]! as { transitionOutSec: number }).transitionOutSec === 0, "fade-out: cleared back to a hard end");
+
+  console.log(`  [32m✔[0m check 59 (transition preview): transitionStyle honors each type (fade=opacity, slide=translate, wipe=clip-path, zoom=scale) — distinct per type; setFadeOut/clearFadeOut fade the last clip to black with no cut`);
+}
+
 async function checkPerCutTransition(): Promise<void> {
   // Wave C P1-1: setTransition can target ONE cut's incoming boundary via clipId
   // (or atSec), leaving every other cut as it is — while the global path is
@@ -2575,6 +2632,7 @@ async function main(): Promise<void> {
   await checkAgenticLoop();
   await checkSecurityGuard();
   await checkPerCutTransition();
+  await checkTransitionPreview();
   await checkManualKeyframes();
   await checkRollSlipSlide();
   await checkSpeedRampCurve();

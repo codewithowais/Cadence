@@ -984,6 +984,49 @@ export function clearTransition(doc: EditDoc, clipId: string): EditDoc {
   return parseEditDoc(clone);
 }
 
+/**
+ * Set a clip's OUTGOING fade — the reveal-out ramp used for a "fade out to black"
+ * on the LAST clip of a sequence (there is no next clip to overlap, so this fades
+ * against the black composition background). Sets only `transitionOutSec`; the
+ * clip keeps its `transitionType` (so a slide/wipe out still uses its style, but a
+ * plain crossfade — the default — reads as a fade to black). It does NOT re-lay the
+ * track: the out-ramp never creates an overlap. This is the last-clip counterpart
+ * to `setTransition`, giving a discoverable transition even when there is no
+ * interior cut (e.g. a single-clip project). Faithful: reveal timing only.
+ */
+export function setFadeOut(doc: EditDoc, clipId: string, outSec = 0.6): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  for (const track of clone.tracks) {
+    for (const clip of track.clips) {
+      if (
+        clip.id === clipId &&
+        (clip.kind === "video" || clip.kind === "image" || clip.kind === "text" || clip.kind === "solid")
+      ) {
+        clip.transitionOutSec = round(Math.max(0, Math.min(outSec, clip.duration - 0.05)));
+        return parseEditDoc(clone);
+      }
+    }
+  }
+  throw new Error(`No clip “${clipId}” to fade out.`);
+}
+
+/** Clear a clip's outgoing fade (turn a fade-to-black back into a hard end). */
+export function clearFadeOut(doc: EditDoc, clipId: string): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  for (const track of clone.tracks) {
+    for (const clip of track.clips) {
+      if (
+        clip.id === clipId &&
+        (clip.kind === "video" || clip.kind === "image" || clip.kind === "text" || clip.kind === "solid")
+      ) {
+        clip.transitionOutSec = 0;
+        return parseEditDoc(clone);
+      }
+    }
+  }
+  throw new Error(`No clip “${clipId}” to clear a fade on.`);
+}
+
 // ---- Fades -----------------------------------------------------------------
 
 // ---- Interaction demo: cursor / typed text / callout -----------------------
