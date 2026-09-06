@@ -871,9 +871,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             room={room}
             doc={doc}
             mediaList={projectMedia}
+            urls={urls}
             busy={busy}
             onAction={handleSend}
-            onApplyDoc={(d) => commit(d, { coalesce: "color" })}
+            onApplyDoc={(d, coalesceKey) => commit(d, coalesceKey ? { coalesce: coalesceKey } : undefined)}
             onFiles={handleFiles}
             onExport={exportDoc}
             canExport={hasMedia && durationSec > 0}

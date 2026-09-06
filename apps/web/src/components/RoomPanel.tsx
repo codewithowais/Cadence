@@ -1,8 +1,41 @@
 "use client";
 
-import { useRef, useState } from "react";
-import type { AudioClip, ColorGrade, EditDoc, MediaAsset } from "@cadence/core";
-import { adjustColor, currentGrade, NEUTRAL_GRADE } from "@cadence/director";
+import { useEffect, useRef, useState } from "react";
+import type {
+  AudioClip,
+  BlendMode,
+  ColorGrade,
+  CurvePoint,
+  EditDoc,
+  MediaAsset,
+} from "@cadence/core";
+import { cssFilter } from "@cadence/core";
+import {
+  addMask,
+  adjustColor,
+  adjustCurves,
+  adjustHsl,
+  audioFade,
+  chromaKey,
+  currentGrade,
+  normalizeLoudness,
+  regionBlur,
+  setBlend,
+  setPan,
+  NEUTRAL_GRADE,
+} from "@cadence/director";
+import {
+  clearChroma,
+  clearMask,
+  clearRegionFx,
+  compositeScope,
+  currentBlend,
+  currentChroma,
+  currentMask,
+  currentRegionFx,
+  trackFade,
+  trackPan,
+} from "@/lib/fx";
 import { fmtTime, download, downloadBlob } from "@/lib/format";
 import { LOOKS, describeDoc } from "@/lib/status";
 import { captionsToSrt, hasCaptions } from "@/lib/srt";
@@ -14,15 +47,20 @@ interface RoomPanelProps {
   room: Exclude<RoomKey, "edit">;
   doc: EditDoc;
   mediaList: MediaAsset[];
+  /** Object URLs for loaded media (by id) — the Color room's scopes sample these. */
+  urls: Record<string, string>;
   busy: boolean;
   /** Same handler QuickActions/DirectorRail use — a director request. */
   onAction: (prompt: string) => void;
   /**
    * Apply a fully-formed edit-doc directly (client-side, no server round-trip).
-   * Wired to the editor's setDoc so the Color sliders give instant feedback —
-   * `@cadence/director` is pure, so `adjustColor(doc, …)` runs in the browser.
+   * Wired to the editor's commit path so every room control is instant AND
+   * undoable — `@cadence/director` is pure, so `adjustColor(doc, …)` /
+   * `chromaKey(doc, …)` / `audioFade(doc, …)` all run in the browser. Pass a
+   * `coalesceKey` for a continuous control (a slider drag) so the whole drag
+   * collapses into ONE undo step; omit it for a discrete toggle (its own step).
    */
-  onApplyDoc: (doc: EditDoc) => void;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
   /** Same handler DirectorRail uses — add files (video/photos/audio). */
   onFiles: (files: File[]) => void;
   onExport: () => void;
@@ -121,6 +159,7 @@ export function RoomPanel(props: RoomPanelProps) {
     room,
     doc,
     mediaList,
+    urls,
     busy,
     onAction,
     onApplyDoc,
@@ -231,7 +270,9 @@ export function RoomPanel(props: RoomPanelProps) {
       <ColorRoom
         doc={doc}
         mediaList={mediaList}
+        urls={urls}
         busy={busy}
+        timeSec={timeSec}
         onAction={onAction}
         onApplyDoc={onApplyDoc}
         status={status}
@@ -241,76 +282,31 @@ export function RoomPanel(props: RoomPanelProps) {
 
   if (room === "vfx") {
     return (
-      <Shell label="vfx">
-        <Pill onClick={() => onAction("add b-roll as picture-in-picture")} disabled={busy || mediaList.length === 0}>
-          + B-roll
-        </Pill>
-        <Pill onClick={() => onAction("punch in for emphasis at 2s")} disabled={busy || mediaList.length === 0}>
-          Punch-in
-        </Pill>
-        <Pill onClick={() => onAction('add an animated title that says "Cadence"')} disabled={busy || mediaList.length === 0}>
-          Kinetic title
-        </Pill>
-        <Pill onClick={() => onAction("add a fade in and out")} disabled={busy || mediaList.length === 0}>
-          Fade in/out
-        </Pill>
-      </Shell>
+      <VfxRoom
+        doc={doc}
+        mediaList={mediaList}
+        busy={busy}
+        onAction={onAction}
+        onApplyDoc={onApplyDoc}
+      />
     );
   }
 
   if (room === "audio") {
-    const hasAudioMedia = mediaList.some((m) => m.kind === "audio");
-    const musicClip = doc.tracks.find((t) => t.id === "music")?.clips.find((c): c is AudioClip => c.kind === "audio");
-    const voiceClip = doc.tracks.find((t) => t.id === "voiceover")?.clips.find((c): c is AudioClip => c.kind === "audio");
     return (
-      <Shell label="audio">
-        <Pill onClick={openPicker} disabled={busy}>
-          + Add music / audio
-        </Pill>
-        <VoiceOverRecorder disabled={busy} onRecorded={onRecordVoiceover} />
-        <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
-        <Pill onClick={() => onAction("add background music")} disabled={busy || !hasAudioMedia}>
-          Use as music
-        </Pill>
-        <Pill onClick={() => onAction("auto-mix the audio")} disabled={busy || mediaList.length === 0}>
-          Duck under speech
-        </Pill>
-        {musicClip && (
-          <VolumeSlider
-            label="Music"
-            value={musicClip.volume}
-            disabled={busy}
-            onChange={(v) => onSetTrackVolume("music", v)}
-          />
-        )}
-        {voiceClip && (
-          <VolumeSlider
-            label="Voice"
-            value={voiceClip.volume}
-            disabled={busy}
-            onChange={(v) => onSetTrackVolume("voiceover", v)}
-          />
-        )}
-        <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
-        <Pill onClick={onToggleMute} active={!muted}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-            {muted ? (
-              <>
-                <path d="M11 5 6 9H2v6h4l5 4z" />
-                <path d="M23 9l-6 6M17 9l6 6" />
-              </>
-            ) : (
-              <>
-                <path d="M11 5 6 9H2v6h4l5 4z" />
-                <path d="M15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14" />
-              </>
-            )}
-          </svg>
-          {muted ? "Preview muted" : "Preview sound on"}
-        </Pill>
-        <span className="shrink-0 text-[11px] text-faint">Music, voice-over &amp; mix render on export.</span>
-        {hiddenInput}
-      </Shell>
+      <AudioRoom
+        doc={doc}
+        mediaList={mediaList}
+        busy={busy}
+        muted={muted}
+        onAction={onAction}
+        onApplyDoc={onApplyDoc}
+        onToggleMute={onToggleMute}
+        onSetTrackVolume={onSetTrackVolume}
+        onRecordVoiceover={onRecordVoiceover}
+        openPicker={openPicker}
+        hiddenInput={hiddenInput}
+      />
     );
   }
 
@@ -326,6 +322,117 @@ export function RoomPanel(props: RoomPanelProps) {
       canExport={canExport}
       status={status}
     />
+  );
+}
+
+// ---- Shared room controls --------------------------------------------------
+
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
+const clampN = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
+
+/** A wrapping strip label + controls row (never hides controls in a horizontal scroll). */
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="w-[92px] shrink-0 text-[10px] uppercase tracking-wider text-faint">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A generic labelled range slider with a unit-aware read-out. `format` renders the
+ * value shown (and spoken via aria-valuetext), so a screen reader hears
+ * "Hue, 60°", not "0.60" — the roadmap's a11y ask.
+ */
+function FxSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  disabled,
+  onChange,
+  format,
+  width = "120px",
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  disabled?: boolean;
+  onChange: (v: number) => void;
+  format?: (v: number) => string;
+  width?: string;
+}) {
+  const shown = format ? format(value) : value.toFixed(2);
+  return (
+    <label className="flex shrink-0 flex-col gap-1" style={{ width }}>
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wider text-faint">
+        <span>{label}</span>
+        <span className="tabular-nums text-muted">{shown}</span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={label}
+        aria-valuetext={`${label}, ${shown}`}
+        style={{ accentColor: "var(--color-teal)" }}
+        className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-line disabled:cursor-not-allowed disabled:opacity-40"
+      />
+    </label>
+  );
+}
+
+/** A compact number field with −/＋ nudge buttons (e.g. a mask/blur rect in %). */
+function NudgeField({
+  label,
+  value,
+  step,
+  min,
+  max,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  step: number;
+  min: number;
+  max: number;
+  disabled?: boolean;
+  onChange: (v: number) => void;
+}) {
+  const set = (v: number) => onChange(Math.round(clampN(v, min, max)));
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      <span className="text-[10px] uppercase tracking-wider text-faint">{label}</span>
+      <button
+        type="button"
+        onClick={() => set(value - step)}
+        disabled={disabled || value <= min}
+        aria-label={`Decrease ${label}`}
+        className="grid h-6 w-6 place-items-center rounded-md border border-line bg-panel text-muted transition hover:text-text disabled:opacity-30"
+      >
+        −
+      </button>
+      <span className="w-9 text-center tabular-nums text-xs text-muted">{Math.round(value)}%</span>
+      <button
+        type="button"
+        onClick={() => set(value + step)}
+        disabled={disabled || value >= max}
+        aria-label={`Increase ${label}`}
+        className="grid h-6 w-6 place-items-center rounded-md border border-line bg-panel text-muted transition hover:text-text disabled:opacity-30"
+      >
+        +
+      </button>
+    </span>
   );
 }
 
@@ -362,7 +469,8 @@ function GradeSlider({
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(Number(e.target.value))}
-        aria-label={`${label}: ${value.toFixed(2)}`}
+        aria-label={label}
+        aria-valuetext={`${label}, ${value.toFixed(2)}`}
         style={{ accentColor: "var(--color-teal)" }}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-line disabled:cursor-not-allowed disabled:opacity-40"
       />
@@ -370,19 +478,308 @@ function GradeSlider({
   );
 }
 
+// Curve presets, expressed as master control points [x, y] in 0..1.
+const CURVE_PRESETS: { key: string; label: string; points: CurvePoint[] | null }[] = [
+  { key: "linear", label: "Linear", points: null },
+  { key: "scurve", label: "S-curve", points: [[0, 0], [0.25, 0.16], [0.75, 0.84], [1, 1]] },
+  { key: "soft", label: "Soft", points: [[0, 0.06], [0.5, 0.5], [1, 0.94]] },
+  { key: "lift", label: "Lift blacks", points: [[0, 0.12], [0.5, 0.56], [1, 1]] },
+  { key: "crush", label: "Crush", points: [[0, 0], [0.2, 0.04], [0.6, 0.58], [1, 1]] },
+];
+
+const curveSig = (pts?: CurvePoint[] | null): string =>
+  pts && pts.length ? pts.map(([x, y]) => `${round2(x)},${round2(y)}`).join(" ") : "";
+
+/** Linear-interpolate a curve's y at a given x (endpoints clamp). */
+function sampleCurve(points: CurvePoint[], x: number): number {
+  if (!points.length) return x;
+  const pts = [...points].sort((a, b) => a[0] - b[0]);
+  if (x <= pts[0]![0]) return pts[0]![1];
+  if (x >= pts[pts.length - 1]![0]) return pts[pts.length - 1]![1];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x0, y0] = pts[i]!;
+    const [x1, y1] = pts[i + 1]!;
+    if (x >= x0 && x <= x1) {
+      const t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+      return y0 + (y1 - y0) * t;
+    }
+  }
+  return x;
+}
+
+// The draggable master curve uses fixed x nodes; only y is dragged. Node ys are
+// sampled from the doc's current master curve, so the editor reflects presets too.
+const CURVE_NODES = [0, 0.25, 0.5, 0.75, 1];
+
+/**
+ * A small draggable master-curve editor (bonus). Reads the current master curve
+ * off the doc (sampled at the fixed nodes) and, on drag, emits new [x,y] points
+ * through `adjustCurves` — so it's pure, undoable, and in sync with the doc.
+ */
+function CurveEditor({
+  master,
+  disabled,
+  onChange,
+}: {
+  master: CurvePoint[] | undefined;
+  disabled?: boolean;
+  onChange: (points: CurvePoint[]) => void;
+}) {
+  const SIZE = 120;
+  const PAD = 8;
+  const inner = SIZE - PAD * 2;
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [drag, setDrag] = useState<number | null>(null);
+  const sig = curveSig(master);
+  const derived = CURVE_NODES.map((x) => clamp01(sampleCurve(master ?? [], x)));
+  const [ys, setYs] = useState<number[]>(derived);
+
+  // Re-sync from the doc whenever it changes and we're not mid-drag.
+  useEffect(() => {
+    if (drag === null) setYs(CURVE_NODES.map((x) => clamp01(sampleCurve(master ?? [], x))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig, drag]);
+
+  const toX = (x: number) => PAD + x * inner;
+  const toY = (y: number) => PAD + (1 - y) * inner;
+
+  const emit = (next: number[]) =>
+    onChange(CURVE_NODES.map((x, i) => [round2(x), round2(clamp01(next[i]!))] as CurvePoint));
+
+  useEffect(() => {
+    if (drag === null) return;
+    const move = (e: PointerEvent) => {
+      const rect = svgRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const yFrac = clamp01(1 - (e.clientY - rect.top - PAD) / inner);
+      setYs((prev) => {
+        const next = [...prev];
+        next[drag] = yFrac;
+        emit(next);
+        return next;
+      });
+    };
+    const up = () => setDrag(null);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag]);
+
+  const path = CURVE_NODES.map((x, i) => `${i === 0 ? "M" : "L"}${toX(x).toFixed(1)},${toY(ys[i]!).toFixed(1)}`).join(" ");
+
+  return (
+    <svg
+      ref={svgRef}
+      width={SIZE}
+      height={SIZE}
+      viewBox={`0 0 ${SIZE} ${SIZE}`}
+      role="group"
+      aria-label="Master tone curve — drag the points"
+      className={["shrink-0 touch-none rounded-lg border border-line bg-panel", disabled ? "pointer-events-none opacity-40" : ""].join(" ")}
+    >
+      {/* diagonal reference + grid */}
+      <line x1={toX(0)} y1={toY(0)} x2={toX(1)} y2={toY(1)} stroke="var(--color-line)" strokeWidth="1" strokeDasharray="3 3" />
+      <path d={path} fill="none" stroke="var(--color-teal)" strokeWidth="2" />
+      {CURVE_NODES.map((x, i) => (
+        <circle
+          key={x}
+          cx={toX(x)}
+          cy={toY(ys[i]!)}
+          r={5}
+          fill="var(--color-amber)"
+          className="cursor-ns-resize"
+          onPointerDown={(e) => {
+            if (disabled) return;
+            e.preventDefault();
+            (e.currentTarget as SVGElement).setPointerCapture?.(e.pointerId);
+            setDrag(i);
+          }}
+        />
+      ))}
+    </svg>
+  );
+}
+
+/**
+ * Client-only SCOPES (bonus): a luma+RGB histogram and an RGB parade computed from
+ * the current preview frame. We draw the first visual media into an offscreen
+ * canvas WITH the active grade's `cssFilter` applied — so the scopes reflect the
+ * grade — then read back pixels. Blob object-URLs are same-origin, so the canvas
+ * isn't tainted and `getImageData` works. No schema, no server, no library.
+ */
+function Scopes({
+  url,
+  kind,
+  timeSec,
+  grade,
+}: {
+  url: string | undefined;
+  kind: "video" | "image";
+  timeSec: number;
+  grade: ColorGrade;
+}) {
+  const histRef = useRef<HTMLCanvasElement>(null);
+  const paradeRef = useRef<HTMLCanvasElement>(null);
+  const [err, setErr] = useState(false);
+  const filter = cssFilter(grade);
+
+  useEffect(() => {
+    if (!url) return;
+    let cancelled = false;
+    const off = document.createElement("canvas");
+    const SW = 220;
+
+    const paint = (media: CanvasImageSource, mw: number, mh: number) => {
+      if (cancelled) return;
+      try {
+        const ar = mw > 0 && mh > 0 ? mh / mw : 9 / 16;
+        const sw = SW;
+        const sh = Math.max(1, Math.round(SW * ar));
+        off.width = sw;
+        off.height = sh;
+        const ctx = off.getContext("2d", { willReadFrequently: true });
+        if (!ctx) return;
+        ctx.filter = filter; // scopes reflect the applied grade
+        ctx.drawImage(media, 0, 0, sw, sh);
+        const { data } = ctx.getImageData(0, 0, sw, sh);
+
+        // Histogram (256 bins per channel + luma).
+        const rH = new Float32Array(256), gH = new Float32Array(256), bH = new Float32Array(256), lH = new Float32Array(256);
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i]!, g = data[i + 1]!, b = data[i + 2]!;
+          rH[r]!++; gH[g]!++; bH[b]!++;
+          lH[Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b)]!++;
+        }
+        drawHistogram(histRef.current, [lH, rH, gH, bH]);
+        drawParade(paradeRef.current, data, sw, sh);
+        setErr(false);
+      } catch {
+        setErr(true);
+      }
+    };
+
+    if (kind === "image") {
+      const img = new Image();
+      img.onload = () => paint(img, img.naturalWidth, img.naturalHeight);
+      img.onerror = () => !cancelled && setErr(true);
+      img.src = url;
+    } else {
+      const v = document.createElement("video");
+      v.muted = true;
+      v.preload = "auto";
+      v.onloadeddata = () => {
+        try {
+          v.currentTime = Math.max(0, Math.min(timeSec, v.duration || 0));
+        } catch {
+          paint(v, v.videoWidth, v.videoHeight);
+        }
+      };
+      v.onseeked = () => paint(v, v.videoWidth, v.videoHeight);
+      v.onerror = () => !cancelled && setErr(true);
+      v.src = url;
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [url, kind, timeSec, filter]);
+
+  return (
+    <div className="flex flex-wrap items-start gap-3">
+      <figure className="flex flex-col gap-1">
+        <canvas ref={histRef} width={220} height={80} className="rounded-lg border border-line bg-panel" />
+        <figcaption className="text-[10px] uppercase tracking-wider text-faint">Histogram · luma + RGB</figcaption>
+      </figure>
+      <figure className="flex flex-col gap-1">
+        <canvas ref={paradeRef} width={220} height={80} className="rounded-lg border border-line bg-panel" />
+        <figcaption className="text-[10px] uppercase tracking-wider text-faint">RGB parade</figcaption>
+      </figure>
+      {err && <span className="self-center text-[11px] text-red-300">Couldn&apos;t read the frame for scopes.</span>}
+    </div>
+  );
+}
+
+/** Paint luma+RGB histograms onto a canvas (luma grey under coloured channels). */
+function drawHistogram(cv: HTMLCanvasElement | null, channels: Float32Array[]) {
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  if (!ctx) return;
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  let max = 1;
+  for (const ch of channels) for (const v of ch) if (v > max) max = v;
+  const styles = ["rgba(150,160,175,0.55)", "rgba(255,90,90,0.75)", "rgba(90,220,120,0.75)", "rgba(90,150,255,0.75)"];
+  for (let c = 0; c < channels.length; c++) {
+    const ch = channels[c]!;
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    for (let x = 0; x < 256; x++) {
+      const px = (x / 255) * W;
+      const py = H - (Math.log1p(ch[x]!) / Math.log1p(max)) * H;
+      ctx.lineTo(px, py);
+    }
+    ctx.lineTo(W, H);
+    ctx.closePath();
+    ctx.fillStyle = styles[c]!;
+    ctx.fill();
+  }
+}
+
+/** Paint an RGB parade (three side-by-side scatter panels: R, G, B by column). */
+function drawParade(cv: HTMLCanvasElement | null, data: Uint8ClampedArray, sw: number, sh: number) {
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  if (!ctx) return;
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  const panel = W / 3;
+  const img = ctx.createImageData(W, H);
+  const buf = img.data;
+  const plot = (panelIdx: number, colX: number, val: number, rgb: [number, number, number]) => {
+    const x = Math.round(panelIdx * panel + (colX / (sw - 1 || 1)) * (panel - 1));
+    const y = Math.round((1 - val / 255) * (H - 1));
+    const o = (y * W + x) * 4;
+    // additive accumulation for a soft scatter
+    buf[o] = Math.min(255, buf[o]! + rgb[0]);
+    buf[o + 1] = Math.min(255, buf[o + 1]! + rgb[1]);
+    buf[o + 2] = Math.min(255, buf[o + 2]! + rgb[2]);
+    buf[o + 3] = 255;
+  };
+  const stepY = Math.max(1, Math.floor(sh / 90));
+  const stepX = Math.max(1, Math.floor(sw / 160));
+  for (let y = 0; y < sh; y += stepY) {
+    for (let x = 0; x < sw; x += stepX) {
+      const i = (y * sw + x) * 4;
+      plot(0, x, data[i]!, [40, 8, 8]);
+      plot(1, x, data[i + 1]!, [8, 40, 8]);
+      plot(2, x, data[i + 2]!, [8, 12, 40]);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 function ColorRoom({
   doc,
   mediaList,
+  urls,
   busy,
+  timeSec,
   onAction,
   onApplyDoc,
   status,
 }: {
   doc: EditDoc;
   mediaList: MediaAsset[];
+  urls: Record<string, string>;
   busy: boolean;
+  timeSec: number;
   onAction: (prompt: string) => void;
-  onApplyDoc: (doc: EditDoc) => void;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
   status: ReturnType<typeof describeDoc>;
 }) {
   const hasVisual = mediaList.some((m) => m.kind === "video" || m.kind === "image");
@@ -390,43 +787,103 @@ function ColorRoom({
   // they always reflect whatever grade is applied (a preset, an NL tweak, reset).
   const grade = currentGrade(doc);
   const disabled = busy || !hasVisual;
+  const [showScopes, setShowScopes] = useState(false);
 
   // Merge one field onto the live doc and apply instantly (pure, client-side).
   const set = (partial: Partial<ColorGrade>) => {
     if (!hasVisual) return;
-    onApplyDoc(adjustColor(doc, partial));
+    onApplyDoc(adjustColor(doc, partial), "color");
+  };
+  const setHue = (hueShift: number) => {
+    if (!hasVisual) return;
+    onApplyDoc(adjustHsl(doc, { hueShift }), "hue");
+  };
+  const applyCurve = (points: CurvePoint[] | null, coalesce?: string) => {
+    if (!hasVisual) return;
+    onApplyDoc(adjustCurves(doc, points ? { master: points } : {}), coalesce);
   };
   const isNeutral = gradeKey(grade) === gradeKey(NEUTRAL_GRADE);
+  const hue = grade.hueShift ?? 0;
+  const master = grade.curves?.master;
+  const masterSig = curveSig(master);
+
+  // The media whose frame the scopes sample: the first loaded visual clip.
+  const scopeMedia = mediaList.find((m) => (m.kind === "video" || m.kind === "image") && urls[m.id]);
 
   return (
-    <Shell label="color">
-      {LOOKS.map((l) => {
-        const active = l.key === "none" ? status.look === null : status.look?.toLowerCase() === l.label.toLowerCase();
-        return (
+    <div aria-label="Color" className="flex max-h-[42vh] flex-col gap-2 overflow-y-auto border-b border-line-soft bg-panel/30 px-4 py-2">
+      {/* Look presets + core grade sliders */}
+      <div className="flex flex-wrap items-center gap-2">
+        {LOOKS.map((l) => {
+          const active = l.key === "none" ? status.look === null : status.look?.toLowerCase() === l.label.toLowerCase();
+          return (
+            <Pill
+              key={l.key}
+              onClick={() => onAction(l.key === "none" ? "remove the color grade" : `give it a ${l.key} look`)}
+              disabled={busy || mediaList.length === 0}
+              active={active}
+            >
+              {l.label}
+            </Pill>
+          );
+        })}
+        <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
+        <GradeSlider label="Brightness" value={grade.brightness} min={0.5} max={1.5} disabled={disabled} onChange={(v) => set({ brightness: v })} />
+        <GradeSlider label="Contrast" value={grade.contrast} min={0.5} max={1.5} disabled={disabled} onChange={(v) => set({ contrast: v })} />
+        <GradeSlider label="Saturation" value={grade.saturation} min={0} max={2} disabled={disabled} onChange={(v) => set({ saturation: v })} />
+        <GradeSlider label="Warmth" value={grade.warmth} min={0} max={1} disabled={disabled} onChange={(v) => set({ warmth: v })} />
+        <FxSlider
+          label="Hue"
+          value={hue}
+          min={0}
+          max={360}
+          step={1}
+          disabled={disabled}
+          onChange={(v) => setHue(v)}
+          format={(v) => `${Math.round(v)}°`}
+        />
+        <button
+          type="button"
+          onClick={() => {
+            set({ ...NEUTRAL_GRADE });
+            applyCurve(null);
+          }}
+          disabled={disabled || (isNeutral && hue === 0 && !master)}
+          className="shrink-0 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:opacity-40"
+        >
+          Reset
+        </button>
+      </div>
+
+      {/* Tone curve: presets + a draggable master curve (→ adjustCurves) */}
+      <Row label="curve">
+        {CURVE_PRESETS.map((p) => (
           <Pill
-            key={l.key}
-            onClick={() => onAction(l.key === "none" ? "remove the color grade" : `give it a ${l.key} look`)}
-            disabled={busy || mediaList.length === 0}
-            active={active}
+            key={p.key}
+            onClick={() => applyCurve(p.points)}
+            disabled={disabled}
+            active={curveSig(p.points) === masterSig}
           >
-            {l.label}
+            {p.label}
           </Pill>
-        );
-      })}
-      <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
-      <GradeSlider label="Brightness" value={grade.brightness} min={0.5} max={1.5} disabled={disabled} onChange={(v) => set({ brightness: v })} />
-      <GradeSlider label="Contrast" value={grade.contrast} min={0.5} max={1.5} disabled={disabled} onChange={(v) => set({ contrast: v })} />
-      <GradeSlider label="Saturation" value={grade.saturation} min={0} max={2} disabled={disabled} onChange={(v) => set({ saturation: v })} />
-      <GradeSlider label="Warmth" value={grade.warmth} min={0} max={1} disabled={disabled} onChange={(v) => set({ warmth: v })} />
-      <button
-        type="button"
-        onClick={() => set({ ...NEUTRAL_GRADE })}
-        disabled={disabled || isNeutral}
-        className="shrink-0 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:opacity-40"
-      >
-        Reset
-      </button>
-    </Shell>
+        ))}
+        <CurveEditor master={master} disabled={disabled} onChange={(pts) => applyCurve(pts, "curve")} />
+        <span className="max-w-[220px] text-[11px] text-faint">
+          Curves render exactly on export (ffmpeg); the live preview approximates the rest of the grade.
+        </span>
+      </Row>
+
+      {/* Scopes (client-only): histogram + RGB parade from the preview frame */}
+      <Row label="scopes">
+        <Pill onClick={() => setShowScopes((s) => !s)} disabled={!scopeMedia} active={showScopes}>
+          {showScopes ? "Hide scopes" : "Show scopes"}
+        </Pill>
+        {showScopes && scopeMedia && (
+          <Scopes url={urls[scopeMedia.id]} kind={scopeMedia.kind as "video" | "image"} timeSec={timeSec} grade={grade} />
+        )}
+        {showScopes && !scopeMedia && <span className="text-[11px] text-faint">Load a video or photo to see levels.</span>}
+      </Row>
+    </div>
   );
 }
 
@@ -576,6 +1033,379 @@ function DeliverRoom({
         ) : null}
         A real .mp4 renders via ffmpeg (<code>docker compose up</code>); without it you get the edit-doc JSON. Thumbnail &amp; .srt download instantly, no ffmpeg.
       </span>
+    </div>
+  );
+}
+
+// ---- VFX room --------------------------------------------------------------
+
+const BLEND_MODES: { value: BlendMode; label: string }[] = [
+  { value: "normal", label: "Normal" },
+  { value: "screen", label: "Screen" },
+  { value: "multiply", label: "Multiply" },
+  { value: "overlay", label: "Overlay" },
+  { value: "add", label: "Add" },
+  { value: "soft-light", label: "Soft light" },
+];
+
+const KEY_COLORS: { value: string; label: string }[] = [
+  { value: "#00d000", label: "Green" },
+  { value: "#0047ff", label: "Blue" },
+];
+
+/**
+ * VFX room — real, direct controls that apply the PURE compositing/region fns from
+ * `@cadence/director` through the editor's undoable commit path (instant preview),
+ * plus the existing NL-driven overlays. Chroma / blend / mask composite over the
+ * b-roll overlay when present (else the main clip); blur/pixelate hide a region of
+ * the MAIN clip — the room states which, so it's never a surprise.
+ */
+function VfxRoom({
+  doc,
+  mediaList,
+  busy,
+  onAction,
+  onApplyDoc,
+}: {
+  doc: EditDoc;
+  mediaList: MediaAsset[];
+  busy: boolean;
+  onAction: (prompt: string) => void;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+}) {
+  const hasVisual = mediaList.some((m) => m.kind === "video" || m.kind === "image");
+  const noMedia = busy || mediaList.length === 0;
+  const disabled = busy || !hasVisual;
+
+  const W = doc.meta.width;
+  const H = doc.meta.height;
+  const scope = compositeScope(doc);
+  const scopeNote =
+    scope === "broll"
+      ? "composites over your b-roll overlay"
+      : scope === "main"
+        ? "composites over the main clip (add b-roll to layer it instead)"
+        : "add a clip to composite over";
+
+  // Current effect state, read straight from the doc (single source of truth).
+  const chroma = currentChroma(doc);
+  const blend = currentBlend(doc);
+  const mask = currentMask(doc);
+  const region = currentRegionFx(doc);
+
+  // % helpers (schema stores px; UI shows composition %).
+  const pxToPctX = (px: number) => (px / W) * 100;
+  const pxToPctY = (px: number) => (px / H) * 100;
+  const pctToPxX = (pct: number) => round2((pct / 100) * W);
+  const pctToPxY = (pct: number) => round2((pct / 100) * H);
+
+  // Chroma key -------------------------------------------------------------
+  const toggleChroma = () => {
+    if (chroma) onApplyDoc(clearChroma(doc));
+    else onApplyDoc(chromaKey(doc, { color: "#00d000" }));
+  };
+  const setChroma = (patch: { color?: string; similarity?: number; spill?: number }, coalesce?: string) => {
+    onApplyDoc(
+      chromaKey(doc, {
+        color: patch.color ?? chroma?.color ?? "#00d000",
+        similarity: patch.similarity ?? chroma?.similarity ?? 0.3,
+        blend: chroma?.blend ?? 0.1,
+        spill: patch.spill ?? chroma?.spill ?? 0,
+      }),
+      coalesce,
+    );
+  };
+
+  // Region blur / pixelate -------------------------------------------------
+  const DEFAULT_REGION = { x: pctToPxX(30), y: pctToPxY(30), w: pctToPxX(40), h: pctToPxY(40) };
+  const addRegion = (type: "blur" | "pixelate") =>
+    onApplyDoc(regionBlur(doc, { type, ...DEFAULT_REGION, amount: region?.amount ?? 0.5 }));
+  const setRegion = (patch: Partial<{ type: "blur" | "pixelate"; x: number; y: number; w: number; h: number; amount: number }>, coalesce?: string) => {
+    if (!region) return;
+    onApplyDoc(
+      regionBlur(doc, {
+        type: patch.type ?? region.type,
+        x: patch.x ?? region.x,
+        y: patch.y ?? region.y,
+        w: patch.w ?? region.w,
+        h: patch.h ?? region.h,
+        amount: patch.amount ?? region.amount,
+      }),
+      coalesce,
+    );
+  };
+
+  // Mask -------------------------------------------------------------------
+  const DEFAULT_MASK = { x: pctToPxX(25), y: pctToPxY(25), w: pctToPxX(50), h: pctToPxY(50) };
+  const addMaskShape = (shape: "rect" | "ellipse") =>
+    onApplyDoc(addMask(doc, { shape, ...DEFAULT_MASK, feather: mask?.feather ?? 0, invert: mask?.invert ?? false }));
+  const setMask = (patch: Partial<{ shape: "rect" | "ellipse"; x: number; y: number; w: number; h: number; feather: number; invert: boolean }>, coalesce?: string) => {
+    if (!mask) return;
+    onApplyDoc(
+      addMask(doc, {
+        shape: patch.shape ?? mask.shape,
+        x: patch.x ?? mask.x,
+        y: patch.y ?? mask.y,
+        w: patch.w ?? mask.w,
+        h: patch.h ?? mask.h,
+        feather: patch.feather ?? mask.feather,
+        invert: patch.invert ?? mask.invert,
+      }),
+      coalesce,
+    );
+  };
+
+  return (
+    <div aria-label="VFX" className="flex max-h-[42vh] flex-col gap-2 overflow-y-auto border-b border-line-soft bg-panel/30 px-4 py-2">
+      {/* Existing NL-driven overlays (kept) */}
+      <Row label="effects">
+        <Pill onClick={() => onAction("add b-roll as picture-in-picture")} disabled={noMedia}>+ B-roll</Pill>
+        <Pill onClick={() => onAction("punch in for emphasis at 2s")} disabled={noMedia}>Punch-in</Pill>
+        <Pill onClick={() => onAction('add an animated title that says "Cadence"')} disabled={noMedia}>Kinetic title</Pill>
+        <Pill onClick={() => onAction("add a fade in and out")} disabled={noMedia}>Fade in/out</Pill>
+        <Pill onClick={() => onAction("add a vignette")} disabled={noMedia}>Vignette</Pill>
+        <Pill onClick={() => onAction("add film grain")} disabled={noMedia}>Grain</Pill>
+        <Pill onClick={() => onAction("add a light leak")} disabled={noMedia}>Light leak</Pill>
+      </Row>
+
+      {/* Chroma key (→ chromaKey / clearChroma) */}
+      <Row label="chroma key">
+        <Pill onClick={toggleChroma} disabled={disabled} active={!!chroma}>
+          {chroma ? "Keying on" : "Green screen"}
+        </Pill>
+        {chroma && (
+          <>
+            {KEY_COLORS.map((c) => (
+              <button
+                key={c.value}
+                type="button"
+                onClick={() => setChroma({ color: c.value })}
+                aria-label={`Key out ${c.label}`}
+                aria-pressed={chroma.color.toLowerCase() === c.value.toLowerCase()}
+                title={`${c.label} screen`}
+                className={[
+                  "h-7 w-7 shrink-0 rounded-full border-2 transition",
+                  chroma.color.toLowerCase() === c.value.toLowerCase() ? "border-teal" : "border-line hover:border-amber/50",
+                ].join(" ")}
+                style={{ backgroundColor: c.value }}
+              />
+            ))}
+            <FxSlider
+              label="Similarity"
+              value={chroma.similarity}
+              min={0.01}
+              max={1}
+              step={0.01}
+              disabled={disabled}
+              onChange={(v) => setChroma({ similarity: v }, "chroma-sim")}
+              format={(v) => `${Math.round(v * 100)}%`}
+            />
+            <FxSlider
+              label="Spill"
+              value={chroma.spill}
+              min={0}
+              max={1}
+              step={0.01}
+              disabled={disabled}
+              onChange={(v) => setChroma({ spill: v }, "chroma-spill")}
+              format={(v) => `${Math.round(v * 100)}%`}
+            />
+          </>
+        )}
+        <span className="text-[11px] text-faint">{scopeNote}</span>
+      </Row>
+
+      {/* Blend mode (→ setBlend) */}
+      <Row label="blend">
+        <label className="flex shrink-0 items-center gap-1.5">
+          <span className="sr-only">Blend mode</span>
+          <select
+            value={blend}
+            disabled={disabled}
+            onChange={(e) => onApplyDoc(setBlend(doc, e.target.value as BlendMode))}
+            aria-label="Blend mode"
+            className="rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-text disabled:opacity-40"
+          >
+            {BLEND_MODES.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+        </label>
+        <span className="text-[11px] text-faint">{scope === "broll" ? "blends the b-roll overlay over the base" : "blends the main clip (best over b-roll)"}</span>
+      </Row>
+
+      {/* Blur / pixelate region (→ regionBlur) — always the MAIN clip */}
+      <Row label="blur / pixelate">
+        {!region ? (
+          <>
+            <Pill onClick={() => addRegion("blur")} disabled={disabled}>Blur region</Pill>
+            <Pill onClick={() => addRegion("pixelate")} disabled={disabled}>Pixelate region</Pill>
+            <span className="text-[11px] text-faint">hides a face / plate / logo on the main clip</span>
+          </>
+        ) : (
+          <>
+            <Pill onClick={() => setRegion({ type: "blur" })} disabled={disabled} active={region.type === "blur"}>Blur</Pill>
+            <Pill onClick={() => setRegion({ type: "pixelate" })} disabled={disabled} active={region.type === "pixelate"}>Pixelate</Pill>
+            <NudgeField label="X" value={pxToPctX(region.x)} step={2} min={0} max={100} disabled={disabled} onChange={(p) => setRegion({ x: pctToPxX(p) }, "region-x")} />
+            <NudgeField label="Y" value={pxToPctY(region.y)} step={2} min={0} max={100} disabled={disabled} onChange={(p) => setRegion({ y: pctToPxY(p) }, "region-y")} />
+            <NudgeField label="W" value={pxToPctX(region.w)} step={2} min={1} max={100} disabled={disabled} onChange={(p) => setRegion({ w: pctToPxX(p) }, "region-w")} />
+            <NudgeField label="H" value={pxToPctY(region.h)} step={2} min={1} max={100} disabled={disabled} onChange={(p) => setRegion({ h: pctToPxY(p) }, "region-h")} />
+            <FxSlider label="Amount" value={region.amount} min={0} max={1} step={0.01} disabled={disabled} onChange={(v) => setRegion({ amount: v }, "region-amt")} format={(v) => `${Math.round(v * 100)}%`} />
+            <Pill onClick={() => onApplyDoc(clearRegionFx(doc))} disabled={disabled}>Remove</Pill>
+          </>
+        )}
+      </Row>
+
+      {/* Mask (→ addMask / clearMask) */}
+      <Row label="mask">
+        {!mask ? (
+          <>
+            <Pill onClick={() => addMaskShape("rect")} disabled={disabled}>Rect mask</Pill>
+            <Pill onClick={() => addMaskShape("ellipse")} disabled={disabled}>Ellipse mask</Pill>
+            <span className="text-[11px] text-faint">reveals a shape · {scopeNote}</span>
+          </>
+        ) : (
+          <>
+            <Pill onClick={() => setMask({ shape: "rect" })} disabled={disabled} active={mask.shape === "rect"}>Rect</Pill>
+            <Pill onClick={() => setMask({ shape: "ellipse" })} disabled={disabled} active={mask.shape === "ellipse"}>Ellipse</Pill>
+            <NudgeField label="X" value={pxToPctX(mask.x)} step={2} min={0} max={100} disabled={disabled} onChange={(p) => setMask({ x: pctToPxX(p) }, "mask-x")} />
+            <NudgeField label="Y" value={pxToPctY(mask.y)} step={2} min={0} max={100} disabled={disabled} onChange={(p) => setMask({ y: pctToPxY(p) }, "mask-y")} />
+            <NudgeField label="W" value={pxToPctX(mask.w)} step={2} min={1} max={100} disabled={disabled} onChange={(p) => setMask({ w: pctToPxX(p) }, "mask-w")} />
+            <NudgeField label="H" value={pxToPctY(mask.h)} step={2} min={1} max={100} disabled={disabled} onChange={(p) => setMask({ h: pctToPxY(p) }, "mask-h")} />
+            <FxSlider label="Feather" value={mask.feather} min={0} max={Math.round(H * 0.25)} step={1} disabled={disabled} onChange={(v) => setMask({ feather: v }, "mask-feather")} format={(v) => `${Math.round(v)}px`} />
+            <Pill onClick={() => setMask({ invert: !mask.invert })} disabled={disabled} active={mask.invert}>Invert</Pill>
+            <Pill onClick={() => onApplyDoc(clearMask(doc))} disabled={disabled}>Remove</Pill>
+          </>
+        )}
+      </Row>
+    </div>
+  );
+}
+
+// ---- Audio room ------------------------------------------------------------
+
+/**
+ * Audio room — keeps the music/voice volume, duck and preview-mute controls, and
+ * adds per-track FADE in/out and PAN (→ audioFade / setPan) plus a doc-level
+ * loudness NORMALIZE toggle (→ normalizeLoudness). Every new control applies a
+ * pure fn through the undoable commit path and reads its value back off the doc.
+ */
+function AudioRoom({
+  doc,
+  mediaList,
+  busy,
+  muted,
+  onAction,
+  onApplyDoc,
+  onToggleMute,
+  onSetTrackVolume,
+  onRecordVoiceover,
+  openPicker,
+  hiddenInput,
+}: {
+  doc: EditDoc;
+  mediaList: MediaAsset[];
+  busy: boolean;
+  muted: boolean;
+  onAction: (prompt: string) => void;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+  onToggleMute: () => void;
+  onSetTrackVolume: (trackId: string, volume: number) => void;
+  onRecordVoiceover: (file: File, durationSec: number) => void;
+  openPicker: () => void;
+  hiddenInput: React.ReactNode;
+}) {
+  const hasAudioMedia = mediaList.some((m) => m.kind === "audio");
+  const musicClip = doc.tracks.find((t) => t.id === "music")?.clips.find((c): c is AudioClip => c.kind === "audio");
+  const voiceClip = doc.tracks.find((t) => t.id === "voiceover")?.clips.find((c): c is AudioClip => c.kind === "audio");
+  const loudnorm = doc.loudnorm === true;
+
+  const renderTrack = (trackId: "music" | "voiceover", label: string, clip: AudioClip) => {
+    const fade = trackFade(doc, trackId) ?? { fadeInSec: 0, fadeOutSec: 0 };
+    const pan = trackPan(doc, trackId) ?? 0;
+    const maxFade = Math.max(0.5, Math.min(10, clip.duration / 2));
+    const panLabel = pan === 0 ? "Center" : pan < 0 ? `${Math.round(-pan * 100)}% L` : `${Math.round(pan * 100)}% R`;
+    return (
+      <Row label={label} key={trackId}>
+        <VolumeSlider label={label} value={clip.volume} disabled={busy} onChange={(v) => onSetTrackVolume(trackId, v)} />
+        <FxSlider
+          label="Fade in"
+          value={fade.fadeInSec}
+          min={0}
+          max={maxFade}
+          step={0.1}
+          disabled={busy}
+          onChange={(v) => onApplyDoc(audioFade(doc, { fadeInSec: v, track: trackId }), `fadein-${trackId}`)}
+          format={(v) => `${v.toFixed(1)}s`}
+        />
+        <FxSlider
+          label="Fade out"
+          value={fade.fadeOutSec}
+          min={0}
+          max={maxFade}
+          step={0.1}
+          disabled={busy}
+          onChange={(v) => onApplyDoc(audioFade(doc, { fadeOutSec: v, track: trackId }), `fadeout-${trackId}`)}
+          format={(v) => `${v.toFixed(1)}s`}
+        />
+        <FxSlider
+          label="Pan L↔R"
+          value={pan}
+          min={-1}
+          max={1}
+          step={0.05}
+          disabled={busy}
+          onChange={(v) => onApplyDoc(setPan(doc, v, { track: trackId }), `pan-${trackId}`)}
+          format={() => panLabel}
+        />
+      </Row>
+    );
+  };
+
+  return (
+    <div aria-label="Audio" className="flex max-h-[42vh] flex-col gap-2 overflow-y-auto border-b border-line-soft bg-panel/30 px-4 py-2">
+      {/* Sources + mix + preview (kept) */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Pill onClick={openPicker} disabled={busy}>+ Add music / audio</Pill>
+        <VoiceOverRecorder disabled={busy} onRecorded={onRecordVoiceover} />
+        <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
+        <Pill onClick={() => onAction("add background music")} disabled={busy || !hasAudioMedia}>Use as music</Pill>
+        <Pill onClick={() => onAction("auto-mix the audio")} disabled={busy || mediaList.length === 0}>Duck under speech</Pill>
+        <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
+        <Pill onClick={onToggleMute} active={!muted}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            {muted ? (
+              <>
+                <path d="M11 5 6 9H2v6h4l5 4z" />
+                <path d="M23 9l-6 6M17 9l6 6" />
+              </>
+            ) : (
+              <>
+                <path d="M11 5 6 9H2v6h4l5 4z" />
+                <path d="M15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14" />
+              </>
+            )}
+          </svg>
+          {muted ? "Preview muted" : "Preview sound on"}
+        </Pill>
+      </div>
+
+      {/* Per-track fades + pan (→ audioFade / setPan) */}
+      {musicClip && renderTrack("music", "Music", musicClip)}
+      {voiceClip && renderTrack("voiceover", "Voice", voiceClip)}
+
+      {/* Doc-level loudness normalization (→ normalizeLoudness) */}
+      <Row label="loudness">
+        <Pill onClick={() => onApplyDoc(normalizeLoudness(doc, !loudnorm))} disabled={busy} active={loudnorm}>
+          {loudnorm ? "Normalize: on" : "Normalize loudness"}
+        </Pill>
+        <span className="text-[11px] text-faint">
+          {loudnorm ? "Final mix normalized to −14 LUFS on export (EBU R128)." : "Even out the overall level to a −14 LUFS target on export."}
+        </span>
+      </Row>
+
+      <span className="text-[11px] text-faint">Music, voice-over, fades, pan &amp; the normalized mix render on export.</span>
+      {hiddenInput}
     </div>
   );
 }

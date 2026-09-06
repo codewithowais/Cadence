@@ -8,6 +8,13 @@ All notable changes, one line per verified slice.
 - **Chroma key** (green screen, `chromakey`+`despill`), **blend modes** (screen/multiply/overlay/add/soft-light), **blur/pixelate regions** (hide a face/plate), **masks** (rect/ellipse + feather/invert), **color curves + HSL hue-shift**, and **audio depth** (per-clip fade in/out, pan, doc-level LUFS `loudnorm`). Each = schema (optional/defaulted) → Director tool + routing → canvas + ffmpeg → verify. Compositing tools target the overlay/b-roll track.
 - *verified:* typecheck (root+web) + test:unit 44/44 + verify **49/49** + evals 5/5 + `next build` clean. (Hardened `appendVideos` to push minimal input clips so future schema fields never break it.)
 
+### S3.10 — Cycle E wave 4 (web): VFX/Color/Audio room controls + scopes
+- **Color room:** Hue slider + **draggable 5-node curve** (and S-curve/lift/crush presets) on top of the brightness/contrast/saturation/warmth sliders.
+- **VFX room** (real controls, not just NL): chroma-key toggle + color swatch + similarity/spill, blend-mode select, blur/pixelate region (adjustable rect), mask (shape/feather/invert) — each notes composite-over-b-roll vs main.
+- **Audio room:** per-track fade in/out + pan sliders + doc-level Normalize-loudness toggle (on top of music/voice volume + duck + audible preview).
+- **Scopes:** client-only luma+RGB histogram & RGB parade (grade-aware), behind a toggle.
+- All controls read from the doc (single source of truth), mutate via the undoable commit path. *verified:* typecheck (root+web) + verify 49/49 + `next build` clean.
+
 ### S3.8 — Cycle E wave 3: craft foundations (keyframes, delivery, subtitles)
 - **Keyframe engine:** animate `x/y/scale/rotation/opacity` (+ `volume`) via `{prop,t,value,easing}` + a pure `valueAt()` (linear/ease-in/out/in-out); canvas + Stage full support, ffmpeg for scale (`zoompan`) + volume (`volume:eval=frame`) (x/y/rotation/opacity keyframes are preview-only on export, documented). Tools `animate`/`add_keyframe`.
 - **Reverse** clips (`reverse`/`areverse`), **freeze-frame** (`trim`+`tpad`), **markers** (`EditDoc.markers`, add via UI/tool).
