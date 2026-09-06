@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.7 — Cycle F wave E (engine): roll / slip / slide trims
+- Three pure trim ops on the main sequential track (no schema change): **`rollEdit`** (move the shared cut between two clips, outer edges + total fixed), **`slipEdit`** (change a clip's source in/out, timeline position fixed), **`slideEdit`** (move a clip, neighbors absorb, total fixed). Respect `speed`, clamp to `MIN_CLIP_SEC` + source bounds, gap-free reflow, no-op at edges. Tools `roll_edit`/`slip_edit`/`slide_edit`. Completes the manual trim toolkit.
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify **57/57** + evals 5/5.
+
 ### S4.6 — Cycle F wave D (web): beat-sync + stickers/text presets + markers persist
 - **Beat detection + beat-snapped cutting:** "Detect beats" (Audio room) decodes the music (shared Web-Audio `decodeAudio`), runs a dependency-free energy/onset beat estimate (low-band emphasis, adaptive peak-pick, ~BPM), and drops **beat markers** into `doc.markers`; cuts snap to them and "Split at beats" cuts on each. Honest "it's an estimate" copy.
 - **Stickers / text presets:** a picker in the VFX room — ~20 emoji stickers + one-click styled text presets (Bold Title / Subtitle / Handwritten / Meme) that insert overlays via the existing title/caption fns; centered by default or "Place on preview" to drop them. (Preview exact; exported-emoji fidelity depends on host fonts — noted.)

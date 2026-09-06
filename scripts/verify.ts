@@ -105,6 +105,10 @@ import {
   removeKeyframe,
   removeSilence,
   reverseClip,
+  rollEdit,
+  slipEdit,
+  slideEdit,
+  MIN_CLIP_SEC,
   setKeyframe,
   setPan,
   setPlatform,
@@ -2356,6 +2360,91 @@ async function checkManualKeyframes(): Promise<void> {
   console.log(`  [32m✔[0m check 56 (manual keyframes): setKeyframe insert(3, sorted)+upsert-at-t; moveKeyframe re-sorts (0,0.9,1)+value; removeKeyframe deletes & drops the array; valueAt reflects each; keyframed frame differs (${n}b); guards throw`);
 }
 
+async function checkRollSlipSlide(): Promise<void> {
+  // Wave E: roll / slip / slide pure trim ops on a 3-clip main track.
+  // threeCutDoc: c0(start0,dur4,srcIn6) · c1(start4,dur5,srcIn40) · c2(start9,dur4,srcIn80),
+  // speed 1, media durationSec 180 → total 13s.
+  const base = setTransition(threeCutDoc(), "crossfade", 0); // hard cuts, no overlaps
+  const b = videoClips(base);
+  assert(b.length === 3, "roll/slip/slide: expected a 3-cut base");
+  const total0 = docDurationSec(base);
+  assert(total0 === 13, `expected 13s total, got ${total0}`);
+
+  // (a) ROLL the cut between c1 and c2 by +1s: only the shared boundary moves.
+  const rolled = rollEdit(base, "c1", 1);
+  const r = videoClips(rolled);
+  // Both neighbours' durations changed by ±delta; outer edges + total fixed.
+  assert(r[1]!.duration === 6 && r[2]!.duration === 3, `roll: durations should be 6/3, got ${r[1]!.duration}/${r[2]!.duration}`);
+  assert(r[0]!.start === 0 && r[0]!.duration === 4 && r[0]!.sourceIn === 6, "roll: c0 (outer, before the cut) must be untouched");
+  assert(r[1]!.start === 4, "roll: c1's outer-left edge (start) must stay fixed");
+  assert(r[1]!.sourceIn === 40, "roll: outgoing clip keeps its sourceIn (shows more of its tail)");
+  assert(r[2]!.sourceIn === 81, `roll: incoming head moves by +delta (sourceIn 80→81), got ${r[2]!.sourceIn}`);
+  assert(r[2]!.start === 10 && r[2]!.start + r[2]!.duration === 13, "roll: c2's outer-right edge + total length must stay fixed");
+  assert(docDurationSec(rolled) === 13, `roll: total length must stay 13s, got ${docDurationSec(rolled)}`);
+  const nRoll = await renderAndAssert(rolled, r[1]!.start + r[1]!.duration / 2, "verify-roll.png");
+
+  // Roll clamps: huge +delta pins the incoming clip to MIN_CLIP_SEC (never below);
+  // huge -delta pins the outgoing clip to MIN and keeps the incoming head at/after 0.
+  const rollMax = videoClips(rollEdit(base, "c1", 100));
+  assert(rollMax[2]!.duration >= MIN_CLIP_SEC - 1e-9, `roll clamp: incoming must stay >= MIN, got ${rollMax[2]!.duration}`);
+  assert(Math.abs(rollMax[2]!.duration - MIN_CLIP_SEC) < 1e-6, "roll clamp: +100 should pin incoming to MIN_CLIP_SEC");
+  assert(docDurationSec(rollEdit(base, "c1", 100)) === 13, "roll clamp: total length still fixed at the clamp");
+  const rollMin = videoClips(rollEdit(base, "c1", -100));
+  assert(rollMin[1]!.duration >= MIN_CLIP_SEC - 1e-9 && rollMin[2]!.sourceIn >= 0, "roll clamp: outgoing >= MIN and incoming sourceIn >= 0");
+  // Last clip has no next neighbour → roll is a safe no-op.
+  const noNext = videoClips(rollEdit(base, "c2", 1));
+  assert(noNext[2]!.duration === 4 && noNext[2]!.start === 9, "roll: last clip (no next) must be an unchanged no-op");
+
+  // Outgoing source cap: a clip near the end of its media can't grow past EOF.
+  const capDoc = parseEditDoc({
+    version: 1,
+    meta: { title: "cap", width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "m", kind: "video", src: "/media/m.mp4", durationSec: 10 }],
+    tracks: [{ id: "video", kind: "visual", clips: [
+      { id: "a", kind: "video", start: 0, duration: 1.5, mediaId: "m", sourceIn: 8, transform: { x: 960, y: 540 } },
+      { id: "b", kind: "video", start: 1.5, duration: 5, mediaId: "m", sourceIn: 0, transform: { x: 960, y: 540 } },
+    ] }],
+  });
+  const capped = videoClips(rollEdit(capDoc, "a", 100));
+  assert(capped[0]!.sourceIn + capped[0]!.duration <= 10 + 1e-6, `roll source cap: outgoing must not overrun media (got ${capped[0]!.sourceIn + capped[0]!.duration} > 10)`);
+  assert(Math.abs(capped[0]!.duration - 2) < 1e-6, `roll source cap: c "a" should grow to exactly the remaining 2s (got ${capped[0]!.duration})`);
+
+  // (b) SLIP c1 by +2 source seconds: start + duration fixed, only sourceIn moves.
+  const slipped = slipEdit(base, "c1", 2);
+  const s = videoClips(slipped);
+  assert(s[1]!.start === 4 && s[1]!.duration === 5, "slip: timeline start + duration must stay fixed");
+  assert(s[1]!.sourceIn === 42, `slip: sourceIn should shift by +2 (40→42), got ${s[1]!.sourceIn}`);
+  assert(s[0]!.sourceIn === 6 && s[2]!.sourceIn === 80 && s[2]!.start === 9, "slip: neighbours must be untouched");
+  assert(docDurationSec(slipped) === 13, "slip: total length unchanged");
+  const nSlip = await renderAndAssert(slipped, s[1]!.start + s[1]!.duration / 2, "verify-slip.png");
+  // Slip clamps to the source bounds: window [sourceIn, sourceIn+duration] ⊆ [0, media].
+  const slipHi = videoClips(slipEdit(base, "c1", 1000));
+  assert(slipHi[1]!.sourceIn === 175, `slip clamp: +1000 should pin sourceIn to media(180)-duration(5)=175, got ${slipHi[1]!.sourceIn}`);
+  assert(slipHi[1]!.sourceIn + slipHi[1]!.duration <= 180 + 1e-6, "slip clamp: window must stay inside the source");
+  const slipLo = videoClips(slipEdit(base, "c1", -1000));
+  assert(slipLo[1]!.sourceIn === 0, `slip clamp: -1000 should pin sourceIn to 0, got ${slipLo[1]!.sourceIn}`);
+
+  // (c) SLIDE c1 by +1s: the clip's start moves, its duration/content are fixed,
+  // and the neighbours absorb the move (total length fixed).
+  const slid = slideEdit(base, "c1", 1);
+  const d = videoClips(slid);
+  assert(d[1]!.start === 5, `slide: c1 start should move +1 (4→5), got ${d[1]!.start}`);
+  assert(d[1]!.duration === 5 && d[1]!.sourceIn === 40, "slide: the slid clip's own duration + content (sourceIn) stay fixed");
+  assert(d[0]!.duration === 5 && d[0]!.sourceIn === 6, "slide: previous neighbour grows by +delta (sourceIn fixed)");
+  assert(d[2]!.duration === 3 && d[2]!.sourceIn === 81, "slide: next neighbour shrinks by delta + head moves (sourceIn 80→81)");
+  assert(docDurationSec(slid) === 13, `slide: total length must stay 13s, got ${docDurationSec(slid)}`);
+  const nSlide = await renderAndAssert(slid, d[1]!.start + d[1]!.duration / 2, "verify-slide.png");
+  // Slide clamps: huge -delta pins the previous clip to MIN and keeps the next head >= 0.
+  const slideMin = videoClips(slideEdit(base, "c1", -100));
+  assert(slideMin[0]!.duration >= MIN_CLIP_SEC - 1e-9 && slideMin[2]!.sourceIn >= 0, "slide clamp: prev >= MIN and next sourceIn >= 0");
+  assert(docDurationSec(slideEdit(base, "c1", -100)) === 13, "slide clamp: total length still fixed");
+  // Edge clip (no previous OR next neighbour) → slide is a safe no-op.
+  const slideEdge = videoClips(slideEdit(base, "c0", 1));
+  assert(slideEdge[0]!.start === 0 && slideEdge[0]!.duration === 4, "slide: first clip (no prev) must be an unchanged no-op");
+
+  console.log(`  [32m✔[0m check 57 (roll/slip/slide): roll moves only the shared boundary (neighbours' outer edges + 13s total fixed, ±delta durations, incoming head 80→81, ${nRoll}b); slip keeps start+duration, only sourceIn 40→42 (clamped to source, ${nSlip}b); slide moves the clip's start with neighbours absorbing + total fixed (${nSlide}b); every clamp holds (no clip < MIN_CLIP_SEC, no source overrun); no-neighbour ⇒ no-op`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -2414,6 +2503,7 @@ async function main(): Promise<void> {
   await checkSecurityGuard();
   await checkPerCutTransition();
   await checkManualKeyframes();
+  await checkRollSlipSlide();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

@@ -3,6 +3,7 @@ export * from "./tools";
 export * from "./highlight";
 export * from "./edits";
 export * from "./tracks";
+export * from "./trims";
 export * from "./filler";
 export * from "./slideshow";
 export * from "./demo";

@@ -28,6 +28,7 @@ import { fillerCut } from "./filler";
 import { buildSlideshowDoc } from "./slideshow";
 import { buildDemo, type BuildDemoOptions } from "./demo";
 import { addTrack, moveClipToTrack, removeTrack, reorderTrack, setTrack } from "./tracks";
+import { rollEdit, slipEdit, slideEdit } from "./trims";
 import {
   addBroll,
   addCallout,
@@ -1313,6 +1314,41 @@ export const moveClipTool: DirectorTool<{ clipId: string; trackId?: string; atSe
   },
 };
 
+// ---- roll / slip / slide trims (advanced trim modes) -----------------------
+
+export const rollEditTool: DirectorTool<{ clipId: string; deltaSec: number }> = {
+  name: "roll_edit",
+  description:
+    "Roll the cut between a clip (clipId) and its NEXT neighbour on the main track: shift the shared boundary by deltaSec (positive = later, negative = earlier). The outgoing clip grows/shrinks and the incoming one shrinks/grows to match — both neighbours' outer edges and the total length stay fixed, and the incoming clip's head moves so the media stays continuous. Clamped to a min clip length and available source.",
+  inputSchema: z.object({ clipId: z.string().min(1), deltaSec: z.number() }),
+  async execute(input, ctx) {
+    const doc = rollEdit(ctx.project.doc, input.clipId, input.deltaSec);
+    return commit(ctx.project, doc, `Rolled the cut after “${input.clipId}” by ${input.deltaSec}s.`);
+  },
+};
+
+export const slipEditTool: DirectorTool<{ clipId: string; deltaSec: number }> = {
+  name: "slip_edit",
+  description:
+    "Slip a clip (clipId): shift WHAT IT SHOWS by deltaSec (source seconds) while its timeline start and duration stay fixed — only its source in/out moves. Positive reveals later source, negative earlier. Neighbours are untouched. Clamped so the source window stays inside the media.",
+  inputSchema: z.object({ clipId: z.string().min(1), deltaSec: z.number() }),
+  async execute(input, ctx) {
+    const doc = slipEdit(ctx.project.doc, input.clipId, input.deltaSec);
+    return commit(ctx.project, doc, `Slipped “${input.clipId}” source by ${input.deltaSec}s.`);
+  },
+};
+
+export const slideEditTool: DirectorTool<{ clipId: string; deltaSec: number }> = {
+  name: "slide_edit",
+  description:
+    "Slide a clip (clipId) along the timeline by deltaSec: the previous neighbour's duration grows/shrinks and the next neighbour's shrinks/grows to absorb it, so the clip's own duration and the total length stay fixed. Positive slides later, negative earlier. Clamped to a min clip length and available source. Needs a neighbour on both sides.",
+  inputSchema: z.object({ clipId: z.string().min(1), deltaSec: z.number() }),
+  async execute(input, ctx) {
+    const doc = slideEdit(ctx.project.doc, input.clipId, input.deltaSec);
+    return commit(ctx.project, doc, `Slid “${input.clipId}” by ${input.deltaSec}s.`);
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
   edit_by_transcript: editByTranscriptTool,
@@ -1367,4 +1403,7 @@ export const DIRECTOR_TOOLS = {
   set_track: setTrackTool,
   reorder_track: reorderTrackTool,
   move_clip: moveClipTool,
+  roll_edit: rollEditTool,
+  slip_edit: slipEditTool,
+  slide_edit: slideEditTool,
 } as const;
