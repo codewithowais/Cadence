@@ -9,12 +9,14 @@ import type {
   EditDoc,
   MediaAsset,
 } from "@cadence/core";
-import { cssFilter } from "@cadence/core";
+import { cssFilter, docDurationSec } from "@cadence/core";
 import {
+  addAdjustment,
   addMask,
   adjustColor,
   adjustCurves,
   adjustHsl,
+  applyLut,
   audioFade,
   chromaKey,
   currentGrade,
@@ -22,7 +24,10 @@ import {
   regionBlur,
   setBlend,
   setPan,
+  LOOK_KEYS,
+  LOOK_PRESETS,
   NEUTRAL_GRADE,
+  type LookKey,
 } from "@cadence/director";
 import {
   clearChroma,
@@ -52,7 +57,7 @@ import {
   type LookPreset,
 } from "@/lib/design-presets";
 import { captionsToSrt, hasCaptions } from "@/lib/srt";
-import { renderFrameBlob } from "@/lib/api";
+import { renderFrameBlob, uploadMedia } from "@/lib/api";
 import { VoiceOverRecorder } from "./VoiceOverRecorder";
 import { TranscriptRoom } from "./TranscriptRoom";
 import { DemoRoom } from "./DemoRoom";
@@ -901,14 +906,26 @@ function DesignRoom({
           />
         )}
         {cat === "grade" && (
-          <GradeControls
-            doc={doc}
-            mediaList={mediaList}
-            urls={urls}
-            busy={busy}
-            timeSec={timeSec}
-            onApplyDoc={onApplyDoc}
-          />
+          <div className="flex flex-col gap-4">
+            <GradeControls
+              doc={doc}
+              mediaList={mediaList}
+              urls={urls}
+              busy={busy}
+              timeSec={timeSec}
+              onApplyDoc={onApplyDoc}
+            />
+            <div className="h-px w-full bg-line-soft" aria-hidden />
+            <LutControls doc={doc} mediaList={mediaList} busy={busy} onApplyDoc={onApplyDoc} />
+            <div className="h-px w-full bg-line-soft" aria-hidden />
+            <AdjustmentControls
+              doc={doc}
+              mediaList={mediaList}
+              busy={busy}
+              timeSec={timeSec}
+              onApplyDoc={onApplyDoc}
+            />
+          </div>
         )}
         {cat === "backgrounds" && <BackgroundsGallery doc={doc} busy={busy} onApplyDoc={onApplyDoc} />}
         {cat === "text" && (
@@ -1194,6 +1211,209 @@ function GradeControls({
         {showScopes && !scopeMedia && <span className="text-[11px] text-faint">Load a video or photo to see levels.</span>}
       </Row>
     </div>
+  );
+}
+
+/** The basename of a stored upload path (uuid.cube), for a fallback LUT label. */
+function pathBasename(p: string): string {
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] || p;
+}
+
+/**
+ * LUT import (.cube). Picks a `.cube` file, uploads it via the existing
+ * `/api/upload` flow so the server has a real path at EXPORT time, then sets it as
+ * the creative look on every main visual clip through the pure `applyLut` (routed
+ * to the undoable commit). The LUT is applied on export only (ffmpeg `lut3d`); the
+ * canvas preview approximates the rest of the grade but not the LUT — stated
+ * honestly, mirroring how curves are handled.
+ */
+function LutControls({
+  doc,
+  mediaList,
+  busy,
+  onApplyDoc,
+}: {
+  doc: EditDoc;
+  mediaList: MediaAsset[];
+  busy: boolean;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+}) {
+  const hasVisual = mediaList.some((m) => m.kind === "video" || m.kind === "image");
+  const disabled = busy || !hasVisual;
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Remember the ORIGINAL filename for each uploaded path (the stored path is a
+  // uuid, so this gives a friendly label; falls back to the basename otherwise).
+  const namesRef = useRef<Record<string, string>>({});
+
+  const activeLut = currentGrade(doc).lut;
+  const activeLabel = activeLut ? namesRef.current[activeLut] ?? pathBasename(activeLut) : null;
+
+  const pick = () => fileRef.current?.click();
+
+  const onFile = async (file: File) => {
+    setError(null);
+    setUploading(true);
+    try {
+      const { path } = await uploadMedia(file);
+      namesRef.current[path] = file.name;
+      onApplyDoc(applyLut(doc, { lut: path }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't import that LUT.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const remove = () => {
+    if (disabled) return;
+    onApplyDoc(applyLut(doc, { lut: "" }));
+  };
+
+  return (
+    <section className="flex flex-col gap-2" aria-label="LUT import">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-[10px] uppercase tracking-wider text-faint">LUT (.cube)</h3>
+      </div>
+      <p className="text-[11px] text-faint">
+        Import a 3D LUT to grade your footage. LUTs are applied on <strong className="text-muted">export</strong>{" "}
+        (ffmpeg) — the live preview approximates with the grade sliders above.
+      </p>
+      {!hasVisual && (
+        <p className="rounded-lg border border-line bg-elevated/40 px-3 py-2 text-xs text-faint">
+          Add a video or photo first — a LUT needs a visual clip.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".cube"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void onFile(f);
+            e.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={pick}
+          disabled={disabled || uploading}
+          className="shrink-0 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:opacity-40"
+        >
+          {uploading ? "Importing…" : activeLut ? "Replace LUT (.cube)" : "Import LUT (.cube)"}
+        </button>
+        {activeLut && (
+          <>
+            <span
+              className="inline-flex max-w-[220px] items-center gap-1.5 truncate rounded-full border border-teal/40 bg-teal/10 px-3 py-1 text-xs text-teal"
+              title={activeLut}
+            >
+              <span aria-hidden>●</span>
+              <span className="truncate">{activeLabel}</span>
+            </span>
+            <button
+              type="button"
+              onClick={remove}
+              disabled={disabled}
+              className="shrink-0 rounded-full border border-line bg-elevated px-3 py-1 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:opacity-40"
+            >
+              Remove LUT
+            </button>
+          </>
+        )}
+      </div>
+      {error && <p className="text-[11px] text-amber-bright">{error}</p>}
+    </section>
+  );
+}
+
+/**
+ * Adjustment layers. Adds an `adjustment` clip on the topmost "adjustments" track
+ * that grades EVERYTHING beneath it for its span — one grade across many clips.
+ * The layer is seeded from a chosen look preset and placed at the playhead with a
+ * sensible default length (min 4s / the remaining timeline). It shows up as its own
+ * lane on the timeline, where its edges can be dragged to set the range. Pure +
+ * undoable via `addAdjustment`.
+ */
+function AdjustmentControls({
+  doc,
+  mediaList,
+  busy,
+  timeSec,
+  onApplyDoc,
+}: {
+  doc: EditDoc;
+  mediaList: MediaAsset[];
+  busy: boolean;
+  timeSec: number;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+}) {
+  const hasVisual = mediaList.some((m) => m.kind === "video" || m.kind === "image");
+  const disabled = busy || !hasVisual;
+  const [look, setLook] = useState<LookKey>("cinematic");
+
+  const count = doc.tracks.find((t) => t.id === "adjustments")?.clips.length ?? 0;
+
+  const add = () => {
+    if (disabled) return;
+    const remaining = docDurationSec(doc) - timeSec;
+    const durationSec = remaining > 0.2 ? Math.min(4, remaining) : 4;
+    onApplyDoc(addAdjustment(doc, { atSec: Math.max(0, timeSec), durationSec, look }));
+  };
+
+  return (
+    <section className="flex flex-col gap-2" aria-label="Adjustment layers">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-[10px] uppercase tracking-wider text-faint">Adjustment layers</h3>
+        {count > 0 && (
+          <span className="text-[10px] text-faint">
+            {count} layer{count === 1 ? "" : "s"} on the timeline
+          </span>
+        )}
+      </div>
+      <p className="text-[11px] text-faint">
+        Grades everything below it for its span — drag its edges on the timeline to set the range.
+      </p>
+      {!hasVisual && (
+        <p className="rounded-lg border border-line bg-elevated/40 px-3 py-2 text-xs text-faint">
+          Add a video or photo first — an adjustment layer grades the clips beneath it.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={add}
+          disabled={disabled}
+          className="shrink-0 rounded-full bg-amber px-3 py-1.5 text-xs font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          + Adjustment layer
+        </button>
+        <label className="flex items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-faint">Look</span>
+          <select
+            value={look}
+            disabled={disabled}
+            onChange={(e) => setLook(e.target.value as LookKey)}
+            aria-label="Adjustment layer look preset"
+            className="rounded-lg border border-line bg-elevated px-2 py-1 text-xs text-text disabled:opacity-40"
+          >
+            {LOOK_KEYS.map((k) => (
+              <option key={k} value={k}>
+                {LOOK_PRESETS[k].label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <p className="text-[10px] text-faint">
+        Seeds from a look preset. Fine-tuning a selected layer&apos;s own grade with these sliders is a later wave;
+        for now delete it on the timeline and re-add to change the look.
+      </p>
+    </section>
   );
 }
 

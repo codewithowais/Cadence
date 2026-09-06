@@ -151,6 +151,7 @@ const TRACK_COLORS: Record<string, string> = {
   text: "bg-amber/20 border-amber/50 text-amber",
   audio: "bg-elevated border-line text-muted",
   solid: "bg-line/40 border-line text-faint",
+  adjustment: "bg-amber-deep/25 border-amber-deep/60 text-amber-bright",
 };
 
 const ZOOM_MIN = 1;
@@ -171,6 +172,7 @@ function clipLabel(clip: Clip): string {
   if (clip.kind === "text") return `“${clip.text.slice(0, 18)}”`;
   if (clip.kind === "audio") return "audio";
   if (clip.kind === "solid") return "solid";
+  if (clip.kind === "adjustment") return "adjustment";
   return fmtTime(clip.duration);
 }
 

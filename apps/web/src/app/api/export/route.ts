@@ -3,7 +3,7 @@ import { mkdir, readFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { parseEditDoc } from "@cadence/core";
+import { parseEditDoc, type EditDoc } from "@cadence/core";
 import { detectFfmpeg, runExport, FFMPEG_MISSING_MESSAGE, FfmpegNotFoundError } from "@cadence/render-ffmpeg";
 import { resolveUploadPath } from "@/lib/uploads";
 
@@ -12,6 +12,22 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const EXPORT_DIR = join(tmpdir(), "cadence-exports");
+
+/**
+ * Every distinct `.cube` LUT path referenced by the doc — per-clip creative looks
+ * (`look.lut` on video/image clips) and adjustment layers (`grade.lut`). These are
+ * validated against the uploads dir exactly like media paths before ffmpeg sees them.
+ */
+function collectLutPaths(doc: EditDoc): string[] {
+  const out = new Set<string>();
+  for (const track of doc.tracks) {
+    for (const clip of track.clips) {
+      if ((clip.kind === "video" || clip.kind === "image") && clip.look.lut) out.add(clip.look.lut);
+      if (clip.kind === "adjustment" && clip.grade.lut) out.add(clip.grade.lut);
+    }
+  }
+  return [...out];
+}
 
 /**
  * Real .mp4 export: accepts { doc } (media.src already server paths from
@@ -38,9 +54,20 @@ export async function POST(req: NextRequest) {
     for (const m of doc.media) {
       byId.set(m.id, await resolveUploadPath(m.src));
     }
-    const resolveMediaPath = (mediaId: string): string => {
-      const p = byId.get(mediaId);
-      if (!p) throw new Error(`no media path for "${mediaId}" — upload it first`);
+
+    // LUT (.cube) paths are also client-supplied and reach ffmpeg via the SAME
+    // resolver (the engine passes `look.lut` / adjustment `grade.lut` through
+    // resolveMediaPath → `lut3d=file=…`). Pre-resolve every LUT value the same
+    // way so it's provably inside the uploads dir; the sync resolver then serves
+    // both media ids and LUT paths (and a LUT with no valid file fails safe).
+    const byLut = new Map<string, string>();
+    for (const lut of collectLutPaths(doc)) {
+      byLut.set(lut, await resolveUploadPath(lut));
+    }
+
+    const resolveMediaPath = (idOrPath: string): string => {
+      const p = byId.get(idOrPath) ?? byLut.get(idOrPath);
+      if (!p) throw new Error(`no media path for "${idOrPath}" — upload it first`);
       return p;
     };
 

@@ -4,6 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.18 — LUT import + adjustment-layer UI (Design room)
+- **LUT import** (Design → Color grade): "Import LUT (.cube)" uploads via `/api/upload` and applies via `applyLut`; shows the active LUT + Remove/Replace; honest "applies on export" note. Fixed the **export route** so LUT file paths resolve through the same SSRF-guarded uploads resolver as media (was throwing on any LUT).
+- **Adjustment layers** (Design → Color grade): "+ Adjustment layer" + a look picker → `addAdjustment(atSec, durationSec, look)`; renders as its own timeline lane (distinct color) you can drag to set the range.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **17/17**.
+
 ### S4.17 — speed-ramp UI (time-remap curve)
 - A **Speed** section in the clip inspector (video clips): the five `SPEED_RAMP_PRESETS` (ease-in-out / ramp-up / ramp-down / hero / bullet-time) + a **draggable speed curve** (progress × multiplier, log Y, add/drag/remove points, coalesced undo) + a constant-speed slider and a "Constant speed" clear. Wired to the committed `setSpeedRamp` engine via the undoable commit path.
 - *verified:* typecheck (root+web) + `next build` + Playwright e2e **17/17**.
