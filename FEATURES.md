@@ -44,11 +44,17 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 ### Manual timeline (CapCut-style) — every capability is AI **and** manual
 - ✅ **Multi-track layers** with a **track-header gutter**: rename, **hide/show**, lock, mute/solo, reorder (z-order), add/remove (+ Video/+ Audio); **drag clips between tracks**. Layers composite by z-order in preview **and** export.
 - ✅ **On-timeline keyframe editor** — draggable diamonds per prop (x/y/scale/rotation/opacity, volume); add/retime/value/easing/remove.
-- ✅ **Per-cut transitions** — a ◇ chip on each cut → 7-type gallery + duration, or hard cut.
+- ✅ **Per-cut transitions** — a ◇ chip on each cut → **55-transition** grouped, searchable gallery + duration, or hard cut (preview renders every type).
 - ✅ **Roll / Slip / Slide** trim modes (+ inspector nudges) and **audio fade** drag-handles.
 - ✅ **Zoom** anchored to the playhead + follow, Fit, and double-click zoom-to-selection.
 - ✅ **Beat-sync** — Detect beats → beat markers → Split at beats; **Stickers/emoji + text presets** picker.
 - ✅ **Walkthrough/Demo room** — build interaction videos from screenshots with visual on-preview placement (typed fields, cursor+click, callouts).
+
+### UI/UX
+- ✅ **Rooms:** Media (thumbnail grid, drag onto timeline) · Edit · Words · **Design** (Looks/Color/Backgrounds/Text/Overlays/Advanced — thumbnail preview gallery, 24 looks + palettes + text presets) · Demo · Audio · Deliver.
+- ✅ **Collapsible chat & code rails** (`[` `]` `\`), **adjustable preview height**, room panels scroll so the video stays visible.
+- ✅ **Drag-and-drop** media onto timeline tracks + OS file drop.
+- ✅ **Theme:** coral/vermilion on warm charcoal (AA contrast), teal secondary.
 
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.

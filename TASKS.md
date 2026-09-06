@@ -34,7 +34,17 @@ Driven by two expert advisory docs — `docs/CAPCUT-PARITY.md` (senior editor) +
 - ✅ **Wave D — beat-sync + stickers:** "Detect beats" (Web-Audio energy/onset) → beat markers + "Split at beats"; stickers/emoji + text-preset picker; **markers now persist** in `doc.markers` (was local-state only — correctness fix).
 - ✅ **Wave E — trims:** `rollEdit`/`slipEdit`/`slideEdit` ops + tools; timeline Normal·Roll·Slip·Slide mode selector + inspector nudges.
 - ✅ **Tester:** Playwright **11/11** green (added wave-a/wave-b/wave-c artifact specs). verify **57** · unit 44 · evals 5.
-- ⬜ **Deferred (P1/P2, optional):** speed ramps (CapCut Curve), LUT import, adjustment layers, karaoke captions, multiple **sequences** (P2 — the editor assumes one EditDoc), motion-tracking auto-reframe (money-gated).
+- ⬜ **Deferred (P1/P2, optional):** LUT import, adjustment layers, keyframe export fidelity (x/y/rot/opacity are preview-only on export), speed-ramp UI (engine done), karaoke captions, multiple **sequences** (P2), motion-tracking auto-reframe (money-gated).
+
+## Cycle G — transitions fix + 55 library + full UX overhaul — ✅ COMPLETE
+
+Driven by the transition bug report + `docs/UX-OVERHAUL.md` (senior UX/UI) and `docs/CAPCUT-STATUS.md` (parity re-audit). History in `CHANGELOG.md` (S4.9–S4.15). Every AI capability still has a manual control.
+
+- ✅ **Transitions fixed** (S4.10): the preview ignored `transitionType` — now renders each type; single/first/last clips get fade-in/out chips. Deep e2e (`transitions.spec.ts`).
+- ✅ **55 transitions** (S4.12/S4.15): full ffmpeg `xfade` set across schema/export/preview + a grouped, searchable timeline gallery.
+- ✅ **Speed ramps** engine (S4.9, CapCut "Curve") — UI pending.
+- ✅ **UX overhaul** (S4.11/S4.13/S4.14): collapsible rails · media thumbnail grid · drag-drop to timeline · dedupe brand mark · unified **Design** room (thumbnail preview gallery, 24 looks/palettes/text presets, instant-apply) · **new coral-on-charcoal theme** (no yellow) · **preview-visibility fix** (room-panel scroll + adjustable preview) · prominence polish.
+- ✅ **Tester:** Playwright **17/17**; verify **60**; unit **49**; evals 5. Neon DB live; Vercel-ready.
 
 ## Phase 0 — Spike (prove the loop) — ✅ COMPLETE
 
