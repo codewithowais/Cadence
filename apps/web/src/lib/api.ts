@@ -35,10 +35,10 @@ export async function askDirector(input: {
 }
 
 /** Upload one media File to the server; returns its server-side path + id. */
-export async function uploadMedia(file: File): Promise<{ id: string; path: string }> {
+export async function uploadMedia(file: File, signal?: AbortSignal): Promise<{ id: string; path: string }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/api/upload", { method: "POST", body: form });
+  const res = await fetch("/api/upload", { method: "POST", body: form, signal });
   if (!res.ok) {
     const msg = await res.json().catch(() => ({ error: `upload failed: ${res.status}` }));
     throw new Error(msg.error ?? `upload failed: ${res.status}`);
@@ -56,11 +56,12 @@ export type ExportResult =
   | { ok: false; unavailable: boolean; message: string };
 
 /** Render the doc to a real .mp4 via the ffmpeg export route. */
-export async function exportVideo(doc: EditDoc): Promise<ExportResult> {
+export async function exportVideo(doc: EditDoc, signal?: AbortSignal): Promise<ExportResult> {
   const res = await fetch("/api/export", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ doc }),
+    signal,
   });
   if (res.ok) return { ok: true, blob: await res.blob() };
   const data = await res.json().catch(() => ({ error: `export failed: ${res.status}` }));

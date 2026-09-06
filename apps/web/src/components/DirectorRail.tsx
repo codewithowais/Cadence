@@ -6,9 +6,13 @@ import type { Message } from "@/lib/types";
 interface DirectorRailProps {
   messages: Message[];
   busy: boolean;
+  /** A verb describing what `busy` is doing ("Applying your edit…", "Rendering…"). */
+  busyLabel?: string;
   hasMedia: boolean;
   onSend: (text: string) => void;
   onFiles: (files: File[]) => void;
+  /** When an export is running, a handler to cancel it (shows a Cancel button). */
+  onCancel?: () => void;
 }
 
 const SUGGESTIONS = [
@@ -17,7 +21,7 @@ const SUGGESTIONS = [
   "Give it a cinematic look",
 ];
 
-export function DirectorRail({ messages, busy, hasMedia, onSend, onFiles }: DirectorRailProps) {
+export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFiles, onCancel }: DirectorRailProps) {
   const [text, setText] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -28,7 +32,9 @@ export function DirectorRail({ messages, busy, hasMedia, onSend, onFiles }: Dire
 
   function submit() {
     const t = text.trim();
-    if (!t || busy || !hasMedia) return;
+    // Describe-first: a request typed BEFORE media exists is allowed — the editor
+    // queues it and runs it the moment footage loads. Only `busy` blocks send.
+    if (!t || busy) return;
     onSend(t);
     setText("");
   }
@@ -53,8 +59,9 @@ export function DirectorRail({ messages, busy, hasMedia, onSend, onFiles }: Dire
             </div>
             <p className="text-sm text-text">Add a video — or photos</p>
             <p className="mx-auto mt-1 max-w-[16rem] text-xs text-muted">
-              Edit a video, or turn a group of photos into one. Then just tell me
-              what you want — no timeline knowledge needed.
+              Edit a video, or turn a group of photos into one. You can even
+              describe the edit below first — I&apos;ll run it the moment your
+              footage loads. No timeline knowledge needed.
             </p>
             <button
               type="button"
@@ -86,9 +93,18 @@ export function DirectorRail({ messages, busy, hasMedia, onSend, onFiles }: Dire
         ))}
 
         {busy && (
-          <div className="flex items-center gap-1.5 text-xs text-faint">
+          <div className="flex items-center gap-1.5 text-xs text-faint" role="status" aria-live="polite">
             <Dot /> <Dot delay="0.15s" /> <Dot delay="0.3s" />
-            <span className="ml-1">Director is editing…</span>
+            <span className="ml-1">{busyLabel || "Director is editing…"}</span>
+            {onCancel && (
+              <button
+                type="button"
+                onClick={onCancel}
+                className="ml-2 rounded-full border border-line bg-elevated px-2.5 py-0.5 text-[11px] text-muted transition hover:border-red-500/40 hover:text-red-300"
+              >
+                Cancel
+              </button>
+            )}
           </div>
         )}
 
@@ -130,14 +146,14 @@ export function DirectorRail({ messages, busy, hasMedia, onSend, onFiles }: Dire
               }
             }}
             rows={1}
-            placeholder={hasMedia ? "Describe the edit…" : "Add a video first"}
-            disabled={!hasMedia}
+            placeholder={hasMedia ? "Describe the edit…" : "Describe what you want — add footage next…"}
+            disabled={busy}
             className="max-h-32 min-h-[2rem] flex-1 resize-none bg-transparent py-1 text-sm text-text placeholder:text-faint focus:outline-none disabled:cursor-not-allowed"
           />
           <button
             type="button"
             onClick={submit}
-            disabled={busy || !hasMedia || !text.trim()}
+            disabled={busy || !text.trim()}
             aria-label="Send"
             className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-amber text-ink transition hover:bg-amber-bright disabled:opacity-30"
           >

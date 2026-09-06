@@ -7,6 +7,7 @@
 import {
   docDurationSec,
   parseEditDoc,
+  sourceSpanSec,
   type ColorGrade,
   type EditDoc,
   type MediaAsset,
@@ -206,18 +207,25 @@ export function addCaptions(doc: EditDoc, transcript: Transcript): EditDoc {
   for (const track of clone.tracks) {
     for (const clip of track.clips) {
       if (clip.kind !== "video") continue;
+      // Source window the clip actually shows = [sourceIn, sourceIn + duration*speed)
+      // (sourceSpanSec). A sped/slowed clip consumes more/less SOURCE than its
+      // timeline duration, so we must map transcript SOURCE time back through speed:
+      // timeline = clip.start + (segTime - sourceIn) / speed. Ignoring speed (the
+      // old `sourceIn + duration`) mismatched the segments and drifted the captions.
+      const speed = clip.speed ?? 1;
       const srcStart = clip.sourceIn;
-      const srcEnd = clip.sourceIn + clip.duration;
+      const srcEnd = clip.sourceIn + sourceSpanSec(clip);
       for (const seg of transcript.segments) {
         const s = Math.max(seg.start, srcStart);
         const e = Math.min(seg.end, srcEnd);
         if (e - s < 0.25) continue;
-        const tlStart = clip.start + (s - srcStart);
+        const tlStart = clip.start + (s - srcStart) / speed;
+        const tlDuration = (e - s) / speed;
         captions.push({
           id: `cap${n++}`,
           kind: "text",
           start: Math.round(tlStart * 1000) / 1000,
-          duration: Math.round((e - s) * 1000) / 1000,
+          duration: Math.round(tlDuration * 1000) / 1000,
           text: seg.text.length > maxChars ? seg.text.slice(0, maxChars - 1) + "…" : seg.text,
           fontSize,
           color: "#ffffff",
@@ -324,24 +332,54 @@ export function addTitle(doc: EditDoc, text: string, style: TitleStyle = "card")
 export function addMusic(
   doc: EditDoc,
   asset: MediaAsset,
-  opts: { volume?: number; startSec?: number } = {},
+  opts: { volume?: number; startSec?: number; durationSec?: number } = {},
 ): EditDoc {
   const clone: EditDoc = structuredClone(doc);
   // Ensure the audio asset is present in the doc's media so the export can find it.
   if (!clone.media.some((m) => m.id === asset.id)) clone.media.push(asset);
   clone.tracks = clone.tracks.filter((t) => t.id !== "music");
 
-  const total = docDurationSec(clone) || asset.durationSec || 30;
+  const startSec = Math.max(0, opts.startSec ?? 0);
+  const docDur = docDurationSec(clone);
+  // Default the music clip to the SHORTER of the asset and the timeline (so a song
+  // longer than the cut doesn't run past the video, and a short song isn't stretched)
+  // — but an explicit `durationSec` always wins so music can be trimmed/offset/looped.
+  const fallback = asset.durationSec ? Math.min(asset.durationSec, docDur || asset.durationSec) : docDur || 30;
+  const duration = Math.max(0.1, opts.durationSec ?? fallback);
   const clip = {
     id: `music-${Date.now()}`,
     kind: "audio" as const,
-    start: Math.max(0, opts.startSec ?? 0),
-    duration: round(total),
+    start: startSec,
+    duration: round(duration),
     mediaId: asset.id,
     sourceIn: 0,
     volume: opts.volume ?? 0.28,
   };
   clone.tracks.push({ id: "music", kind: "audio", clips: [clip as never] });
+  return parseEditDoc(clone);
+}
+
+/**
+ * Carry the "music" / "voiceover" audio tracks (and the media assets they
+ * reference) from `from` onto `doc`. Used when a builder like make_slideshow
+ * rebuilds the whole doc from scratch — without this, re-running it silently drops
+ * any background music / voice-over the user had attached. Pure + re-parsed
+ * through the schema; a no-op when `from` has no audio tracks.
+ */
+export function carryOverAudio(doc: EditDoc, from: EditDoc): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  for (const trackId of ["music", "voiceover"]) {
+    const track = from.tracks.find((t) => t.id === trackId);
+    if (!track || track.clips.length === 0) continue;
+    // Ensure each referenced audio asset exists in the rebuilt doc's media.
+    for (const c of track.clips) {
+      if (c.kind !== "audio") continue;
+      const asset = from.media.find((m) => m.id === c.mediaId);
+      if (asset && !clone.media.some((m) => m.id === asset.id)) clone.media.push(structuredClone(asset));
+    }
+    clone.tracks = clone.tracks.filter((t) => t.id !== trackId);
+    clone.tracks.push(structuredClone(track));
+  }
   return parseEditDoc(clone);
 }
 
@@ -609,7 +647,19 @@ export function setSpeed(
       if (opts.atSec !== undefined && !(opts.atSec >= clip.start && opts.atSec < clip.start + clip.duration)) {
         continue;
       }
-      clip.speed = speed;
+      // Source-length guard: a fast clip reads `duration * speed` seconds of SOURCE
+      // from `sourceIn` (see sourceSpanSec/export -ss/-t). If the media doesn't have
+      // that much left, ffmpeg would truncate the segment shorter than its timeline
+      // slot and the concat would desync. Clamp the per-clip speed so the read stays
+      // inside the source. Only >1 (fast) can overrun; slow-mo reads less, never past
+      // EOF. When the asset duration is unknown we can't guard, so we leave it.
+      let effSpeed = speed;
+      const asset = clone.media.find((m) => m.id === clip.mediaId);
+      if (effSpeed > 1 && asset?.durationSec && asset.durationSec > clip.sourceIn) {
+        const maxSpeed = round((asset.durationSec - clip.sourceIn) / clip.duration);
+        if (maxSpeed >= 0.25 && maxSpeed < effSpeed) effSpeed = maxSpeed;
+      }
+      clip.speed = round(clamp(effSpeed, 0.25, 4));
       changed++;
     }
   }
@@ -657,9 +707,16 @@ export function setZoom(
 
 /**
  * Set the transition style of the main visual clips (slideshow photos / cut
- * clips): "crossfade" | "dip-to-black" | "slide" | "wipe". Non-first clips get a
- * default transition duration if they were hard cuts, so the effect is visible
- * (and triggers xfade on slideshow export). Faithful: reveal style only.
+ * clips): "crossfade" | "dip-to-black" | "slide" | "wipe" | … Non-first clips get
+ * a default transition duration if they were hard cuts, and — crucially — the
+ * track is RE-LAID so each clip OVERLAPS the previous one by its transition
+ * duration. That overlap is what makes a real A→B dissolve: during it BOTH clips
+ * are active (activeClipsAt returns both, and the canvas cross-dissolves the
+ * incoming clip up over the outgoing one), and the ffmpeg export chains `xfade`
+ * across the same overlap — so preview and export agree instead of hard-cutting
+ * (or, worse, fading up from the black background with no outgoing clip beneath).
+ * Slideshow photos are already laid with this overlap, so re-laying them is
+ * idempotent. Faithful: reveal style + timing only, never content.
  */
 export function setTransition(doc: EditDoc, type: TransitionType, transitionSec = 0.6): EditDoc {
   const clone: EditDoc = structuredClone(doc);
@@ -667,11 +724,23 @@ export function setTransition(doc: EditDoc, type: TransitionType, transitionSec 
   for (const track of clone.tracks) {
     if (!isMainVisualTrack(track.id)) continue;
     const visual = track.clips.filter((c) => c.kind === "video" || c.kind === "image");
+    let prev: (typeof visual)[number] | null = null;
     visual.forEach((clip, i) => {
       if (clip.kind !== "video" && clip.kind !== "image") return;
       clip.transitionType = type;
       // First clip has no incoming transition; give the rest one if hard-cut.
       if (i > 0 && clip.transitionInSec <= 0) clip.transitionInSec = transitionSec;
+      if (prev && clip.transitionInSec > 0) {
+        // Clamp the overlap so it can't exceed either clip (keeps xfade offset >= 0).
+        const xf = Math.min(clip.transitionInSec, prev.duration - 0.05, clip.duration - 0.05);
+        if (xf > 0 && Math.abs(xf - clip.transitionInSec) > 1e-6) clip.transitionInSec = round(xf);
+        // Overlap the incoming clip onto the previous one by the transition duration.
+        clip.start = round(prev.start + prev.duration - clip.transitionInSec);
+      } else if (prev) {
+        // Hard cut: lay back-to-back (unchanged behavior).
+        clip.start = round(prev.start + prev.duration);
+      }
+      prev = clip;
       changed++;
     });
   }

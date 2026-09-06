@@ -8,6 +8,7 @@ import {
   imageMotion,
   textKinetic,
   transitionOpacity,
+  type AudioClip,
   type EditDoc,
   type ImageClip,
   type TextClip,
@@ -60,6 +61,61 @@ function BrollVideo(props: {
   return <video ref={ref} src={src} muted playsInline preload="auto" style={style} />;
 }
 
+/**
+ * A hidden <audio> element for one timeline audio clip (music / voice-over), kept
+ * in sync with the transport so music & voice-over are HEARD in the browser
+ * preview — not only on export (the review's P0-3). It plays only while the
+ * playhead is inside the clip's [start, start+duration) window, seeks to
+ * `sourceIn + (timeSec - start)`, honors the clip `volume`, and follows the
+ * preview `muted` toggle. One instance per audio clip, so several tracks
+ * (background music + a voice-over) mix together, exactly like the export.
+ */
+function AudioClipPlayer(props: {
+  src: string;
+  clip: AudioClip;
+  timeSec: number;
+  playing: boolean;
+  muted: boolean;
+}) {
+  const { src, clip, timeSec, playing, muted } = props;
+  const ref = useRef<HTMLAudioElement>(null);
+  const active = timeSec >= clip.start && timeSec < clip.start + clip.duration;
+  const sourceTime = clip.sourceIn + (timeSec - clip.start);
+
+  // Volume + preview mute — applied immediately whenever they change.
+  useEffect(() => {
+    const a = ref.current;
+    if (!a) return;
+    a.volume = Math.max(0, Math.min(1, clip.volume));
+    a.muted = muted;
+  }, [clip.volume, muted]);
+
+  // Start/stop with the transport (and when the playhead enters/leaves the clip).
+  // Correct any drift at the boundary so playback stays in step with the clock.
+  useEffect(() => {
+    const a = ref.current;
+    if (!a) return;
+    if (playing && active) {
+      const target = Math.max(0, sourceTime);
+      if (Math.abs(a.currentTime - target) > 0.25) a.currentTime = target;
+      void a.play().catch(() => {});
+    } else {
+      a.pause();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, active, clip.id]);
+
+  // Scrub while paused: track the playhead so the preview is "live" when stopped.
+  useEffect(() => {
+    const a = ref.current;
+    if (!a || playing) return;
+    if (active) a.currentTime = Math.max(0, sourceTime);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeSec]);
+
+  return <audio ref={ref} src={src} preload="auto" />;
+}
+
 export function Stage(props: StageProps) {
   const { urls, hasMedia, doc, timeSec, durationSec, playing, muted } = props;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -92,6 +148,14 @@ export function Stage(props: StageProps) {
     .map((c) => c.clip)
     .filter((c): c is ImageClip => c.kind === "image");
   const activeTexts = activeOnTracks.map((c) => c.clip).filter((c): c is TextClip => c.kind === "text");
+  // Every audio clip in the doc (music + voice-over across all tracks). Rendered
+  // as always-present hidden <audio> elements so the playhead crossing into a
+  // clip can start it — each one plays only while it's active.
+  const audioClips = useMemo(() => {
+    const out: AudioClip[] = [];
+    for (const track of doc.tracks) for (const c of track.clips) if (c.kind === "audio") out.push(c);
+    return out;
+  }, [doc]);
   const activeBroll = activeOnTracks
     .filter((c) => c.track.id === "broll")
     .map((c) => c.clip)
@@ -245,6 +309,24 @@ export function Stage(props: StageProps) {
                     {t.text}
                   </span>
                 </div>
+              );
+            })}
+
+          {/* Audio layer — hidden <audio> per music/voice-over clip, synced to the
+              transport so they're heard in the preview (not just on export). */}
+          {hasMedia &&
+            audioClips.map((clip) => {
+              const url = urls[clip.mediaId];
+              if (!url) return null;
+              return (
+                <AudioClipPlayer
+                  key={clip.id}
+                  src={url}
+                  clip={clip}
+                  timeSec={timeSec}
+                  playing={playing}
+                  muted={muted}
+                />
               );
             })}
         </div>

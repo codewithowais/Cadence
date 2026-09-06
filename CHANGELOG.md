@@ -4,6 +4,14 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.7 — Cycle E wave 2: P0 fixes + audible audio (expert-review driven)
+- **Audible preview (P0-3):** music & voice-over now **play in the browser preview** (hidden `<audio>` per audio clip, synced to the transport/scrub/mute/volume) — not just on export. Music **auto-attaches on upload** (works on photo slideshows), shows on the timeline + "Music on" chip, with an Undo toast.
+- **Transitions export for real (P0-1):** video-cut transitions now lay a proper **overlap** and render as an **A→B dissolve** + **audio crossfade** (`xfade`/`acrossfade`) on export and in preview — not a fade-from-black or a hard cut.
+- **Overlays ripple (P0-2):** captions/titles re-anchor when you trim/split/reorder/delete footage, staying in sync.
+- **P1 render fixes:** captions honor clip `speed`; multi-video audio robust when a source is silent (`anullsrc`+`aformat`); speed reads clamped to EOF; `add_music` gains `startSec`/`durationSec`; `make_slideshow` preserves attached music/voice-over. New `MediaAsset.hasAudio?` (defaulted).
+- **UX quick wins:** labeled progress ("Rendering .mp4…") + **Cancel** on export, **undo toast**, **describe-first** composer (type before uploading → runs on load).
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify **37/37** + `next build` clean.
+
 ### S3.6 — Cycle E wave 1: interaction-demo engine + direct timeline editing
 - **Interaction-demo engine (E1):** turn app/UI screenshots into an animated walkthrough — new `cursor` clip (eased waypoints + click ripples), `callout` clip (highlight box + dim + optional zoom), and a **typewriter** text animation (+caret). A `build_demo` skill assembles screens → sequenced image clips with typed email/password + a cursor that glides to a button and clicks; manual `add_cursor` / `type_text` / `add_callout` tools. Rendered in canvas + ffmpeg (drawbox/drawtext, time-gated). Verify checks 28–31. *(Vision-based auto field detection = money-gated follow-up; positions are nudgeable.)*
 - **Direct timeline editing (E2):** select a clip → inspector; **drag-trim** edges (with snapping to edges/playhead/markers), **split at playhead** (S), **drag-reorder**, **ripple-delete** (Del) / delete, **duplicate**, per-clip **volume/mute**, **timeline zoom** (1–24×) + ruler scrub, and **markers** (M). All pure ops in `lib/edit-ops.ts`, routed through the undo/redo commit path. (Schema follow-ups noted: persist markers; first-class per-clip `muted`.)

@@ -32,6 +32,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   parseEditDoc,
+  activeClipsAt,
   docDurationSec,
   emphasisScale,
   sourceTimeAt,
@@ -55,6 +56,7 @@ import {
   parseWhisperJson,
   pickTranscriber,
   assertLocalMediaPath,
+  type Transcript,
 } from "@cadence/understanding";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -64,10 +66,14 @@ import {
   StubDirector,
   runDirectorLoop,
   adjustColor,
+  addCaptions,
+  addMusic,
   applyVfx,
   reframe,
   reframeTo,
   setQuality,
+  setSpeed,
+  setTransition,
   buildDemo,
   addCursor,
   addCallout,
@@ -1151,6 +1157,204 @@ function structuredCloneDoc(doc: EditDoc): EditDoc {
   return JSON.parse(JSON.stringify(doc)) as EditDoc;
 }
 
+/** A 2-cut, hard-cut video doc (clips laid back-to-back, no transition). */
+function twoCutDoc(): EditDoc {
+  return parseEditDoc({
+    version: 1,
+    meta: { title: "cuts", width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "clip-001", kind: "video", src: "/media/clip-001.mp4", durationSec: 180 }],
+    tracks: [
+      {
+        id: "video",
+        kind: "visual",
+        clips: [
+          { id: "c0", kind: "video", start: 0, duration: 4, mediaId: "clip-001", sourceIn: 12, transform: { x: 960, y: 540 } },
+          { id: "c1", kind: "video", start: 4, duration: 5, mediaId: "clip-001", sourceIn: 40, transform: { x: 960, y: 540 } },
+        ],
+      },
+    ],
+  });
+}
+
+async function checkVideoCutTransition(): Promise<void> {
+  // P0-1: a transition set on VIDEO cuts must (a) lay an overlap so preview shows a
+  // real A→B dissolve (both clips active mid-transition), and (b) emit xfade +
+  // acrossfade on export — not a bare hard-cut concat.
+  const dip = setTransition(twoCutDoc(), "dip-to-black");
+  const vids = dip.tracks.find((t) => t.id === "video")!.clips;
+  const c0 = vids[0]!;
+  const c1 = vids[1]!;
+  assert(c0.kind === "video" && c1.kind === "video", "expected two video cuts");
+  // The incoming clip now OVERLAPS the previous one by the transition duration.
+  assert(c1.transitionInSec > 0, "incoming cut should carry a transition");
+  const overlapStart = c1.start;
+  const overlapEnd = c0.start + c0.duration;
+  assert(overlapStart < overlapEnd - 1e-6, `expected an overlap, got start ${overlapStart} >= prevEnd ${overlapEnd}`);
+  assert(
+    Math.abs(overlapStart - (c0.start + c0.duration - c1.transitionInSec)) < 1e-6,
+    "overlap should equal the transition duration",
+  );
+  // Preview parity: BOTH clips are active during the overlap (canvas cross-dissolves them).
+  const mid = (overlapStart + overlapEnd) / 2;
+  const activeVids = activeClipsAt(dip, mid).filter(({ clip }) => clip.kind === "video");
+  assert(activeVids.length === 2, `mid-transition should show BOTH clips, got ${activeVids.length}`);
+  const n = await renderAndAssert(dip, mid, "verify-cut-transition.png");
+
+  // Export: xfade (video, dip→fadeblack) + acrossfade (audio) across the overlap,
+  // and NO hard-cut concat for this crossfaded sequence.
+  const plan = buildExportPlan(dip, (id) => `/media/${id}.mp4`, "/out/cut-dip.mp4");
+  assert(plan.filterComplex.includes("xfade=transition=fadeblack:duration="), "cut transition: expected xfade fadeblack on export");
+  assert(plan.filterComplex.includes("acrossfade=d="), "cut transition: expected audio acrossfade on export");
+  assert(!plan.filterComplex.includes("concat=n="), "cut transition: crossfaded cuts should NOT use a hard-cut concat");
+
+  // A plain crossfade type maps to xfade fade; a hard cut (no transition) still concats.
+  const cross = setTransition(twoCutDoc(), "crossfade");
+  const cp = buildExportPlan(cross, (id) => `/media/${id}.mp4`, "/out/cut-cross.mp4");
+  assert(cp.filterComplex.includes("xfade=transition=fade:"), "cut transition: crossfade should map to xfade fade");
+  const hard = buildExportPlan(twoCutDoc(), (id) => `/media/${id}.mp4`, "/out/cut-hard.mp4");
+  assert(hard.filterComplex.includes("concat=n=2:v=1:a=1") && !hard.filterComplex.includes("xfade="), "hard cuts must stay a plain concat (unchanged)");
+
+  console.log(`  [32m✔[0m check 32 (video-cut transition): overlap laid → both clips mid-transition (${n}b) → xfade/acrossfade on export; hard cuts still concat`);
+}
+
+/** Build a minimal Transcript with the given source-time segments. */
+function makeTranscript(segs: { start: number; end: number; text: string }[]): Transcript {
+  const segments = segs.map((s, i) => ({ id: `s${i}`, text: s.text, start: s.start, end: s.end, words: [] }));
+  return { mediaId: "m", durationSec: segs.reduce((m2, s) => Math.max(m2, s.end), 0), language: "en", segments, words: [] };
+}
+
+async function checkCaptionSpeed(): Promise<void> {
+  // P1-1: captions must map SOURCE time through the clip's speed. A 2× clip shows
+  // source [sourceIn, sourceIn + duration*speed); its transcript maps back to the
+  // timeline as start + (segTime - sourceIn)/speed.
+  const doc = parseEditDoc({
+    version: 1,
+    media: [{ id: "m", kind: "video", src: "a.mp4", durationSec: 60 }],
+    // Timeline [0,10); at 2× it consumes source [5,25).
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c", kind: "video", start: 0, duration: 10, sourceIn: 5, speed: 2, mediaId: "m" }] }],
+  });
+  // A segment at source [20,22) is INSIDE [5,25) — the old (speed-ignoring) window
+  // [5,15) would have dropped it entirely.
+  const t = makeTranscript([{ start: 20, end: 22, text: "late but shown" }]);
+  const caps = addCaptions(doc, t).tracks.find((x) => x.id === "captions")!;
+  assert(caps.clips.length === 1, `expected the in-source-range caption, got ${caps.clips.length}`);
+  const cap = caps.clips[0]!;
+  // timeline start = 0 + (20-5)/2 = 7.5; duration = (22-20)/2 = 1.
+  assert(cap.start === 7.5, `caption start should map through speed to 7.5, got ${cap.start}`);
+  assert(cap.duration === 1, `caption duration should be retimed to 1, got ${cap.duration}`);
+
+  // Sanity: at 1× the mapping is unchanged (backward compatible).
+  const doc1 = parseEditDoc({
+    version: 1,
+    media: [{ id: "m", kind: "video", src: "a.mp4" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c", kind: "video", start: 0, duration: 10, sourceIn: 5, mediaId: "m" }] }],
+  });
+  const cap1 = addCaptions(doc1, makeTranscript([{ start: 6, end: 8, text: "hi" }])).tracks.find((x) => x.id === "captions")!.clips[0]!;
+  assert(cap1.start === 1 && cap1.duration === 2, `1× caption should be unchanged (start 1, dur 2), got ${cap1.start}/${cap1.duration}`);
+
+  console.log(`  [32m✔[0m check 33 (caption speed): 2× clip → caption source window uses duration*speed and maps back /speed (start 7.5, dur 1); 1× unchanged`);
+}
+
+async function checkAudioRobustness(): Promise<void> {
+  // P1-3: a multi-video concat where one source has NO audio stream must still
+  // export — the silent clip gets synthesized silence (anullsrc), and every
+  // segment is normalized (aformat) so mismatched rates/layouts can't desync.
+  const doc = parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080, fps: 30 },
+    media: [
+      { id: "a", kind: "video", src: "/media/a.mp4" },
+      { id: "b", kind: "video", src: "/media/b.mp4", hasAudio: false },
+    ],
+    tracks: [
+      {
+        id: "video",
+        kind: "visual",
+        clips: [
+          { id: "c0", kind: "video", start: 0, duration: 4, mediaId: "a", transform: { x: 960, y: 540 } },
+          { id: "c1", kind: "video", start: 4, duration: 4, mediaId: "b", transform: { x: 960, y: 540 } },
+        ],
+      },
+    ],
+  });
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/silent.mp4");
+  // The silence is a lavfi anullsrc INPUT; its audio pad is then used in the graph.
+  assert(plan.args.some((a) => a.startsWith("anullsrc=")), "audio robustness: silent clip should get an anullsrc lavfi input");
+  assert(plan.inputs.length === 3, `audio robustness: expected 2 video inputs + 1 anullsrc, got ${plan.inputs.length}`);
+  assert(plan.filterComplex.includes("aformat=sample_rates="), "audio robustness: expected aformat normalization on audio");
+  assert(plan.filterComplex.includes("concat=n=2:v=1:a=1"), "audio robustness: concat should still carry audio (a=1)");
+  console.log(`  [32m✔[0m check 34 (audio robustness): silent source → anullsrc silence + aformat normalize; concat a=1 survives`);
+}
+
+async function checkSpeedGuard(): Promise<void> {
+  // P1-4: a fast clip can't read past the source. duration 10 × 2 wants 20s of
+  // source, but only 15 remain → clamp to 15/10 = 1.5×.
+  const doc = parseEditDoc({
+    version: 1,
+    media: [{ id: "m", kind: "video", src: "a.mp4", durationSec: 15 }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c", kind: "video", start: 0, duration: 10, sourceIn: 0, mediaId: "m" }] }],
+  });
+  const clamped = setSpeed(doc, { speed: 2 });
+  const c = clamped.tracks.flatMap((t) => t.clips).find((x): x is VideoClip => x.kind === "video")!;
+  assert(c.speed === 1.5, `fast speed should clamp to available source (1.5×), got ${c.speed}`);
+  // Export never reads past EOF: -t = duration*speed = 15 <= source 15.
+  const plan = buildExportPlan(clamped, (id) => `/media/${id}.mp4`, "/out/guard.mp4");
+  assert(plan.args.includes("15"), "speed guard: -t should be duration*clampedSpeed (15)");
+
+  // Plenty of source → the requested fast speed is kept unchanged.
+  const roomy = parseEditDoc({
+    version: 1,
+    media: [{ id: "m", kind: "video", src: "a.mp4", durationSec: 100 }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c", kind: "video", start: 0, duration: 10, sourceIn: 0, mediaId: "m" }] }],
+  });
+  const fast = setSpeed(roomy, { speed: 2 }).tracks.flatMap((t) => t.clips).find((x): x is VideoClip => x.kind === "video")!;
+  assert(fast.speed === 2, `ample source should keep 2×, got ${fast.speed}`);
+  console.log(`  [32m✔[0m check 35 (speed guard): 2× on 15s source clamps to 1.5× (no read past EOF); ample source keeps 2×`);
+}
+
+async function checkMusicDuration(): Promise<void> {
+  // P1: add_music takes startSec + durationSec; default = min(asset, timeline).
+  const song: MediaAsset = { id: "song", kind: "audio", src: "s.mp3", durationSec: 200, label: "bed.mp3" };
+  const base = parseEditDoc({
+    version: 1,
+    media: [{ id: "m", kind: "video", src: "a.mp4" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c", kind: "video", start: 0, duration: 30, mediaId: "m" }] }],
+  });
+  // Default: min(song 200, timeline 30) = 30, start 0.
+  const def = addMusic(base, song).tracks.find((t) => t.id === "music")!.clips[0]!;
+  assert(def.kind === "audio" && def.duration === 30 && def.start === 0, `default music should be min(asset, timeline)=30 @0, got ${def.kind === "audio" ? `${def.duration}@${def.start}` : "?"}`);
+
+  // Explicit offset + trim.
+  const trimmed = addMusic(base, song, { startSec: 5, durationSec: 10 }).tracks.find((t) => t.id === "music")!.clips[0]!;
+  assert(trimmed.kind === "audio" && trimmed.duration === 10 && trimmed.start === 5, `explicit music should be 10s @5s, got ${trimmed.kind === "audio" ? `${trimmed.duration}@${trimmed.start}` : "?"}`);
+  // Export honors the offset via adelay.
+  const withMusic = parseEditDoc(structuredCloneDoc(addMusic(base, song, { startSec: 5, durationSec: 10 })));
+  const plan = buildExportPlan(withMusic, (id) => `/media/${id}.mp4`, "/out/music-dur.mp4");
+  assert(plan.filterComplex.includes("adelay=5000|5000"), "music: expected adelay reflecting the 5s offset");
+  console.log(`  [32m✔[0m check 36 (music duration/offset): default=min(asset,timeline)=30; startSec/durationSec → 10s @5s + adelay on export`);
+}
+
+async function checkSlideshowKeepsMusic(): Promise<void> {
+  // P1: re-running make_slideshow must NOT drop attached music/voice-over.
+  const imgs: MediaAsset[] = Array.from({ length: 3 }, (_, i) => ({
+    id: `photo-${i}`, kind: "image" as const, src: `/media/p${i}.jpg`, width: 1920, height: 1080, label: `p${i}.jpg`,
+  }));
+  const song: MediaAsset = { id: "song", kind: "audio", src: "s.mp3", durationSec: 60, label: "bed.mp3" };
+  const project = new ProjectState({ media: [...imgs, song] });
+  await new StubDirector().interpret("make a slideshow from my photos", project);
+  // Attach music, then rebuild the slideshow.
+  project.setDoc(addMusic(project.doc, song));
+  assert(project.doc.tracks.some((t) => t.id === "music" && t.clips.length > 0), "music should attach before the rebuild");
+  const r = await new StubDirector().interpret("make a slideshow from my photos", project);
+  const music = r.doc.tracks.find((t) => t.id === "music");
+  assert((music?.clips.length ?? 0) > 0, "make_slideshow must PRESERVE the music track on rebuild");
+  assert(r.doc.media.some((m) => m.id === "song"), "the music asset must survive the rebuild");
+  // The rebuilt slideshow still exports the music (amix).
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/slide-music.mp4");
+  assert(plan.filterComplex.includes("amix="), "preserved music should still mix on export");
+  console.log(`  [32m✔[0m check 37 (slideshow keeps audio): rebuilding a slideshow preserves the attached music track (+ amix on export)`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -1180,6 +1384,12 @@ async function main(): Promise<void> {
   await checkCursor();
   await checkCallout();
   await checkBuildDemo();
+  await checkVideoCutTransition();
+  await checkCaptionSpeed();
+  await checkAudioRobustness();
+  await checkSpeedGuard();
+  await checkMusicDuration();
+  await checkSlideshowKeepsMusic();
   await checkWhisperParse();
   await checkTranscriberFactory();
   await checkAgenticLoop();

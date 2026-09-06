@@ -32,6 +32,7 @@ import {
   applyLook,
   applyVfx,
   autoMix,
+  carryOverAudio,
   reframe,
   reframeTo,
   setQuality,
@@ -291,34 +292,50 @@ export const slideshowTool: DirectorTool<{ perImageSec?: number; look?: LookKey;
   async execute(input, ctx) {
     const imgs = images(ctx.project);
     if (imgs.length === 0) throw new Error("Add some photos first to make a slideshow.");
-    const doc = buildSlideshowDoc(imgs, {
+    const built = buildSlideshowDoc(imgs, {
       perImageSec: input.perImageSec,
       look: input.look,
       title: input.title,
     });
+    // buildSlideshowDoc returns a fresh doc; carry over any attached music /
+    // voice-over so rebuilding the slideshow doesn't silently drop the audio.
+    const doc = carryOverAudio(built, ctx.project.doc);
+    const keptAudio = doc.tracks.some((t) => (t.id === "music" || t.id === "voiceover") && t.clips.length > 0);
     return commit(
       ctx.project,
       doc,
-      `Made a ${Math.round(docDurationSec(doc))}s slideshow from ${imgs.length} photos.`,
+      `Made a ${Math.round(docDurationSec(doc))}s slideshow from ${imgs.length} photos${keptAudio ? " (kept your audio)" : ""}.`,
     );
   },
 };
 
 // ---- add_music -------------------------------------------------------------
 
-export const musicTool: DirectorTool<{ mediaId?: string; volume?: number }> = {
+export const musicTool: DirectorTool<{ mediaId?: string; volume?: number; startSec?: number; durationSec?: number }> = {
   name: "add_music",
-  description: "Add a background-music track from an audio asset (starts ducked under speech).",
-  inputSchema: z.object({ mediaId: z.string().optional(), volume: z.number().min(0).max(1).optional() }),
+  description:
+    "Add a background-music track from an audio asset (starts ducked under speech). Optionally offset it with `startSec` and trim/extend it with `durationSec` (defaults to the shorter of the song and the timeline).",
+  inputSchema: z.object({
+    mediaId: z.string().optional(),
+    volume: z.number().min(0).max(1).optional(),
+    startSec: z.number().nonnegative().optional(),
+    durationSec: z.number().positive().optional(),
+  }),
   async execute(input, ctx) {
     const asset = input.mediaId
       ? ctx.project.media.find((m) => m.id === input.mediaId && m.kind === "audio") ?? audioAsset(ctx.project)
       : audioAsset(ctx.project);
-    const doc = addMusic(ctx.project.doc, asset, { volume: input.volume });
+    const doc = addMusic(ctx.project.doc, asset, {
+      volume: input.volume,
+      startSec: input.startSec,
+      durationSec: input.durationSec,
+    });
+    const music = doc.tracks.find((t) => t.id === "music")?.clips[0];
+    const dur = music?.kind === "audio" ? Math.round(music.duration) : undefined;
     return commit(
       ctx.project,
       doc,
-      `Added background music (${asset.label ?? asset.src}), ducked under speech. ` +
+      `Added background music (${asset.label ?? asset.src})${dur ? ` for ${dur}s` : ""}${input.startSec ? ` from ${input.startSec}s` : ""}, ducked under speech. ` +
         `(Music is silent in the preview — you'll hear it in the exported .mp4.)`,
     );
   },

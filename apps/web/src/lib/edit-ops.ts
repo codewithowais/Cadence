@@ -70,6 +70,92 @@ function reflowMainTracks(doc: EditDoc): void {
   for (const track of doc.tracks) if (isMainSequentialTrack(track)) reflowTrack(track);
 }
 
+// ---- Overlay ripple (keep captions/titles/b-roll glued to the footage) ------
+
+/**
+ * Overlay tracks whose clips are pinned to a MOMENT in the footage and MUST move
+ * when a structural edit re-lays the main track under them (captions especially).
+ * Music / voice-over / fades are deliberately excluded — they are ambient audio /
+ * whole-composition fades that are placed sensibly on their own and should not
+ * jump around when a mid-timeline clip is trimmed or removed.
+ */
+const RIPPLE_OVERLAY_TRACK_IDS = new Set(["titles", "captions", "broll"]);
+
+/** A main visual clip's timeline span, remembered so overlays can be re-anchored. */
+export interface MainSpan {
+  id: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Snapshot the timeline spans of the MAIN sequential VISUAL clips (video/image),
+ * ordered by start. Overlay clips (captions/titles/b-roll) anchor to these, so
+ * this must be captured BEFORE a structural edit mutates the doc. Read-only.
+ */
+export function captureMainSpans(doc: EditDoc): MainSpan[] {
+  const spans: MainSpan[] = [];
+  for (const track of doc.tracks) {
+    if (!isMainSequentialTrack(track)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind === "video" || clip.kind === "image") {
+        spans.push({ id: clip.id, start: clip.start, end: clip.start + clip.duration });
+      }
+    }
+  }
+  spans.sort((a, b) => a.start - b.start);
+  return spans;
+}
+
+/**
+ * After a main-track structural edit (trim / split-less reflow / reorder / ripple
+ * -delete / duplicate) has re-laid the main clips, shift the overlay clips
+ * (captions/titles/PiP b-roll) so they stay in sync with the footage they sit
+ * over. Each overlay's start time is mapped from the OLD main layout (`before`,
+ * captured with `captureMainSpans`) to the NEW one now in `clone`:
+ *
+ *  - a clip that still exists carries its overlays with it (same local offset);
+ *  - a removed clip's overlays collapse to where the gap closed (the next
+ *    surviving clip's new start);
+ *  - anything past the last old clip shifts by the net duration change.
+ *
+ * This is the fix for the review's P0-2: "ripple-delete or trim a mid-timeline
+ * clip and every caption/title after it is now out of sync." Mutates `clone`.
+ */
+export function reanchorOverlays(clone: EditDoc, before: MainSpan[]): void {
+  if (before.length === 0) return;
+  const after = new Map<string, MainSpan>();
+  for (const s of captureMainSpans(clone)) after.set(s.id, s);
+
+  const oldTotal = before[before.length - 1]!.end;
+  let newTotal = 0;
+  for (const s of after.values()) newTotal = Math.max(newTotal, s.end);
+  const tailDelta = newTotal - oldTotal;
+
+  const remap = (t: number): number => {
+    for (let i = 0; i < before.length; i++) {
+      const span = before[i]!;
+      if (t < span.start - 1e-6) return t; // before the first clip → unchanged
+      if (t < span.end - 1e-6) {
+        const a = after.get(span.id);
+        if (a) return round(a.start + Math.min(t - span.start, Math.max(0, a.end - a.start)));
+        // The anchoring clip was removed: collapse to the next surviving clip.
+        for (let j = i + 1; j < before.length; j++) {
+          const nb = after.get(before[j]!.id);
+          if (nb) return round(nb.start);
+        }
+        return round(newTotal);
+      }
+    }
+    return round(Math.max(0, t + tailDelta)); // past the last old clip
+  };
+
+  for (const track of clone.tracks) {
+    if (!RIPPLE_OVERLAY_TRACK_IDS.has(track.id)) continue;
+    for (const clip of track.clips) clip.start = Math.max(0, remap(clip.start));
+  }
+}
+
 /** A located clip together with its position in the doc. */
 export interface FoundClip {
   trackIndex: number;
@@ -152,6 +238,7 @@ export type TrimEdge = "left" | "right";
  */
 export function trimClip(doc: EditDoc, clipId: string, edge: TrimEdge, edgeTime: number): EditDoc {
   const clone: EditDoc = structuredClone(doc);
+  const before = captureMainSpans(clone); // capture BEFORE mutating, for overlay ripple
   const found = findClip(clone, clipId);
   if (!found) return parseEditDoc(clone);
   const { track, clip } = found;
@@ -184,7 +271,10 @@ export function trimClip(doc: EditDoc, clipId: string, edge: TrimEdge, edgeTime:
     clip.duration = round(oldEnd - newStart);
   }
 
-  if (isMainSequentialTrack(track)) reflowTrack(track);
+  if (isMainSequentialTrack(track)) {
+    reflowTrack(track);
+    reanchorOverlays(clone, before); // keep captions/titles/b-roll in sync
+  }
   return parseEditDoc(clone);
 }
 
@@ -263,6 +353,7 @@ function sequentialEntries(track: Track): { clip: Clip; arrayIndex: number }[] {
  */
 export function reorderClip(doc: EditDoc, clipId: string, toSeqIndex: number): EditDoc {
   const clone: EditDoc = structuredClone(doc);
+  const before = captureMainSpans(clone); // capture BEFORE mutating, for overlay ripple
   const found = findClip(clone, clipId);
   if (!found) return parseEditDoc(clone);
   const { track, clip } = found;
@@ -283,6 +374,7 @@ export function reorderClip(doc: EditDoc, clipId: string, toSeqIndex: number): E
   });
 
   reflowTrack(track);
+  if (isMainSequentialTrack(track)) reanchorOverlays(clone, before); // captions follow their clip
   return parseEditDoc(clone);
 }
 
@@ -316,12 +408,16 @@ export function deleteClip(doc: EditDoc, clipId: string): EditDoc {
  */
 export function rippleDeleteClip(doc: EditDoc, clipId: string): EditDoc {
   const clone: EditDoc = structuredClone(doc);
+  const before = captureMainSpans(clone); // capture BEFORE mutating, for overlay ripple
   const found = findClip(clone, clipId);
   if (!found) return parseEditDoc(clone);
   const wasMain = isMainSequentialTrack(found.track);
   for (const track of clone.tracks) track.clips = track.clips.filter((c) => c.id !== clipId);
   clone.tracks = clone.tracks.filter((t) => t.clips.length > 0);
-  if (wasMain) reflowMainTracks(clone);
+  if (wasMain) {
+    reflowMainTracks(clone);
+    reanchorOverlays(clone, before); // trailing captions/titles close the gap too
+  }
   return parseEditDoc(clone);
 }
 
@@ -334,6 +430,7 @@ export function rippleDeleteClip(doc: EditDoc, clipId: string): EditDoc {
  */
 export function duplicateClip(doc: EditDoc, clipId: string): EditDoc {
   const clone: EditDoc = structuredClone(doc);
+  const before = captureMainSpans(clone); // capture BEFORE mutating, for overlay ripple
   const found = findClip(clone, clipId);
   if (!found) return parseEditDoc(clone);
   const { track, clipIndex, clip } = found;
@@ -343,6 +440,7 @@ export function duplicateClip(doc: EditDoc, clipId: string): EditDoc {
   if (isMainSequentialTrack(track)) {
     track.clips.splice(clipIndex + 1, 0, copy);
     reflowTrack(track);
+    reanchorOverlays(clone, before); // trailing overlays shift by the inserted duration
   } else {
     copy.start = round(clip.start + clip.duration);
     track.clips.splice(clipIndex + 1, 0, copy);

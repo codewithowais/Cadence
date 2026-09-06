@@ -489,10 +489,10 @@ function DeliverRoom({
         disabled={!canExport || busy}
         className="shrink-0 rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
       >
-        Export .mp4
+        {busy ? "Exporting…" : "Export .mp4"}
       </button>
       <span className="shrink-0 text-[11px] text-faint">
-        Real .mp4 export renders via ffmpeg (runs with <code>docker compose up</code>); otherwise you get the edit-doc JSON.
+        Exports with the current settings. Use <span className="text-muted">Export</span> in the top bar for format &amp; quality options. Renders a real .mp4 via ffmpeg (<code>docker compose up</code>); otherwise you get the edit-doc JSON.
       </span>
     </Shell>
   );

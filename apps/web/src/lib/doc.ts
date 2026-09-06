@@ -1,4 +1,5 @@
-import { parseEditDoc, type EditDoc, type MediaAsset } from "@cadence/core";
+import { docDurationSec, parseEditDoc, type EditDoc, type MediaAsset } from "@cadence/core";
+import { captureMainSpans, reanchorOverlays } from "./edit-ops";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -155,6 +156,7 @@ export function moveMediaInDoc(doc: EditDoc, mediaId: string, dir: "up" | "down"
       isMainVisualTrack(t.id) &&
       t.clips.some((c) => (c.kind === "video" || c.kind === "image") && c.mediaId === mediaId),
   );
+  const before = captureMainSpans(clone); // for overlay ripple after the reorder
   if (track) {
     const seqIdx: number[] = [];
     track.clips.forEach((c, i) => {
@@ -172,6 +174,7 @@ export function moveMediaInDoc(doc: EditDoc, mediaId: string, dir: "up" | "down"
       track.clips[a] = track.clips[b]!;
       track.clips[b] = tmp;
       reflowSequential(track);
+      reanchorOverlays(clone, before); // captions/titles/b-roll follow their clip
     }
   }
   // Mirror the reorder in doc.media so persisted/displayed order agrees.
@@ -192,6 +195,7 @@ export function moveMediaInDoc(doc: EditDoc, mediaId: string, dir: "up" | "down"
  */
 export function removeMediaFromDoc(doc: EditDoc, mediaId: string): EditDoc {
   const clone: EditDoc = structuredClone(doc);
+  const before = captureMainSpans(clone); // for overlay ripple after removal
   clone.media = clone.media.filter((m) => m.id !== mediaId);
   if (clone.media.length === 0) return emptyDoc();
   for (const track of clone.tracks) {
@@ -201,6 +205,7 @@ export function removeMediaFromDoc(doc: EditDoc, mediaId: string): EditDoc {
   for (const track of clone.tracks) {
     if (track.kind === "visual" && isMainVisualTrack(track.id)) reflowSequential(track);
   }
+  reanchorOverlays(clone, before); // trailing captions/titles close the gap too
   return parseEditDoc(clone);
 }
 
@@ -230,6 +235,52 @@ export function addVoiceover(doc: EditDoc, asset: MediaAsset): EditDoc {
     sourceIn: 0,
     volume: 1,
   } as never);
+  return parseEditDoc(clone);
+}
+
+/**
+ * Lay an audio asset under the project as BACKGROUND MUSIC on a dedicated "music"
+ * track, replacing any existing music. Client-side mirror of the director's
+ * `add_music` so uploading audio can attach it immediately (no server round-trip)
+ * — the review's P0-3. The clip is fit to the SHORTER of the song and the
+ * timeline (so a long song is trimmed to the cut and a short song isn't padded
+ * with silence past its end), starts at `startSec` (default 0), and plays at a
+ * low default 0.28 volume so it sits under speech. Registers the asset in
+ * doc.media so preview + export can find it. The renderer (and the Stage preview)
+ * mix any audio clip in, delayed by clip.start and scaled by volume.
+ */
+export function addMusic(
+  doc: EditDoc,
+  asset: MediaAsset,
+  opts: { volume?: number; startSec?: number } = {},
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  if (!clone.media.some((m) => m.id === asset.id)) clone.media.push(asset);
+  clone.tracks = clone.tracks.filter((t) => t.id !== "music");
+
+  const timeline = docDurationSec(clone);
+  const assetDur = asset.durationSec ?? 0;
+  // Fit to the shorter of song/timeline; fall back to the song (or 30s) when the
+  // project has no visual duration yet.
+  const duration =
+    timeline > 0
+      ? assetDur > 0
+        ? Math.min(assetDur, timeline)
+        : timeline
+      : assetDur > 0
+        ? assetDur
+        : 30;
+
+  const clip = {
+    id: `music-${Date.now()}`,
+    kind: "audio" as const,
+    start: Math.max(0, round(opts.startSec ?? 0)),
+    duration: round(duration),
+    mediaId: asset.id,
+    sourceIn: 0,
+    volume: clamp(opts.volume ?? 0.28, 0, 1),
+  };
+  clone.tracks.push({ id: "music", kind: "audio", clips: [clip as never] });
   return parseEditDoc(clone);
 }
 

@@ -118,6 +118,15 @@ export const MediaAsset = z.object({
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),
   label: z.string().optional(),
+  /**
+   * Whether the source carries an audio stream. Optional and defaulted-absent so
+   * existing docs stay valid; when explicitly `false` (a muted screen-recording,
+   * a silent clip), the ffmpeg export synthesizes silence (anullsrc) for that clip
+   * instead of mapping a non-existent `[idx:a]` pad — so a multi-video concat/
+   * crossfade with a silent source still exports. Undefined ⇒ assume audio present
+   * (the prior behavior).
+   */
+  hasAudio: z.boolean().optional(),
 });
 export type MediaAsset = z.infer<typeof MediaAsset>;
 

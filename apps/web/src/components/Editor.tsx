@@ -21,8 +21,10 @@ import {
   moveMediaInDoc,
   removeMediaFromDoc,
   addVoiceover,
+  addMusic,
   setTrackVolume,
 } from "@/lib/doc";
+import { UndoToast } from "./UndoToast";
 import {
   findClip,
   isMainSequentialTrack,
@@ -124,6 +126,16 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const [timeSec, setTimeSec] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
+  // A short verb describing what `busy` is doing ("Applying edit…", "Rendering…")
+  // so the Director rail narrates progress instead of a generic spinner.
+  const [busyLabel, setBusyLabel] = useState<string>("");
+  // A transient "<summary> · Undo" toast shown after a Director edit lands.
+  const [toast, setToast] = useState<{ id: string; text: string } | null>(null);
+  // A request typed BEFORE media exists — queued here and fired once media loads.
+  const [pendingRequest, setPendingRequest] = useState<string | null>(null);
+  // Abort controller for an in-flight export (upload + render), for a Cancel.
+  const exportAbort = useRef<AbortController | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   // Which room's contextual panel is showing (default "edit" = QuickActions).
@@ -202,6 +214,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setMessages((m) => [...m, { id, role, text, tone }]);
   };
 
+  /** Show a transient "<summary> · Undo" confirmation for the last Director edit. */
+  const showUndoToast = (text: string) => setToast({ id: nextId(), text });
+
   useEffect(() => {
     if (!playing) return;
     let raf = 0;
@@ -250,6 +265,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     const imgs = files.filter((f) => f.type.startsWith("image"));
     const audios = files.filter((f) => f.type.startsWith("audio"));
     setBusy(true);
+    setBusyLabel(
+      videos.length > 0 ? "Loading video…" : imgs.length > 0 ? "Building slideshow…" : "Adding audio…",
+    );
     setPlaying(false);
     try {
       if (videos.length > 0) {
@@ -382,31 +400,91 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         setFiles(nextFiles);
         setMediaList((list) => [...list, ...added]);
         say("you", `Added ${audios.length} audio file${audios.length > 1 ? "s" : ""}`);
-        say("director", `Loaded ${added.map((a) => `“${a.label}”`).join(", ")}. Say “add background music” to lay it under your video.`, "info");
+
+        // Auto-attach the first audio as background music the moment it's added —
+        // no second "add background music" step. Works for photo slideshows too
+        // (P0-3). Voice-over recording stays a separate path (addVoiceoverFile).
+        const hasVisual =
+          mediaList.some((m) => m.kind === "video" || m.kind === "image") ||
+          doc.tracks.some((t) => t.clips.some((c) => c.kind === "video" || c.kind === "image"));
+        const music = added[0]!;
+        if (hasVisual) {
+          commit(addMusic(doc, music));
+          const surface = mode === "images" ? "slideshow" : "video";
+          const extra =
+            added.length > 1
+              ? ` (${added.length - 1} more audio file${added.length > 2 ? "s" : ""} added to your media — swap it in from the Audio room.)`
+              : "";
+          say(
+            "director",
+            `Laid “${music.label}” under your ${surface} as background music — you'll hear it in the preview now. Tune its volume in the Audio room.${extra}`,
+            "edit",
+          );
+          showUndoToast("Background music added");
+        } else {
+          say(
+            "director",
+            `Loaded ${added.map((a) => `“${a.label}”`).join(", ")}. Add a video or photos and I'll lay it underneath as music.`,
+            "info",
+          );
+        }
       }
     } catch (err) {
       say("director", err instanceof Error ? err.message : "Something went wrong loading that.", "error");
     } finally {
       setBusy(false);
+      setBusyLabel("");
     }
   }
 
-  async function handleSend(text: string) {
-    if (projectMedia.length === 0) return;
-    say("you", text);
+  /**
+   * Run a Director request against the current media. When `echo` is false the
+   * user's line has already been shown (a queued describe-first request), so we
+   * don't repeat it. Commits the result (undoable) and shows an Undo toast.
+   */
+  async function runDirector(text: string, echo = true) {
+    if (echo) say("you", text);
     setBusy(true);
+    setBusyLabel("Applying your edit…");
     setPlaying(false);
     try {
       const res = await askDirector({ request: text, media: projectMedia, transcripts: Object.values(transcripts), doc });
       commit(parseEditDoc(res.doc)); // undoable Director edit
       setTimeSec(0);
       say("director", res.summary, "edit");
+      showUndoToast(res.summary);
     } catch (err) {
       say("director", err instanceof Error ? err.message : "I couldn't make that edit.", "error");
     } finally {
       setBusy(false);
+      setBusyLabel("");
     }
   }
+
+  /**
+   * Composer/QuickActions entry point. Describe-first: if there's no media yet,
+   * queue the request and fire it automatically once footage loads instead of
+   * dropping it — the composer is never a dead end.
+   */
+  function handleSend(text: string) {
+    if (projectMedia.length === 0) {
+      setPendingRequest(text);
+      say("you", text);
+      say("director", "Got it — add a video or photos and I'll do this the moment they load.", "info");
+      return;
+    }
+    void runDirector(text);
+  }
+
+  // Fire a queued describe-first request once media is present and we're idle.
+  useEffect(() => {
+    if (!pendingRequest || !hasMedia || busy) return;
+    const req = pendingRequest;
+    setPendingRequest(null);
+    say("director", `Running your request now: “${req}”`, "info");
+    void runDirector(req, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingRequest, hasMedia, busy]);
 
   function handleNudge(delta: number) {
     const clone: EditDoc = structuredClone(doc);
@@ -443,22 +521,30 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     // `overrideDoc` lets the export-options popover render freshly-applied
     // quality settings without waiting for a state re-render.
     const source = overrideDoc ?? doc;
+    const controller = new AbortController();
+    exportAbort.current = controller;
     setBusy(true);
+    setExporting(true);
     setPlaying(false);
-    say("director", "Rendering your video with ffmpeg…", "info");
     try {
-      // Upload every media file used by the doc; map id → server path.
+      // Upload every media file used by the doc; map id → server path. This is
+      // the determinate phase — narrate it as "Uploading media (i/n)…".
       const srcById: Record<string, string> = {};
-      for (const media of source.media) {
+      const total = source.media.length;
+      for (let i = 0; i < source.media.length; i++) {
+        const media = source.media[i]!;
         const file = files[media.id];
         if (!file) throw new Error(`Missing the uploaded file for ${media.label ?? media.id}.`);
-        const { path } = await uploadMedia(file);
+        setBusyLabel(total > 1 ? `Uploading media (${i + 1}/${total})…` : "Uploading media…");
+        const { path } = await uploadMedia(file, controller.signal);
         srcById[media.id] = path;
       }
       const serverDoc: EditDoc = structuredClone(source);
       serverDoc.media = serverDoc.media.map((m) => ({ ...m, src: srcById[m.id] ?? m.src }));
 
-      const result = await exportVideo(serverDoc);
+      setBusyLabel("Rendering .mp4 with ffmpeg…");
+      say("director", "Rendering your video with ffmpeg…", "info");
+      const result = await exportVideo(serverDoc, controller.signal);
       if (result.ok) {
         downloadBlob(`${source.meta.title || "cadence"}.mp4`, result.blob);
         say("director", "Exported a real .mp4 (free ffmpeg path — faithful, no content changes).", "edit");
@@ -469,10 +555,22 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         say("director", `Export failed: ${result.message}`, "error");
       }
     } catch (err) {
-      say("director", err instanceof Error ? err.message : "Export failed.", "error");
+      if (controller.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+        say("director", "Export cancelled.", "info");
+      } else {
+        say("director", err instanceof Error ? err.message : "Export failed.", "error");
+      }
     } finally {
+      exportAbort.current = null;
+      setExporting(false);
       setBusy(false);
+      setBusyLabel("");
     }
+  }
+
+  /** Cancel an in-flight export (upload or render), if one is running. */
+  function cancelExport() {
+    exportAbort.current?.abort();
   }
 
   /** Persist the current doc as a new version (project-bound editor only). */
@@ -721,7 +819,15 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         className="h-full w-full shrink-0 md:w-[var(--rail-w)]"
         style={{ "--rail-w": `${railWidth}px` } as CSSProperties}
       >
-        <DirectorRail messages={messages} busy={busy} hasMedia={hasMedia} onSend={handleSend} onFiles={handleFiles} />
+        <DirectorRail
+          messages={messages}
+          busy={busy}
+          busyLabel={busyLabel}
+          hasMedia={hasMedia}
+          onSend={handleSend}
+          onFiles={handleFiles}
+          onCancel={exporting ? cancelExport : undefined}
+        />
       </div>
       <ResizeHandle
         className="hidden md:block"
@@ -843,6 +949,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         </>
       )}
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <UndoToast toast={toast} onUndo={undo} onDismiss={() => setToast(null)} />
     </div>
   );
 }

@@ -573,12 +573,42 @@ export function buildExportPlan(
   const allImage = base.length > 0 && base.every((c) => c.kind === "image");
   const hasCrossfade = base.some((c) => c.transitionInSec > 0);
 
+  // Normalize every audio segment to a common rate/layout so concat/acrossfade
+  // never desync on mismatched sources (aformat is documented ffmpeg).
+  const AUDIO_FORMAT = "aformat=sample_rates=44100:channel_layouts=stereo";
+  /**
+   * Build a video clip's [a{i}] audio segment. A source with no audio stream
+   * (`asset.hasAudio === false`) can't be mapped as `[idx:a]`, so we synthesize
+   * matching silence (anullsrc) for its timeline duration — that's what lets a
+   * multi-video concat/crossfade with a muted/silent clip still export. Real audio
+   * is speed-retimed (atempo) and normalized (aformat).
+   */
+  const audioSegmentFilter = (c: VideoClip, srcIdx: number, i: number): string => {
+    const asset = doc.media.find((m) => m.id === c.mediaId);
+    if (asset?.hasAudio === false) {
+      const silIdx = addInput(
+        ["-f", "lavfi", "-t", String(r3(c.duration))],
+        `anullsrc=channel_layout=stereo:sample_rate=44100`,
+        false,
+      );
+      return `[${silIdx}:a]asetpts=PTS-STARTPTS,${AUDIO_FORMAT}[a${i}]`;
+    }
+    const aChain = ["asetpts=PTS-STARTPTS", `volume=${r3(c.volume)}`, ...atempoChain(c.speed), AUDIO_FORMAT];
+    return `[${srcIdx}:a]${aChain.join(",")}[a${i}]`;
+  };
+
   let videoLabel = "";
   let audioLabel: string | null = null;
 
   if (allVideo) {
-    // ---- Video cut + concat (highlight / filler) --------------------------
-    const segLabels: string[] = [];
+    // ---- Video cuts (highlight / filler): concat (hard cuts) OR xfade -------
+    // A cut carries a real A→B dissolve when the incoming clip has a transition
+    // (transitionInSec>0) AND overlaps the previous clip (setTransition lays that
+    // overlap). When every boundary has one we chain `xfade` on the video and
+    // `acrossfade` on the audio across the overlaps; otherwise (all hard cuts, the
+    // default) we `concat` exactly as before. Filters: xfade (vf_xfade),
+    // acrossfade (af_acrossfade), anullsrc + aformat (all documented ffmpeg).
+    const useXfade = base.length > 1 && base.slice(1).every((c) => (c as VideoClip).transitionInSec > 0);
     base.forEach((clip, i) => {
       const c = clip as VideoClip;
       // Speed retime: consume `duration*speed` seconds of source, then setpts
@@ -596,16 +626,44 @@ export function buildExportPlan(
         ...(emph ? [emph] : []),
         ...lookFilters(c.look),
         "format=yuv420p",
+        // xfade needs both inputs on the same timebase/framerate to blend cleanly.
+        ...(useXfade ? [`fps=${fps}`] : []),
       ];
       filters.push(`[${idx}:v]${vChain.join(",")}[v${i}]`);
-      const aChain = ["asetpts=PTS-STARTPTS", `volume=${r3(c.volume)}`, ...atempoChain(c.speed)];
-      filters.push(`[${idx}:a]${aChain.join(",")}[a${i}]`);
-      segLabels.push(`[v${i}][a${i}]`);
+      filters.push(audioSegmentFilter(c, idx, i));
     });
     if (base.length === 1) {
       videoLabel = "v0";
       audioLabel = "a0";
+    } else if (useXfade) {
+      // Video: chain xfade across each overlap. offset = accumulated timeline length
+      // so far minus the incoming transition (the crossfade begins that far in).
+      let prevV = "v0";
+      let acc = base[0]!.duration;
+      for (let i = 1; i < base.length; i++) {
+        const inClip = base[i] as VideoClip;
+        const xf = r3(inClip.transitionInSec);
+        const offset = r3(Math.max(0, acc - xf));
+        const name = xfadeTransition(inClip.transitionType);
+        const out = i === base.length - 1 ? "vcat" : `vxf${i}`;
+        filters.push(`[${prevV}][v${i}]xfade=transition=${name}:duration=${xf}:offset=${offset}[${out}]`);
+        prevV = out;
+        acc = r3(acc - xf + inClip.duration);
+      }
+      videoLabel = "vcat";
+      // Audio: acrossfade across the SAME overlaps (joins the end of one clip with
+      // the start of the next, overlapping by the transition), so audio and video
+      // stay the same length and cuts don't pop.
+      let prevA = "a0";
+      for (let i = 1; i < base.length; i++) {
+        const xf = r3((base[i] as VideoClip).transitionInSec);
+        const out = i === base.length - 1 ? "acat" : `axf${i}`;
+        filters.push(`[${prevA}][a${i}]acrossfade=d=${xf}[${out}]`);
+        prevA = out;
+      }
+      audioLabel = "acat";
     } else {
+      const segLabels = base.map((_, i) => `[v${i}][a${i}]`);
       filters.push(`${segLabels.join("")}concat=n=${base.length}:v=1:a=1[vcat][acat]`);
       videoLabel = "vcat";
       audioLabel = "acat";
