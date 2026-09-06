@@ -13,9 +13,12 @@ import { AppliedStatus } from "./AppliedStatus";
 import { Stage } from "./Stage";
 import { CutsStrip } from "./CutsStrip";
 import { CodeDrawer } from "./CodeDrawer";
+import { ShortcutsHelp } from "./ShortcutsHelp";
 import { emptyDoc, fullClipDoc } from "@/lib/doc";
 import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
+import { useDocHistory } from "@/lib/history";
+import { applyExportSettings, type ExportSettings } from "@/lib/export-presets";
 import type { Message } from "@/lib/types";
 
 let msgSeq = 0;
@@ -92,7 +95,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // server (object URLs alone can't be re-read server-side).
   const [files, setFiles] = useState<Record<string, File>>({});
   const [transcripts, setTranscripts] = useState<Record<string, Transcript>>({});
-  const [doc, setDoc] = useState<EditDoc>(() => initialDoc ?? emptyDoc());
+  // The doc is the single source of truth; ALL mutations route through the
+  // history helper's `commit`/`reset` so undo/redo stays consistent.
+  const seedDoc = useMemo(() => initialDoc ?? emptyDoc(), [initialDoc]);
+  const { doc, commit, reset, undo, redo, canUndo, canRedo } = useDocHistory(seedDoc);
   const [messages, setMessages] = useState<Message[]>([]);
   const [timeSec, setTimeSec] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -103,6 +109,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const [room, setRoom] = useState<RoomKey>("edit");
   // Preview source audio; default UNMUTED so users hear the video's own audio.
   const [muted, setMuted] = useState(false);
+  // Keyboard-shortcuts help popover.
+  const [helpOpen, setHelpOpen] = useState(false);
   // Resizable side panels (persisted per browser).
   const [railWidth, setRailWidth] = useState(380);
   const [codeWidth, setCodeWidth] = useState(440);
@@ -218,7 +226,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         setFiles({ [asset.id]: file });
         setMediaList([asset]);
         setTranscripts({});
-        setDoc(fullClipDoc(asset));
+        reset(fullClipDoc(asset)); // new media → fresh doc + fresh history
         setTimeSec(0);
         say("you", `Added ${file.name}`);
         const tr = await transcribe(asset);
@@ -255,7 +263,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         setMediaList(allImages);
         say("you", `Added ${imgs.length} photo${imgs.length > 1 ? "s" : ""}`);
         const res = await askDirector({ request: "make a slideshow from my photos", media: allImages, transcripts: [], doc: emptyDoc() });
-        setDoc(parseEditDoc(res.doc));
+        reset(parseEditDoc(res.doc)); // photos loaded → fresh doc + fresh history
         setTimeSec(0);
         say("director", `${res.summary} Ask for “make it vertical”, “warm look”, or “make it 4K”.`, "edit");
       } else if (audios.length > 0) {
@@ -298,7 +306,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setPlaying(false);
     try {
       const res = await askDirector({ request: text, media: mediaList, transcripts: Object.values(transcripts), doc });
-      setDoc(parseEditDoc(res.doc));
+      commit(parseEditDoc(res.doc)); // undoable Director edit
       setTimeSec(0);
       say("director", res.summary, "edit");
     } catch (err) {
@@ -317,7 +325,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           if (!last || clip.start + clip.duration > last.start + last.duration) last = clip;
     if (!last) return;
     last.duration = Math.max(0.1, Math.round((last.duration + delta) * 1000) / 1000);
-    setDoc(parseEditDoc(clone));
+    commit(parseEditDoc(clone), { coalesce: "nudge" }); // merge repeated nudges into one step
   }
 
   function togglePlay() {
@@ -327,8 +335,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   }
 
   /** Fallback: download the edit-doc as JSON (always available, no ffmpeg). */
-  function exportJson() {
-    download(`${doc.meta.title || "cadence"}.editdoc.json`, JSON.stringify(doc, null, 2));
+  function exportJson(source: EditDoc = doc) {
+    download(`${source.meta.title || "cadence"}.editdoc.json`, JSON.stringify(source, null, 2));
     say("director", "Exported the edit-doc (JSON) as a fallback.", "info");
   }
 
@@ -338,8 +346,11 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
    * isn't installed the route returns 501; we surface the install hint and fall
    * back to the JSON edit-doc export.
    */
-  async function exportDoc() {
+  async function exportDoc(overrideDoc?: EditDoc) {
     if (mediaList.length === 0 || durationSec <= 0) return;
+    // `overrideDoc` lets the export-options popover render freshly-applied
+    // quality settings without waiting for a state re-render.
+    const source = overrideDoc ?? doc;
     setBusy(true);
     setPlaying(false);
     say("director", "Rendering your video with ffmpeg…", "info");
@@ -352,16 +363,16 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         const { path } = await uploadMedia(file);
         srcById[media.id] = path;
       }
-      const serverDoc: EditDoc = structuredClone(doc);
+      const serverDoc: EditDoc = structuredClone(source);
       serverDoc.media = serverDoc.media.map((m) => ({ ...m, src: srcById[m.id] ?? m.src }));
 
       const result = await exportVideo(serverDoc);
       if (result.ok) {
-        downloadBlob(`${doc.meta.title || "cadence"}.mp4`, result.blob);
+        downloadBlob(`${source.meta.title || "cadence"}.mp4`, result.blob);
         say("director", "Exported a real .mp4 (free ffmpeg path — faithful, no content changes).", "edit");
       } else if (result.unavailable) {
         say("director", `${result.message} Meanwhile, here's the edit-doc (JSON).`, "info");
-        exportJson();
+        exportJson(source);
       } else {
         say("director", `Export failed: ${result.message}`, "error");
       }
@@ -387,7 +398,94 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     }
   }
 
-  const seek = (t: number) => { setPlaying(false); setTimeSec(t); };
+  const seek = (t: number) => {
+    setPlaying(false);
+    setTimeSec(Math.max(0, Math.min(t, durationSec)));
+  };
+
+  /** Rename the project — writes doc.meta.title through the undoable commit path. */
+  function renameProject(title: string) {
+    commit((prev) => {
+      const t = title.trim() || "Untitled";
+      if (t === prev.meta.title) return prev;
+      const clone: EditDoc = structuredClone(prev);
+      clone.meta.title = t;
+      return parseEditDoc(clone);
+    });
+  }
+
+  /** Apply the export-options popover's settings to the doc, then export. */
+  function exportWith(settings: ExportSettings) {
+    const next = applyExportSettings(doc, settings);
+    commit(next); // undoable + reflected in the Applied strip / Deliver room
+    void exportDoc(next);
+  }
+
+  /** Clear the timeline and start a fresh, empty project (destructive → confirm). */
+  function startOver() {
+    if (mediaList.length > 0 && typeof window !== "undefined" && !window.confirm("Start over? This clears the timeline and all loaded media.")) return;
+    for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u);
+    setUrls({});
+    setFiles({});
+    setMediaList([]);
+    setTranscripts({});
+    setPlaying(false);
+    setTimeSec(0);
+    reset(emptyDoc());
+    say("director", "Cleared the timeline — added media and edits are gone. Add a video or photos to begin again.", "info");
+  }
+
+  /** Download the current edit-doc as a portable JSON copy (a new project seed). */
+  function duplicateProject() {
+    const name = (doc.meta.title || "cadence").replace(/\s+/g, "-");
+    download(`${name}-copy.editdoc.json`, JSON.stringify(doc, null, 2));
+    say("director", "Downloaded a copy of this project's edit-doc (JSON).", "info");
+  }
+
+  // Keyboard shortcuts. The ref always holds the latest closures, so we bind the
+  // window listener exactly once. Shortcuts are ignored while typing in a field.
+  const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyHandlerRef.current = (e: KeyboardEvent) => {
+    const target = e.target as HTMLElement | null;
+    const typing =
+      !!target &&
+      (target.isContentEditable ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        (target.tagName === "INPUT" &&
+          !["range", "checkbox", "radio", "button", "submit", "color"].includes(
+            (target as HTMLInputElement).type,
+          )));
+    const mod = e.metaKey || e.ctrlKey;
+
+    // Undo / redo (⌘/Ctrl+Z, ⌘/Ctrl+Shift+Z, Ctrl+Y) — never while typing.
+    if (mod && (e.key === "z" || e.key === "Z")) {
+      if (typing) return;
+      e.preventDefault();
+      if (e.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if (mod && (e.key === "y" || e.key === "Y")) {
+      if (typing) return;
+      e.preventDefault();
+      redo();
+      return;
+    }
+    if (typing || mod || e.altKey) return;
+
+    if (e.key === "?") { e.preventDefault(); setHelpOpen((h) => !h); return; }
+    if (mediaList.length === 0) return;
+    if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); togglePlay(); return; }
+    if (e.key === "ArrowLeft") { e.preventDefault(); seek(timeSec - (e.shiftKey ? 5 : 1)); return; }
+    if (e.key === "ArrowRight") { e.preventDefault(); seek(timeSec + (e.shiftKey ? 5 : 1)); return; }
+    if (e.key === "Home") { e.preventDefault(); seek(0); return; }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keyHandlerRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="flex h-dvh w-full overflow-hidden">
@@ -410,14 +508,24 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           </div>
         )}
         <TopBar
-          projectTitle={projectName || doc.meta.title || "Untitled"}
+          title={doc.meta.title || projectName || "Untitled"}
+          onRename={renameProject}
           mediaLabel={mode === "images" ? `${mediaList.length} photos` : mediaList[0]?.label ?? null}
           durationSec={durationSec}
           cutCount={visualClipCount}
           codeOpen={codeOpen}
           onToggleCode={() => setCodeOpen((c) => !c)}
-          onExport={exportDoc}
+          doc={doc}
+          onExport={exportWith}
           canExport={mediaList.length > 0 && durationSec > 0}
+          busy={busy}
+          onUndo={undo}
+          onRedo={redo}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onStartOver={startOver}
+          onDuplicate={duplicateProject}
+          onShowShortcuts={() => setHelpOpen(true)}
           backHref={backHref}
           onSave={onSave ? handleSave : undefined}
           saveState={saveState}
@@ -432,7 +540,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             mediaList={mediaList}
             busy={busy}
             onAction={handleSend}
-            onApplyDoc={setDoc}
+            onApplyDoc={(d) => commit(d, { coalesce: "color" })}
             onFiles={handleFiles}
             onExport={exportDoc}
             canExport={mediaList.length > 0 && durationSec > 0}
@@ -482,6 +590,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           </div>
         </>
       )}
+      <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }

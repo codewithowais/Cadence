@@ -4,7 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
-### S3.2 — Cycle B: color grading rooms + unit test suite
+### S3.3 — Cycle C wave 1: richer pages (landing, dashboard, editor power)
+- **Landing (`/`):** full marketing page — polished hero (reduced-motion-safe glow), an 11-capability feature showcase, "how it works" (Upload→Describe→Preview→Export), clickable example-prompt chips → `/editor`, an accessible FAQ (`<details>`), stat strip, and a real footer. Claims cross-checked against FEATURES.md.
+- **Dashboard (`/dashboard`):** a real project hub — search, sort, grid↔list toggle, project cards with aspect/format badge + relative time, per-project **rename / duplicate / delete** (new tenant-scoped, parameterized API routes + `@cadence/db` builders), and **create-from-template** (Blank / Talking-head / Slideshow, server-validated seed docs). Graceful DB-down state preserved.
+- **Editor power features:** **undo/redo** via a single `useDocHistory` commit path (coalesced slider/nudge steps, bounded), **keyboard shortcuts** (space/seek/home/undo/redo/`?` help, ignored while typing), **editable project title**, an **Export options popover** (container/quality/fps → `doc.quality`), and **Start over / Duplicate** in a TopBar overflow menu.
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify 22/22 + `next build` clean (17 routes).
 - **Color room (B2):** manual grading — a preset grid **plus four live sliders** (brightness/contrast/saturation/warmth) that edit the doc instantly via a pure `adjustColor(doc, partialGrade)` (merges onto every main visual clip, clamped, re-parsed). Sliders are doc-controlled (single source of truth) so presets/NL/Reset move them too. New `adjust_color` Director tool + StubDirector routing ("brighter", "warmer", "more contrast", "less saturated"). Verify **check 22**.
 - **Deliver room (B2):** real export panel — aspect chips, quality presets (Standard/High/Ultra·4K), resolution readout, Export, ffmpeg note.
 - **Unit test suite (B4):** `tests/` via Node's built-in `node:test` (zero new deps, run through tsx) — **44 tests** over schema/engine/grade/edits/understanding/enhance, incl. the long-edge 4K invariant, caption sync, filler cut, whisper parsing, and provider faithfulness. `npm run test:unit`; repointed the broken `test` script off vitest.

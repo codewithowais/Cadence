@@ -22,6 +22,7 @@ import {
   createOrgQuery,
   createProjectQuery,
   createUserQuery,
+  deleteProjectQuery,
   firstOrgForUserQuery,
   getEditDocVersionQuery,
   getLatestEditDocQuery,
@@ -31,6 +32,7 @@ import {
   listEditDocVersionsQuery,
   listMediaQuery,
   listProjectsQuery,
+  renameProjectQuery,
   upsertUserQuery,
   type MediaInput,
   type MembershipRole,
@@ -185,6 +187,82 @@ export async function listProjects(orgId: string): Promise<ProjectRow[]> {
 export async function getProject(scope: ProjectScope): Promise<ProjectRow | null> {
   const res = await run<ProjectRow>(getProjectQuery(scope.orgId, scope.projectId));
   return res.rows[0] ?? null;
+}
+
+/**
+ * Rename a project in place. Tenant-scoped by (orgId, projectId). Returns the
+ * updated row, or null when no project with that id exists in the tenant's org
+ * (so the caller can answer 404 without a separate existence check).
+ */
+export async function renameProject(scope: ProjectScope, name: string): Promise<ProjectRow | null> {
+  const res = await run<ProjectRow>(renameProjectQuery(scope.orgId, scope.projectId, name));
+  return res.rows[0] ?? null;
+}
+
+/**
+ * Delete a project (cascades to its media + edit-doc history). Tenant-scoped by
+ * (orgId, projectId). Returns true when a row was deleted, false when nothing
+ * matched — i.e. the project isn't in the caller's org (→ 404, no cross-tenant leak).
+ */
+export async function deleteProject(scope: ProjectScope): Promise<boolean> {
+  const res = await run<{ id: string }>(deleteProjectQuery(scope.orgId, scope.projectId));
+  return res.rows.length > 0;
+}
+
+/**
+ * Duplicate a project within the SAME org: copy the source's name (+" copy") and
+ * its latest edit-doc as version 1 of a fresh project. Fully tenant-scoped — the
+ * source is looked up by (orgId, projectId) and the new rows are written under the
+ * same orgId — and atomic (one transaction). Returns the new project row, or null
+ * when the source isn't in the caller's org.
+ */
+export async function duplicateProject(
+  scope: ProjectScope,
+  opts: { name?: string; userId: string | null } = { userId: null },
+): Promise<ProjectRow | null> {
+  const client: PoolClient = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+
+    // Verify the source belongs to this tenant before copying anything.
+    const src = await run<ProjectRow>(getProjectQuery(scope.orgId, scope.projectId), client);
+    const source = src.rows[0];
+    if (!source) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+
+    const name = (opts.name && opts.name.trim()) || `${source.name} copy`;
+    const created = await run<ProjectRow>(createProjectQuery(scope.orgId, name), client);
+    const project = created.rows[0]!;
+
+    // Copy the source's latest doc (if any) into the new project as version 1.
+    const latest = await run<EditDocVersionRow>(
+      getLatestEditDocQuery(scope.orgId, scope.projectId),
+      client,
+    );
+    const row = latest.rows[0];
+    if (row) {
+      const valid = parseEditDoc(row.doc); // validate before write (never trust stored bytes)
+      const pointer = await run<{ current_version: number }>(
+        bumpEditDocPointerQuery(scope.orgId, project.id),
+        client,
+      );
+      const version = pointer.rows[0]!.current_version;
+      await run<EditDocVersionRow>(
+        insertEditDocVersionQuery(scope.orgId, project.id, version, valid, opts.userId),
+        client,
+      );
+    }
+
+    await client.query("COMMIT");
+    return project;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // --- Media (tenant-scoped) --------------------------------------------------

@@ -123,6 +123,32 @@ export function getProjectQuery(orgId: string, projectId: string): SqlQuery {
   };
 }
 
+/**
+ * Rename a project. Tenant-scoped: the WHERE clause pins org_id AND id, so a
+ * caller can never touch another tenant's row. Returns the updated row (via
+ * RETURNING) or nothing when no row matched the (org, id) pair.
+ */
+export function renameProjectQuery(orgId: string, projectId: string, name: string): SqlQuery {
+  return {
+    text: `UPDATE projects SET name = $3, updated_at = now()
+           WHERE org_id = $1 AND id = $2
+           RETURNING id, org_id, name, created_at, updated_at`,
+    values: [orgId, projectId, name],
+  };
+}
+
+/**
+ * Delete a project. Tenant-scoped (org_id AND id). Child rows (media, edit_docs,
+ * edit_doc_versions) are removed by ON DELETE CASCADE. RETURNING id lets the
+ * caller tell "deleted" from "not in this tenant" (0 rows) without a prior read.
+ */
+export function deleteProjectQuery(orgId: string, projectId: string): SqlQuery {
+  return {
+    text: `DELETE FROM projects WHERE org_id = $1 AND id = $2 RETURNING id`,
+    values: [orgId, projectId],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Media (tenant-scoped by org_id + project_id)
 // ---------------------------------------------------------------------------
