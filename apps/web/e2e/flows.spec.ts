@@ -198,7 +198,9 @@ test("audio room: attach music + duck on a slideshow (music-attachment check)", 
     mimeType: "audio/webm",
     buffer: audioBuffer,
   });
-  await expect(page.getByText(/add background music/i)).toBeVisible({ timeout: 30_000 });
+  // Uploading audio now AUTO-attaches it as background music (Wave 2 P0 fix) and
+  // says so — no separate "add" step. Assert that improved behavior.
+  await expect(page.getByText(/as background music/i)).toBeVisible({ timeout: 30_000 });
 
   // Open the Audio room and the code drawer.
   const rooms = page.getByRole("navigation", { name: "Rooms" });

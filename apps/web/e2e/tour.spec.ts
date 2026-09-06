@@ -58,6 +58,9 @@ test("page tour: landing → login → dashboard → settings → editor", async
   // "Add a video first" placeholder alongside the empty-state prompt.
   await page.goto("/editor");
   await page.waitForLoadState("networkidle");
-  await expect(page.getByPlaceholder("Add a video first")).toBeVisible();
+  // Describe-first composer: with no media yet it invites a description up front.
+  await expect(
+    page.getByPlaceholder(/add footage next|Describe what you want/i),
+  ).toBeVisible();
   await shot(page, "06-editor");
 });

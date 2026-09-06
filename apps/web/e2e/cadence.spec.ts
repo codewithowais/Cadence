@@ -131,7 +131,10 @@ test("video flow: upload → edits → rooms → mute → applied-status → exp
   await expect(page.getByRole("button", { name: "Kinetic title" })).toBeVisible();
 
   await rooms.getByRole("button", { name: "Deliver" }).click();
-  await expect(page.getByRole("button", { name: "Ultra · 4K" })).toBeVisible();
+  // The Deliver room shows platform presets + a quality/format summary + Export
+  // (the old standalone "Ultra · 4K" preset button was folded into the summary;
+  // 4K is set via the composer or platform presets).
+  await expect(page.getByRole("button", { name: /Export \.mp4/i })).toBeVisible();
   await shot(page, "08-rooms");
 
   // ---- Audio room: toggle mute → the preview <video>.muted flips ----
