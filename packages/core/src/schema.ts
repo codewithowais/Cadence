@@ -659,6 +659,43 @@ export type TextBackground = z.infer<typeof TextBackground>;
 export const CaptionPosition = z.enum(["top", "center", "bottom", "free"]);
 export type CaptionPosition = z.infer<typeof CaptionPosition>;
 
+/**
+ * One word of a caption with its ABSOLUTE (timeline-second) start/end — the timing
+ * that drives word-by-word "karaoke" highlighting. Populated by `add_captions` from
+ * the transcript segment's word timings, mapped through the clip's cut/speed into
+ * timeline seconds. Optional on a TextClip (absent ⇒ a plain static caption), so
+ * existing docs stay valid. Shared, engine-agnostic data: the canvas highlights the
+ * active word per frame (preview + canvas) and the ffmpeg export emits one gated PNG
+ * per word (see render-ffmpeg), so all three agree.
+ */
+export const CaptionWord = z.object({
+  text: z.string(),
+  /** Absolute timeline second the word starts being spoken. */
+  start: z.number().nonnegative(),
+  /** Absolute timeline second the word stops being spoken. */
+  end: z.number().nonnegative(),
+});
+export type CaptionWord = z.infer<typeof CaptionWord>;
+
+/**
+ * Karaoke (word-by-word highlight) settings for a caption. When `enabled` AND the
+ * clip carries `words`, the renderer highlights the word whose [start,end] contains
+ * the frame time; every other word draws in the base color. `style` picks HOW the
+ * active word is emphasized:
+ *  - "color" — recolor just the active word to `highlight` (the default).
+ *  - "fill"  — a filled `highlight` pill behind the active word (dark ink on top).
+ *  - "box"   — a `highlight` stroked box around the active word.
+ * All defaulted / optional so absent ⇒ today's static caption (fully backward
+ * compatible). Faithful: a text emphasis only, never a content change.
+ */
+export const Karaoke = z.object({
+  enabled: z.boolean().default(false),
+  /** Highlight color for the active word (recolor / fill / box, per `style`). */
+  highlight: HexColor.default("#ffd54a"),
+  style: z.enum(["color", "fill", "box"]).default("color"),
+});
+export type Karaoke = z.infer<typeof Karaoke>;
+
 /** A text / title clip drawn directly by the renderer (no media needed). */
 export const TextClip = z.object({
   ...clipBase,
@@ -707,6 +744,18 @@ export const TextClip = z.object({
   anim: TextAnim.prefault({}),
   /** Optional animation keyframes (x/y/scale/rotation/opacity), resolved by `valueAt`. */
   keyframes: z.array(Keyframe).optional(),
+  /**
+   * Per-word timing (absolute timeline seconds) for word-by-word "karaoke"
+   * highlighting. Populated by `add_captions` from the transcript; absent ⇒ a plain
+   * caption. Additive/optional so existing docs stay valid.
+   */
+  words: z.array(CaptionWord).optional(),
+  /**
+   * Karaoke (word-by-word highlight) settings. When `karaoke.enabled` AND `words`
+   * are present the renderer highlights the active word per frame; absent/disabled ⇒
+   * today's static caption. Additive/optional — fully backward compatible.
+   */
+  karaoke: Karaoke.optional(),
 });
 export type TextClip = z.infer<typeof TextClip>;
 

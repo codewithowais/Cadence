@@ -78,10 +78,13 @@ import {
   setZoom,
   positionCaptions,
   styleCaptions,
+  setKaraoke,
   typeText,
   type AspectKey,
   type BrollCorner,
   type CaptionStyleOpts,
+  type KaraokeStyle,
+  type SetKaraokeOptions,
   type LookKey,
   type PlatformKey,
   type QualityKey,
@@ -241,15 +244,47 @@ export const reframeTool: DirectorTool<{ aspect?: AspectKey; width?: number; hei
 
 // ---- add_captions ----------------------------------------------------------
 
-export const captionsTool: DirectorTool<Record<string, never>> = {
+export const captionsTool: DirectorTool<{ karaoke?: boolean; highlight?: string; karaokeStyle?: KaraokeStyle }> = {
   name: "add_captions",
-  description: "Burn in captions from the transcript, synced through the current cuts.",
-  inputSchema: z.object({}),
-  async execute(_input, ctx) {
+  description:
+    "Burn in captions from the transcript, synced through the current cuts. Every caption carries per-word timing; pass karaoke:true to make them highlight word-by-word as spoken (highlight = active-word color; karaokeStyle = color/fill/box).",
+  inputSchema: z.object({
+    karaoke: z.boolean().optional(),
+    highlight: z.string().optional(),
+    karaokeStyle: z.enum(["color", "fill", "box"]).optional(),
+  }),
+  async execute(input, ctx) {
     const { transcript } = sourceVideo(ctx.project);
-    const doc = addCaptions(ctx.project.doc, transcript);
+    const doc = addCaptions(ctx.project.doc, transcript, {
+      karaoke: input.karaoke,
+      highlight: input.highlight,
+      karaokeStyle: input.karaokeStyle,
+    });
     const capTrack = doc.tracks.find((t) => t.id === "captions");
-    return commit(ctx.project, doc, `Added ${capTrack?.clips.length ?? 0} captions.`);
+    return commit(
+      ctx.project,
+      doc,
+      `Added ${capTrack?.clips.length ?? 0} captions${input.karaoke ? " (karaoke word-highlight)" : ""}.`,
+    );
+  },
+};
+
+// ---- set_karaoke -----------------------------------------------------------
+
+export const setKaraokeTool: DirectorTool<SetKaraokeOptions> = {
+  name: "set_karaoke",
+  description:
+    "Turn word-by-word karaoke highlighting on/off for captions (needs captions with per-word timing from add_captions). enabled (default true), highlight (active-word color), style (color/fill/box). Pass clipId to affect ONE caption; omit for all.",
+  inputSchema: z.object({
+    enabled: z.boolean().optional(),
+    highlight: z.string().optional(),
+    style: z.enum(["color", "fill", "box"]).optional(),
+    clipId: z.string().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = setKaraoke(ctx.project.doc, input);
+    const on = input.enabled ?? true;
+    return commit(ctx.project, doc, on ? "Enabled karaoke word-highlight on captions." : "Disabled karaoke highlight.");
   },
 };
 
@@ -1545,6 +1580,7 @@ export const DIRECTOR_TOOLS = {
   apply_vfx: vfxTool,
   style_captions: styleCaptionsTool,
   position_captions: positionCaptionsTool,
+  set_karaoke: setKaraokeTool,
   build_demo: buildDemoTool,
   add_cursor: addCursorTool,
   type_text: typeTextTool,

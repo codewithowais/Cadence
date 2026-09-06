@@ -32,6 +32,7 @@ import {
   valueAt,
   type AdjustmentClip,
   type CalloutClip,
+  type CaptionWord,
   type Clip,
   type CursorClip,
   type EditDoc,
@@ -140,6 +141,145 @@ function drawTextLines(
   }
 }
 
+/** One laid-out karaoke token: the display text plus its index into `clip.words`. */
+interface KaraokeToken {
+  text: string;
+  word: number;
+}
+
+/**
+ * Wrap karaoke `words` into lines of tokens no wider than `maxWidth` (composition
+ * px), by whole words, tracking each token's index into the original word list so
+ * the active word can be highlighted. `space` is the measured inter-word advance
+ * (space glyph + letter spacing). With no `maxWidth`, everything stays on one line.
+ * Deterministic; measured with the ctx's current font — mirrors `wrapText` so the
+ * karaoke layout matches the static caption's wrapping.
+ */
+function wrapKaraokeTokens(
+  ctx: SKRSContext2D,
+  words: string[],
+  space: number,
+  maxWidth: number | undefined,
+): KaraokeToken[][] {
+  const tokens: KaraokeToken[] = words.map((text, word) => ({ text, word }));
+  if (!maxWidth || tokens.length === 0) return [tokens];
+  const lines: KaraokeToken[][] = [];
+  let cur: KaraokeToken[] = [tokens[0]!];
+  let curW = ctx.measureText(tokens[0]!.text).width;
+  for (let i = 1; i < tokens.length; i++) {
+    const w = ctx.measureText(tokens[i]!.text).width;
+    if (curW + space + w <= maxWidth) {
+      cur.push(tokens[i]!);
+      curW += space + w;
+    } else {
+      lines.push(cur);
+      cur = [tokens[i]!];
+      curW = w;
+    }
+  }
+  lines.push(cur);
+  return lines;
+}
+
+/**
+ * Draw karaoke caption lines: each word laid out left-to-right (alignment honored),
+ * with the word active at time `t` highlighted per `clip.karaoke.style` — "color"
+ * recolors it, "fill" draws a highlight pill behind it (dark ink on top), "box"
+ * strokes a highlight outline around it. Already-spoken words draw in the base color
+ * at full opacity; upcoming (not-yet-spoken) words are drawn slightly dimmer, so the
+ * read-along progression is visible. Called per frame, so this animates for free in
+ * preview + canvas + (via per-word PNGs) export. Text baseline is "middle"; y is the
+ * line center. Intra-word letter spacing is not applied here (a documented karaoke
+ * limitation); inter-word spacing includes `letterSpacing`.
+ */
+function drawKaraokeLines(
+  ctx: SKRSContext2D,
+  lines: KaraokeToken[][],
+  lineStep: number,
+  clip: TextClip,
+  words: CaptionWord[],
+  t: number,
+  op: number,
+): void {
+  const ls = clip.letterSpacing ?? 0;
+  const space = ctx.measureText(" ").width + ls;
+  const base = clip.color;
+  const hi = clip.karaoke?.highlight ?? "#ffd54a";
+  const style = clip.karaoke?.style ?? "color";
+  const shadow = clip.shadow;
+  const padX = clip.fontSize * 0.18;
+  const padY = clip.fontSize * 0.14;
+  const boxH = clip.fontSize + padY * 2;
+  const radius = boxH * 0.28;
+
+  const setShadow = (on: boolean): void => {
+    if (on && shadow) {
+      ctx.shadowColor = shadow.color;
+      ctx.shadowBlur = shadow.blur;
+      ctx.shadowOffsetX = shadow.offsetX;
+      ctx.shadowOffsetY = shadow.offsetY;
+    } else {
+      ctx.shadowColor = "rgba(0,0,0,0)";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+    }
+  };
+
+  const n = lines.length;
+  const prevAlign = ctx.textAlign;
+  ctx.textAlign = "left";
+  for (let i = 0; i < n; i++) {
+    const line = lines[i]!;
+    const y = (i - (n - 1) / 2) * lineStep;
+    const widths = line.map((tok) => ctx.measureText(tok.text).width);
+    const total = widths.reduce((a, b) => a + b, 0) + space * Math.max(0, line.length - 1);
+    let x = clip.align === "center" ? -total / 2 : clip.align === "right" ? -total : 0;
+    for (let k = 0; k < line.length; k++) {
+      const tok = line[k]!;
+      const w = widths[k]!;
+      const word = words[tok.word];
+      const active = !!word && t >= word.start && t < word.end;
+      const spoken = !!word && t >= word.end;
+      const alpha = active || spoken ? op : op * 0.72;
+
+      if (active && style === "fill") {
+        setShadow(false);
+        ctx.globalAlpha = op;
+        ctx.fillStyle = hi;
+        ctx.beginPath();
+        ctx.roundRect(x - padX, y - boxH / 2, w + padX * 2, boxH, radius);
+        ctx.fill();
+        setShadow(true);
+        ctx.globalAlpha = op;
+        ctx.fillStyle = "#0a0d12";
+        ctx.fillText(tok.text, x, y);
+      } else if (active && style === "box") {
+        setShadow(false);
+        ctx.globalAlpha = op;
+        ctx.strokeStyle = hi;
+        ctx.lineWidth = Math.max(2, clip.fontSize * 0.05);
+        ctx.beginPath();
+        ctx.roundRect(x - padX, y - boxH / 2, w + padX * 2, boxH, radius);
+        ctx.stroke();
+        setShadow(true);
+        ctx.globalAlpha = op;
+        ctx.fillStyle = hi;
+        ctx.fillText(tok.text, x, y);
+      } else {
+        setShadow(true);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = active ? hi : base;
+        ctx.fillText(tok.text, x, y);
+      }
+      x += w + space;
+    }
+  }
+  ctx.globalAlpha = op;
+  setShadow(false);
+  ctx.textAlign = prevAlign;
+}
+
 function drawText(ctx: SKRSContext2D, clip: TextClip): void {
   // Keyframes (if any) override the static transform; opacity keyframes multiply
   // the transition ramp — all resolved by the shared PURE valueAt helper.
@@ -173,8 +313,29 @@ function drawText(ctx: SKRSContext2D, clip: TextClip): void {
 
   const ls = clip.letterSpacing ?? 0;
   const lineStep = clip.fontSize * (clip.lineHeight ?? 1.2);
-  const shownLines = clip.maxWidth ? wrapText(ctx, shownText, clip.maxWidth) : [shownText];
-  const fullLines = clip.maxWidth ? wrapText(ctx, fullText, clip.maxWidth) : [fullText];
+
+  // Karaoke: word-by-word highlight. Active only when enabled AND the clip carries
+  // per-word timings; otherwise every path below is byte-identical to a static
+  // caption. Typewriter + karaoke don't combine (karaoke shows the whole line and
+  // highlights the spoken word), so karaoke ignores the typewriter substring.
+  const karaokeOn = !!(clip.karaoke?.enabled && clip.words && clip.words.length > 0);
+  const karaokeWords = karaokeOn ? clip.words! : [];
+  const karaokeSpace = ctx.measureText(" ").width + ls;
+  const karaokeLines = karaokeOn
+    ? wrapKaraokeTokens(ctx, karaokeWords.map((w) => upper(w.text)), karaokeSpace, clip.maxWidth)
+    : [];
+  // For karaoke, the panel/outline size to the joined words (so they wrap identically
+  // to the drawn tokens); otherwise use the normal shown/full text.
+  const shownLines = karaokeOn
+    ? karaokeLines.map((l) => l.map((t) => t.text).join(" "))
+    : clip.maxWidth
+      ? wrapText(ctx, shownText, clip.maxWidth)
+      : [shownText];
+  const fullLines = karaokeOn
+    ? shownLines
+    : clip.maxWidth
+      ? wrapText(ctx, fullText, clip.maxWidth)
+      : [fullText];
 
   // --- Background panel (pill / box). `box` supersedes the legacy `background`
   // pill; with neither, nothing is drawn (unchanged). Defaults reproduce the exact
@@ -207,6 +368,15 @@ function drawText(ctx: SKRSContext2D, clip: TextClip): void {
     ctx.lineJoin = "round";
     ctx.miterLimit = 2;
     drawTextLines(ctx, shownLines, lineStep, ls, "stroke", clip.align);
+  }
+
+  // Karaoke fill: draw each word, highlighting the one active at this frame time
+  // (per-word PNGs mirror this on export). Handles its own shadow so highlight
+  // pills/boxes don't inherit the text shadow.
+  if (karaokeOn) {
+    drawKaraokeLines(ctx, karaokeLines, lineStep, clip, karaokeWords, clipTimeCache, op);
+    ctx.restore();
+    return;
   }
 
   // Optional drop shadow on the fill (cleared implicitly at ctx.restore()).
@@ -714,6 +884,39 @@ export function renderTextClipPng(doc: EditDoc, clip: TextClip): Buffer {
   clipTimeCache = textRestTime(clip);
   drawText(ctx, clip);
   return canvas.toBuffer("image/png");
+}
+
+/**
+ * Whether a text clip is a KARAOKE caption (highlight enabled AND per-word timings
+ * present). Only such clips get the per-word PNG sequence on export; everything else
+ * uses the single-PNG path (renderTextClipPng). Exported so the ffmpeg driver can
+ * decide which clips to sequence without re-implementing the check.
+ */
+export function isKaraokeClip(clip: TextClip): boolean {
+  return !!(clip.karaoke?.enabled && clip.words && clip.words.length > 0);
+}
+
+/**
+ * Rasterize a KARAOKE caption to ONE transparent, composition-sized PNG PER WORD:
+ * the PNG for word `i` is rendered at that word's active time (its [start,end]
+ * midpoint) via the SAME canvas drawText the preview uses, so it shows word `i`
+ * highlighted and the rest in the base color. The ffmpeg export overlays each PNG
+ * gated to `words[i].[start,end]`, so the highlight steps word-by-word on export too
+ * (preview↔export parity). Returns one Buffer per `clip.words` entry; empty when the
+ * clip is not karaoke. Server-only (native Skia canvas).
+ */
+export function renderKaraokeWordPngs(doc: EditDoc, clip: TextClip): Buffer[] {
+  if (!isKaraokeClip(clip)) return [];
+  const { width, height } = doc.meta;
+  const words = clip.words!;
+  return words.map((w) => {
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext("2d");
+    // Render at the word's active midpoint so drawText highlights exactly this word.
+    clipTimeCache = (w.start + w.end) / 2;
+    drawText(ctx, clip);
+    return canvas.toBuffer("image/png");
+  });
 }
 
 /**

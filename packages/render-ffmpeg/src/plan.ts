@@ -72,6 +72,15 @@ export type ResolveMediaPath = (mediaId: string) => string;
  */
 export type TextOverlayMap = Map<string, string>;
 
+/**
+ * clipId → per-word rendered transparent PNG paths for KARAOKE captions (one PNG per
+ * `clip.words` entry, index-aligned). Built by the impure driver (renderKaraokeOverlays,
+ * via the canvas engine) and passed into buildExportPlan, which overlays each word's
+ * PNG gated to that word's [start,end] so the highlight steps word-by-word on export.
+ * A karaoke clip appears here INSTEAD of in `TextOverlayMap` (no single static PNG).
+ */
+export type KaraokeOverlayMap = Map<string, string[]>;
+
 const r3 = (n: number): number => Math.round(n * 1000) / 1000;
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 
@@ -1004,6 +1013,15 @@ export function buildExportPlan(
    * present" — the prior behavior), so existing callers stay byte-identical.
    */
   mediaHasAudio?: Map<string, boolean>,
+  /**
+   * clipId → per-word transparent PNG paths for KARAOKE captions (see
+   * KaraokeOverlayMap). Produced by `renderKaraokeOverlays` (canvas engine) BEFORE
+   * this pure builder runs. When a text clip has an entry here, each word's PNG is
+   * overlaid gated to `words[i].[start,end]` (word-by-word highlight) INSTEAD of the
+   * single static PNG from `textOverlays`. Omitted ⇒ no karaoke (every caption uses
+   * the single-PNG path, byte-identical to before).
+   */
+  karaokeOverlays?: KaraokeOverlayMap,
 ): ExportPlan {
   const { width: W, height: H, fps } = doc.meta;
   const total = r3(docDurationSec(doc));
@@ -1476,6 +1494,20 @@ export function buildExportPlan(
   // skipped.
   const texts = collectTextClips(doc);
   texts.forEach((clip, i) => {
+    // KARAOKE: one PNG per word, each overlaid gated to that word's [start,end], so
+    // the highlight steps word-by-word on export (matching the per-frame preview).
+    const wordPngs = karaokeOverlays?.get(clip.id);
+    if (wordPngs && wordPngs.length > 0 && clip.karaoke?.enabled && clip.words) {
+      clip.words.forEach((w, wi) => {
+        const png = wordPngs[wi];
+        if (!png) return;
+        // Clamp each word's gate to the clip span so an out-of-range word can't leak.
+        const ws = Math.max(clip.start, w.start);
+        const we = Math.min(clip.start + clip.duration, Math.max(w.end, ws + 1e-3));
+        overlayPng(png, ws, we, `vkar${i}_${wi}`);
+      });
+      return;
+    }
     const png = textOverlays?.get(clip.id);
     if (!png) return;
     overlayPng(png, clip.start, clip.start + clip.duration, `vtext${i}`);

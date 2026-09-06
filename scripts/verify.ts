@@ -135,6 +135,7 @@ import {
   setTransition,
   styleCaptions,
   positionCaptions,
+  setKaraoke,
   buildDemo,
   addCursor,
   addCallout,
@@ -157,6 +158,7 @@ import {
   keyframeTransformExpr,
   probeHasAudio,
   renderTextOverlays,
+  renderKaraokeOverlays,
   resolveFfmpegBin,
   runExport,
   xfadeTransition,
@@ -1525,6 +1527,66 @@ async function checkCaptionSpeed(): Promise<void> {
   assert(cap1.start === 1 && cap1.duration === 2, `1× caption should be unchanged (start 1, dur 2), got ${cap1.start}/${cap1.duration}`);
 
   console.log(`  [32m✔[0m check 33 (caption speed): 2× clip → caption source window uses duration*speed and maps back /speed (start 7.5, dur 1); 1× unchanged`);
+}
+
+async function checkKaraoke(): Promise<void> {
+  // A caption with per-word timing, made karaoke (word-by-word highlight).
+  const base = parseEditDoc({
+    version: 1,
+    meta: { width: 1280, height: 720, background: "#101418" },
+    media: [{ id: "m", kind: "video", src: "a.mp4", durationSec: 30 }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c", kind: "video", start: 0, duration: 6, sourceIn: 0, mediaId: "m", transform: { x: 640, y: 360 } }] }],
+  });
+  const transcript: Transcript = {
+    mediaId: "m", durationSec: 6, language: "en",
+    segments: [{
+      id: "s0", start: 0, end: 3, text: "one two three",
+      words: [
+        { text: "one", start: 0, end: 1 },
+        { text: "two", start: 1, end: 2 },
+        { text: "three", start: 2, end: 3 },
+      ],
+    }],
+    words: [],
+  };
+  const doc = addCaptions(base, transcript, { karaoke: true, karaokeStyle: "fill" });
+  const cap = doc.tracks.find((t) => t.id === "captions")!.clips[0] as TextClip;
+  assert(cap.karaoke?.enabled === true, "karaoke should be enabled on the caption");
+  assert((cap.words?.length ?? 0) === 3, `expected 3 word timings, got ${cap.words?.length}`);
+  // Words carry ABSOLUTE timeline seconds (here clip.start=0 so == source times).
+  assert(cap.words![1]!.start === 1 && cap.words![1]!.end === 2, "word 'two' should map to [1,2]");
+
+  // (a) Different words active at different times → DISTINCT rendered pixels.
+  const fOne = Buffer.from((await engine.renderFrame(doc, 0.5)).data); // "one" active
+  const fThree = Buffer.from((await engine.renderFrame(doc, 2.5)).data); // "three" active
+  assert(fOne.subarray(0, 4).equals(PNG_MAGIC) && fThree.subarray(0, 4).equals(PNG_MAGIC), "karaoke frames should be PNGs");
+  assert(!fOne.equals(fThree), "karaoke: different active words must render distinct pixels");
+  writeFileSync(resolve(OUT_DIR, "verify-karaoke-one.png"), fOne);
+  writeFileSync(resolve(OUT_DIR, "verify-karaoke-three.png"), fThree);
+
+  // Disabling karaoke makes the same times render identically (static caption).
+  const plainDoc = setKaraoke(doc, { enabled: false });
+  const pOne = Buffer.from((await engine.renderFrame(plainDoc, 0.5)).data);
+  const pThree = Buffer.from((await engine.renderFrame(plainDoc, 2.5)).data);
+  assert(pOne.equals(pThree), "a non-karaoke caption should render identically at both times (no per-word highlight)");
+
+  // (b) The export plan emits MULTIPLE per-word overlays, each gated by between(t,.
+  const kmap = new Map<string, string[]>();
+  for (const c of doc.tracks.find((t) => t.id === "captions")!.clips) {
+    if (c.kind === "text" && c.words) kmap.set(c.id, c.words.map((_, i) => `/ov/${c.id}-${i}.png`));
+  }
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/karaoke.mp4", undefined, undefined, kmap);
+  assert(!plan.filterComplex.includes("drawtext="), "karaoke: text must be PNG overlays, not drawtext");
+  const gated = plan.filterComplex.match(/overlay=0:0:enable='between\(t\\,/g) ?? [];
+  assert(gated.length >= 3, `karaoke: expected >=3 per-word gated overlays, got ${gated.length}`);
+  // Each word's PNG is a looped input, gated to its own [start,end].
+  assert(plan.inputs.includes(`/ov/${cap.id}-1.png`), "karaoke: expected the per-word PNG inputs");
+  assert(plan.filterComplex.includes("between(t\\,1\\,2)"), "karaoke: word 'two' should be gated to [1,2]");
+  assert(plan.filterComplex.includes("between(t\\,2\\,3)"), "karaoke: word 'three' should be gated to [2,3]");
+
+  console.log(
+    `  [32m✔[0m check 33b (karaoke): per-word timing mapped to timeline; active word differs by frame (distinct pixels); export emits ${gated.length} per-word PNG overlays gated by between(t,·) — no drawtext`,
+  );
 }
 
 async function checkAudioRobustness(): Promise<void> {
@@ -3189,12 +3251,15 @@ async function checkRealEncode(): Promise<void> {
     // transparent PNGs, then overlay them — NO drawtext, so it works on the bundled
     // freetype-less ffmpeg. This is the exact path the export route now takes.
     const overlays = await renderTextOverlays(doc, encDir);
+    // Karaoke captions become a per-word PNG sequence (empty map for non-karaoke docs,
+    // so their graph stays byte-identical). Overlaid gated word-by-word by the plan.
+    const karaokeOverlays = await renderKaraokeOverlays(doc, encDir);
     // Detect audio the SAME way runExport does (no ffprobe — `ffmpeg -i` stderr
     // parse), then thread it into the pure plan so audioless inputs get synthesized
     // silence instead of a non-existent [idx:a] pad. For all-audio docs this map is
     // every-true, so the emitted graph is byte-identical to the pre-fix fast path.
     const mediaHasAudio = await detectMediaAudio(bin, doc, resolveMedia);
-    const plan = buildExportPlan(doc, resolveMedia, out, overlays, mediaHasAudio);
+    const plan = buildExportPlan(doc, resolveMedia, out, overlays, mediaHasAudio, karaokeOverlays);
     // Guard the exact class of the fixed bug: a `\,` that got escaped twice.
     assert(!plan.filterComplex.includes("\\\\,"), `real encode [${label}]: double-escaped comma (\\\\,) in filtergraph — ffmpeg's eval will reject it`);
     // Text is PNG overlays now, never drawtext (which the bundled ffmpeg lacks).
@@ -3425,6 +3490,27 @@ async function checkRealEncode(): Promise<void> {
   assert(!cleanOffPlan.filterComplex.includes("afftdn="), "clean audio: OFF must NOT emit afftdn (byte-identical audio graph)");
   await encode("l_clean_audio", { ...cleanBase, cleanAudio: true });
 
+  // (m) KARAOKE captions: a caption with per-word timing + karaoke highlight must
+  //     export as a per-word PNG SEQUENCE (one gated overlay per word) on the bundled
+  //     freetype-less ffmpeg, producing a real, non-empty mp4. Proves the word-by-word
+  //     highlight steps on export too (not just in preview).
+  await encode("m_karaoke_captions", {
+    version: 1, meta: { title: "m", width: 1080, height: 1920, fps: 30, background: "#000000" },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 3, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } }] },
+      { id: "captions", kind: "visual", clips: [
+        { id: "kcap0", kind: "text", start: 0.2, duration: 2.4, text: "read along now", background: "#0a0d12cc", transform: { x: 540, y: 1600 },
+          words: [
+            { text: "read", start: 0.2, end: 1.0 },
+            { text: "along", start: 1.0, end: 1.8 },
+            { text: "now", start: 1.8, end: 2.6 },
+          ],
+          karaoke: { enabled: true, highlight: "#ffd54a", style: "fill" } },
+      ] },
+    ],
+  });
+
   // (4) regression guard: a plain, simple single-clip export must still encode.
   await encode("plain_simple", {
     version: 1, meta: { title: "plain", width: 1080, height: 1920, fps: 30 },
@@ -3433,7 +3519,7 @@ async function checkRealEncode(): Promise<void> {
   });
 
   console.log(
-    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades+CAPTIONS), captions+title (user's case), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, AUDIOLESS e2e (highlight+9:16+4K+look+captions+fades+emphasis on a no-audio source), audioless+music, audioless↔audio mix, CLEAN-AUDIO denoise (afftdn before loudnorm; OFF byte-identical), plain; audio presence detected without ffprobe (ffmpeg -i stderr parse) and audioless inputs padded with anullsrc silence; all text burned in as PNG overlays (works on the bundled freetype-less ffmpeg)`,
+    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades+CAPTIONS), captions+title (user's case), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, AUDIOLESS e2e (highlight+9:16+4K+look+captions+fades+emphasis on a no-audio source), audioless+music, audioless↔audio mix, CLEAN-AUDIO denoise (afftdn before loudnorm; OFF byte-identical), KARAOKE captions (per-word PNG sequence, gated word-by-word), plain; audio presence detected without ffprobe (ffmpeg -i stderr parse) and audioless inputs padded with anullsrc silence; all text burned in as PNG overlays (works on the bundled freetype-less ffmpeg)`,
   );
 }
 
@@ -3470,6 +3556,7 @@ async function main(): Promise<void> {
   await checkBuildDemo();
   await checkVideoCutTransition();
   await checkCaptionSpeed();
+  await checkKaraoke();
   await checkAudioRobustness();
   await checkSpeedGuard();
   await checkMusicDuration();

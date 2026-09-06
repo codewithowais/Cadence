@@ -16,9 +16,14 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { EditDoc } from "@cadence/core";
-import type { TextOverlayMap } from "./plan";
+import type { KaraokeOverlayMap, TextOverlayMap } from "./plan";
 
-export type { TextOverlayMap };
+export type { KaraokeOverlayMap, TextOverlayMap };
+
+/** True when a text clip is a karaoke caption (highlight on + per-word timings). */
+function isKaraoke(clip: { kind: string; karaoke?: { enabled: boolean }; words?: unknown[] }): boolean {
+  return clip.kind === "text" && !!clip.karaoke?.enabled && Array.isArray(clip.words) && clip.words.length > 0;
+}
 
 /** True when a doc has any text-bearing clip that needs a rasterized overlay. */
 export function docNeedsTextOverlays(doc: EditDoc): boolean {
@@ -47,6 +52,9 @@ export async function renderTextOverlays(doc: EditDoc, dir: string): Promise<Tex
   for (const track of doc.tracks) {
     for (const clip of track.clips) {
       if (clip.kind === "text") {
+        // Karaoke captions are rendered as a per-word PNG sequence by
+        // renderKaraokeOverlays; skip the single static PNG for them.
+        if (isKaraoke(clip)) continue;
         const png = renderTextClipPng(doc, clip);
         const p = join(dir, `text-${safe(clip.id)}.png`);
         await writeFile(p, png);
@@ -62,4 +70,37 @@ export async function renderTextOverlays(doc: EditDoc, dir: string): Promise<Tex
     }
   }
   return map;
+}
+
+/**
+ * Render every KARAOKE caption in `doc` to a transparent PNG SEQUENCE — one PNG per
+ * word — under `dir`, returning clipId → per-word paths (index-aligned to
+ * `clip.words`). Each PNG shows that word highlighted (rendered via the SAME canvas
+ * drawText the preview uses), so `buildExportPlan` can overlay them gated word-by-word
+ * (see KaraokeOverlayMap). Non-karaoke clips are untouched (they use the single-PNG
+ * `renderTextOverlays` path). Returns an empty map when the doc has no karaoke
+ * captions, so non-karaoke exports are byte-identical to before.
+ */
+export async function renderKaraokeOverlays(doc: EditDoc, dir: string): Promise<KaraokeOverlayMap> {
+  const map: KaraokeOverlayMap = new Map();
+  const { renderKaraokeWordPngs } = await import("@cadence/render-node");
+  for (const track of doc.tracks) {
+    for (const clip of track.clips) {
+      if (!isKaraoke(clip) || clip.kind !== "text") continue;
+      const pngs = renderKaraokeWordPngs(doc, clip);
+      const paths: string[] = [];
+      for (let i = 0; i < pngs.length; i++) {
+        const p = join(dir, `karaoke-${safe(clip.id)}-${i}.png`);
+        await writeFile(p, pngs[i]!);
+        paths.push(p);
+      }
+      if (paths.length > 0) map.set(clip.id, paths);
+    }
+  }
+  return map;
+}
+
+/** True when a doc has any karaoke caption needing a per-word PNG sequence. */
+export function docNeedsKaraokeOverlays(doc: EditDoc): boolean {
+  return doc.tracks.some((t) => t.clips.some((c) => isKaraoke(c)));
 }

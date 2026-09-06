@@ -216,13 +216,34 @@ export function adjustColor(doc: EditDoc, partial: Partial<ColorGrade>): EditDoc
 
 // ---- Captions --------------------------------------------------------------
 
+/** Word-by-word "karaoke" highlight style for a caption (see schema `Karaoke`). */
+export type KaraokeStyle = "color" | "fill" | "box";
+
+/** Options for {@link addCaptions}. All optional so the default is a plain caption. */
+export interface AddCaptionsOptions {
+  /** Turn every caption into a word-by-word karaoke highlight. */
+  karaoke?: boolean;
+  /** Highlight color for the active word (karaoke only). */
+  highlight?: string;
+  /** How the active word is emphasized (karaoke only): color / fill / box. */
+  karaokeStyle?: KaraokeStyle;
+}
+
 /**
  * Burn-in captions from the transcript, mapped through the current cuts. For
  * each video clip we take the transcript segments that fall inside its source
  * range and place a caption at the corresponding timeline time, so captions stay
  * in sync even after cutting/reordering.
+ *
+ * Each caption also carries per-word timing (`words`, in ABSOLUTE timeline seconds,
+ * mapped back through the clip's speed exactly like the segment window) so it can be
+ * highlighted word-by-word. When `opts.karaoke` is set, the caption's `karaoke`
+ * settings are turned on (color/fill/box + highlight color); otherwise `words` is
+ * still populated but the caption renders statically (karaoke can be enabled later
+ * via {@link setKaraoke}). All additive — existing docs/behavior are unchanged when
+ * no karaoke is requested (a plain caption with an extra optional `words` field).
  */
-export function addCaptions(doc: EditDoc, transcript: Transcript): EditDoc {
+export function addCaptions(doc: EditDoc, transcript: Transcript, opts: AddCaptionsOptions = {}): EditDoc {
   const clone: EditDoc = structuredClone(doc);
   // Remove any prior captions track so re-running is idempotent.
   clone.tracks = clone.tracks.filter((t) => t.id !== "captions");
@@ -234,6 +255,14 @@ export function addCaptions(doc: EditDoc, transcript: Transcript): EditDoc {
   const maxChars = Math.max(16, Math.floor((w * 0.92) / (fontSize * 0.52)));
   const captions: unknown[] = [];
   let n = 0;
+
+  const karaoke = opts.karaoke
+    ? {
+        enabled: true,
+        highlight: opts.highlight ?? "#ffd54a",
+        style: opts.karaokeStyle ?? "color",
+      }
+    : undefined;
 
   for (const track of clone.tracks) {
     for (const clip of track.clips) {
@@ -252,10 +281,25 @@ export function addCaptions(doc: EditDoc, transcript: Transcript): EditDoc {
         if (e - s < 0.25) continue;
         const tlStart = clip.start + (s - srcStart) / speed;
         const tlDuration = (e - s) / speed;
+        const capStart = Math.round(tlStart * 1000) / 1000;
+        const capEnd = capStart + Math.round(tlDuration * 1000) / 1000;
+        // Per-word timing, mapped SOURCE→timeline through speed (same as the segment)
+        // and clamped to the caption's span, so karaoke highlighting stays in sync.
+        const words = (seg.words ?? [])
+          .map((wd) => {
+            const ws = clip.start + (wd.start - srcStart) / speed;
+            const we = clip.start + (wd.end - srcStart) / speed;
+            return {
+              text: wd.text,
+              start: round(clamp(ws, capStart, capEnd)),
+              end: round(clamp(we, capStart, capEnd)),
+            };
+          })
+          .filter((wd) => wd.end > wd.start);
         captions.push({
           id: `cap${n++}`,
           kind: "text",
-          start: Math.round(tlStart * 1000) / 1000,
+          start: capStart,
           duration: Math.round(tlDuration * 1000) / 1000,
           text: seg.text.length > maxChars ? seg.text.slice(0, maxChars - 1) + "…" : seg.text,
           fontSize,
@@ -264,12 +308,57 @@ export function addCaptions(doc: EditDoc, transcript: Transcript): EditDoc {
           align: "center",
           transform: { x: w / 2, y: h - Math.round(h * 0.12) },
           transitionInSec: 0.12,
+          ...(words.length > 0 ? { words } : {}),
+          ...(karaoke && words.length > 0 ? { karaoke } : {}),
         });
       }
     }
   }
 
   clone.tracks.push(mkTrack("captions", "visual", captions));
+  return parseEditDoc(clone);
+}
+
+/** Options for {@link setKaraoke}. */
+export interface SetKaraokeOptions {
+  /** Turn karaoke word-highlight on (default) or off. */
+  enabled?: boolean;
+  /** Highlight color for the active word. */
+  highlight?: string;
+  /** How the active word is emphasized: color / fill / box. */
+  style?: KaraokeStyle;
+  /** Toggle ONE caption clip (by id); otherwise every caption clip. */
+  clipId?: string;
+}
+
+/**
+ * Toggle word-by-word "karaoke" highlighting on caption text clips (or ONE clip when
+ * `clipId` is set). Enabling requires the clip to carry per-word `words` timing
+ * (populated by {@link addCaptions}); a clip without words keeps its flag but renders
+ * statically until words are present. Merges with any existing karaoke settings, so
+ * you can recolor / restyle without re-specifying everything. Pure + re-parsed
+ * through the schema; throws a helpful error when there are no captions. Exported for
+ * the UI wave alongside {@link SetKaraokeOptions}.
+ */
+export function setKaraoke(doc: EditDoc, opts: SetKaraokeOptions = {}): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const clips = captionStyleTargets(clone, opts.clipId);
+  if (clips.length === 0) {
+    throw new Error(
+      opts.clipId
+        ? `No caption/text clip "${opts.clipId}" for karaoke.`
+        : "Add captions first — there's nothing to make karaoke yet.",
+    );
+  }
+  const enabled = opts.enabled ?? true;
+  for (const clip of clips) {
+    if (clip.kind !== "text") continue;
+    clip.karaoke = {
+      enabled,
+      highlight: opts.highlight ?? clip.karaoke?.highlight ?? "#ffd54a",
+      style: opts.style ?? clip.karaoke?.style ?? "color",
+    };
+  }
   return parseEditDoc(clone);
 }
 
@@ -623,6 +712,8 @@ type MutableTextClip = {
   outline?: { color: string; width: number };
   shadow?: { color: string; blur: number; offsetX: number; offsetY: number };
   box?: { style: string; color?: string; opacity: number; radius?: number; padX?: number; padY?: number };
+  karaoke?: { enabled: boolean; highlight: string; style: KaraokeStyle };
+  words?: { text: string; start: number; end: number }[];
   transform: { x: number; y: number; scale: number; rotation: number; opacity: number };
 };
 

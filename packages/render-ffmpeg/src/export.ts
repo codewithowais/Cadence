@@ -16,8 +16,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configFromEnv, selectProvider, type EnhanceResult } from "@cadence/enhance";
 import type { EditDoc } from "@cadence/core";
-import { buildExportPlan, type ResolveMediaPath, type TextOverlayMap } from "./plan";
-import { renderTextOverlays, docNeedsTextOverlays } from "./text-overlays";
+import { buildExportPlan, type KaraokeOverlayMap, type ResolveMediaPath, type TextOverlayMap } from "./plan";
+import {
+  renderTextOverlays,
+  renderKaraokeOverlays,
+  docNeedsTextOverlays,
+  docNeedsKaraokeOverlays,
+} from "./text-overlays";
 import { detectFfmpeg, resolveFfmpegBin, FFMPEG_MISSING_MESSAGE, type FfmpegInfo } from "./detect";
 
 export interface RunExportOptions {
@@ -66,15 +71,18 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
   let overlayDir: string | null = null;
   try {
     let overlays: TextOverlayMap | undefined;
-    if (docNeedsTextOverlays(doc)) {
+    let karaokeOverlays: KaraokeOverlayMap | undefined;
+    const needsKaraoke = docNeedsKaraokeOverlays(doc);
+    if (docNeedsTextOverlays(doc) || needsKaraoke) {
       overlayDir = await mkdtemp(join(tmpdir(), "cadence-text-"));
       overlays = await renderTextOverlays(doc, overlayDir);
+      if (needsKaraoke) karaokeOverlays = await renderKaraokeOverlays(doc, overlayDir);
     }
     // Detect which sources actually carry an audio stream (no ffprobe exists in
     // ffmpeg-static) so the pure plan substitutes silence for audioless inputs
     // instead of referencing a non-existent [idx:a] pad — the audioless-export fix.
     const mediaHasAudio = await detectMediaAudio(bin, doc, opts.resolveMediaPath);
-    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays, mediaHasAudio);
+    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays, mediaHasAudio, karaokeOverlays);
     await spawnFfmpeg(bin, plan.args, opts.onLog);
 
     // Optional faithful AI enhancement pass (off by default; money/setup gated).

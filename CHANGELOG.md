@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.31 — karaoke captions (word-by-word highlight)
+- Additive `TextClip.words` + `karaoke {enabled, highlight, style: color|fill|box}`. `add_captions` now maps per-word timing to the timeline; canvas `drawText` highlights the active word per frame (spoken=full, upcoming dimmed) → animates in preview/canvas free. Export renders a **per-word PNG sequence**, each overlaid gated `between(t, word.start, word.end)` (real karaoke on the freetype-less ffmpeg). Pure `setKaraoke` + `set_karaoke`/extended `add_captions` tools. Non-karaoke path byte-identical.
+- *verified:* typecheck (root+web) + test:unit 49 + verify (+33b, check 64 encodes 14 docs incl. karaoke) + evals 5/5.
+
 ### S4.30 — clean-audio UI (Audio room toggle)
 - A **"Clean audio (reduce noise)"** toggle in the Audio room next to Normalize loudness — reads `doc.cleanAudio`, toggles via `setCleanAudio` through the undoable commit; honest export-only helper. Reuses the existing wiring (no Editor changes).
 - *verified:* typecheck (root+web) + `next build` + Playwright e2e **19/19**.
