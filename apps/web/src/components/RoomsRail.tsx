@@ -1,6 +1,6 @@
 "use client";
 
-export type RoomKey = "media" | "edit" | "words" | "color" | "vfx" | "audio" | "deliver";
+export type RoomKey = "media" | "edit" | "words" | "demo" | "color" | "vfx" | "audio" | "deliver";
 
 interface Room {
   key: RoomKey;
@@ -13,6 +13,7 @@ const ROOMS: Room[] = [
   { key: "media", label: "Media", hint: "Your footage", path: "M4 5h16v14H4z M4 9h16" },
   { key: "edit", label: "Edit", hint: "Cut & arrange", path: "M4 12h16 M8 8l-4 4 4 4 M16 8l4 4-4 4" },
   { key: "words", label: "Words", hint: "Edit by transcript", path: "M5 6h14 M5 10h14 M5 14h9 M5 18h5" },
+  { key: "demo", label: "Demo", hint: "Walkthroughs", path: "M5 3l6 15 2-6 6-2z M13 13l6 6" },
   { key: "color", label: "Color", hint: "Looks & grade", path: "M12 3a9 9 0 100 18 4 4 0 010-8 4 4 0 000-8z" },
   { key: "vfx", label: "VFX", hint: "B-roll & punch-in", path: "M12 3v4 M12 17v4 M3 12h4 M17 12h4 M6 6l3 3 M15 15l3 3" },
   { key: "audio", label: "Audio", hint: "Music & mix", path: "M4 10v4 M8 6v12 M12 8v8 M16 5v14 M20 10v4" },

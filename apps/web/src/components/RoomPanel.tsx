@@ -42,8 +42,10 @@ import { captionsToSrt, hasCaptions } from "@/lib/srt";
 import { renderFrameBlob } from "@/lib/api";
 import { VoiceOverRecorder } from "./VoiceOverRecorder";
 import { TranscriptRoom } from "./TranscriptRoom";
+import { DemoRoom } from "./DemoRoom";
 import type { Transcript } from "@cadence/understanding";
 import type { RoomKey } from "./RoomsRail";
+import type { BeginPlacement } from "@/lib/placement";
 
 interface RoomPanelProps {
   room: Exclude<RoomKey, "edit">;
@@ -90,6 +92,8 @@ interface RoomPanelProps {
   onEnsureTranscript: (media: MediaAsset) => void;
   /** Words room: generate an AI (TTS) voice-over; resolves to a message to surface. */
   onGenerateVoiceover: (text: string) => Promise<string>;
+  /** Demo room: arm an on-preview placement gesture (click/drag → composition fractions). */
+  onBeginPlacement?: BeginPlacement;
 }
 
 /** Shared wrapper so every room reads as the same contextual strip. */
@@ -190,6 +194,7 @@ export function RoomPanel(props: RoomPanelProps) {
     transcribing,
     onEnsureTranscript,
     onGenerateVoiceover,
+    onBeginPlacement,
   } = props;
   const fileRef = useRef<HTMLInputElement>(null);
   const openPicker = () => fileRef.current?.click();
@@ -295,6 +300,21 @@ export function RoomPanel(props: RoomPanelProps) {
         onApplyDoc={onApplyDoc}
         onGenerateVoiceover={onGenerateVoiceover}
         onRecordVoiceover={onRecordVoiceover}
+      />
+    );
+  }
+
+  if (room === "demo") {
+    return (
+      <DemoRoom
+        doc={doc}
+        mediaList={mediaList}
+        busy={busy}
+        timeSec={timeSec}
+        onApplyDoc={onApplyDoc}
+        onFiles={onFiles}
+        onReorderMedia={onReorderMedia}
+        onBeginPlacement={onBeginPlacement}
       />
     );
   }

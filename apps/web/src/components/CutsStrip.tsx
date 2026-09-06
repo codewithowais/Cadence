@@ -251,16 +251,40 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   // "zoom goes the wrong way" bug. We flag a zoom, then re-center on the playhead
   // once the new width is laid out.
   const centerOnPlayhead = useRef(false);
+  // When set, the next zoom re-centers on THIS time (double-click zoom-to-clip)
+  // instead of the playhead — so the clip you zoomed into stays under the cursor.
+  const centerAtTime = useRef<number | null>(null);
+  const clampZoom = (n: number) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(n * 10) / 10));
   const zoomTo = useCallback((next: number) => {
     centerOnPlayhead.current = true;
-    setZoom(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(next * 10) / 10)));
+    setZoom(clampZoom(next));
+  }, []);
+  const zoomAt = useCallback((next: number, atSec: number) => {
+    centerAtTime.current = atSec;
+    setZoom(clampZoom(next));
   }, []);
   useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const at = centerAtTime.current;
+    if (at != null) {
+      centerAtTime.current = null;
+      centerOnPlayhead.current = false;
+      if (el && pxPerSec > 0) el.scrollLeft = Math.max(0, at * pxPerSec - el.clientWidth / 2);
+      return;
+    }
     if (!centerOnPlayhead.current) return;
     centerOnPlayhead.current = false;
-    const el = scrollRef.current;
     if (el && pxPerSec > 0) el.scrollLeft = Math.max(0, timeSec * pxPerSec - el.clientWidth / 2);
   }, [zoom, pxPerSec, timeSec]);
+
+  /** Zoom so `clip` fills ~80% of the lane, then center it (double-click a clip). */
+  const zoomToClip = useCallback(
+    (clip: Clip) => {
+      if (clip.duration <= 0 || total <= 0) return;
+      zoomAt((0.8 * total) / clip.duration, clip.start + clip.duration / 2);
+    },
+    [total, zoomAt],
+  );
 
   // Snap targets rebuilt per render: all clip edges + playhead + markers + ends.
   // Each edge remembers which clip it belongs to so a drag can ignore its own.
@@ -579,6 +603,15 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           <span className="mx-1 h-5 w-px bg-line" aria-hidden />
           <button
             type="button"
+            onClick={() => zoomTo(ZOOM_MIN)}
+            disabled={zoom <= ZOOM_MIN}
+            title="Zoom out so the whole timeline fits the lane"
+            className="rounded-md border border-line bg-elevated px-2 py-1 text-muted transition hover:text-text disabled:opacity-40"
+          >
+            Fit
+          </button>
+          <button
+            type="button"
             onClick={() => zoomTo(zoom - 1)}
             disabled={zoom <= ZOOM_MIN}
             aria-label="Zoom out timeline"
@@ -760,7 +793,13 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                             }
                           }}
                           onPointerDown={(e) => onClipPointerDown(e, clip, track, "move")}
-                          title={`${clip.kind} · ${fmtTime(clip.duration)}${track.locked ? " · locked" : ""}`}
+                          onDoubleClick={(e) => {
+                            if (track.locked) return;
+                            e.stopPropagation();
+                            edit.onSelectClip(clip.id);
+                            zoomToClip(clip);
+                          }}
+                          title={`${clip.kind} · ${fmtTime(clip.duration)}${track.locked ? " · locked" : " · double-click to zoom to it"}`}
                           className={[
                             "group absolute inset-y-0 overflow-hidden rounded-md border px-2 text-left text-[11px] leading-9 outline-none transition",
                             color,

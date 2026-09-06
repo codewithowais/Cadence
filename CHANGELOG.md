@@ -4,6 +4,12 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.3 — Cycle F wave B (web): Walkthrough/Demo room + zoom polish
+- **New "Demo" room** exposing the built-but-hidden interaction-demo engine (was chat-only). Upload screenshots as **Screens** (reorderable), set **seconds/screen + transition + seed-login**, and **Build walkthrough** (`buildDemo`).
+- **Visual on-preview placement** — the headline: arm a mode, then click/drag on the live preview to place things (pointer px → composition fractions): **+ Type here** (`typeText`, with mask-password), **+ Cursor/click** (`addCursor` waypoints + click), **+ Callout** (`addCallout` rect, dim/zoom). Fixes the "no field pixels" caveat by letting the user place by hand. All undoable + live-previewed.
+- **Timeline zoom polish:** a **Fit** button (whole timeline fills the lane) and **double-click a clip → zoom-to-selection**, on top of the existing playhead-anchored zoom + follow.
+- Closes the "can't find the walkthrough builder" gap. *verified:* typecheck (root+web) + `next build` + Playwright e2e **9/9** (+ artifact spec).
+
 ### S4.2 — Cycle F wave A (web): manageable multi-track timeline
 - **Track-header gutter** on the timeline: per-track **rename** (double-click), kind badge, and toggles for **hide/show**, **lock**, **mute**, **solo**, a **reorder drag-handle** (z-order), and **remove** (guarded on the base/non-empty track). A **+ Video / + Audio** control adds tracks.
 - **Drag clips between tracks** — cross-lane drag retargets via `moveClipToTrack` (magnetic main lane gap-closes; overlay/free lanes keep the snapped start); locked tracks refuse edits; drop indicators show the destination.

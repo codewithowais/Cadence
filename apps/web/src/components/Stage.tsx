@@ -16,6 +16,7 @@ import {
 } from "@cadence/core";
 import { computePreview } from "@/lib/preview";
 import { fmtTime } from "@/lib/format";
+import type { PlacementRequest, PlacementResult } from "@/lib/placement";
 
 interface StageProps {
   urls: Record<string, string>;
@@ -31,7 +32,17 @@ interface StageProps {
   /** Whether the preview <video> is muted (source audio). */
   muted: boolean;
   onToggleMute: () => void;
+  /**
+   * When set, an on-preview placement gesture is armed (Walkthrough room): the
+   * Stage renders a capture overlay that reports composition fractions. Kept OFF
+   * (null) at all other times so it never interferes with the normal preview.
+   */
+  placement?: PlacementRequest | null;
+  /** Resolve the armed placement with a result, or `null` to cancel. */
+  onFinishPlacement?: (result: PlacementResult | null) => void;
 }
+
+const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 
 /** A b-roll PiP <video> that seeks to its source time (own ref, like the main one). */
 function BrollVideo(props: {
@@ -329,6 +340,12 @@ export function Stage(props: StageProps) {
                 />
               );
             })}
+
+          {/* On-preview placement overlay (Walkthrough room). Only mounted while a
+              gesture is armed, so it never intercepts normal preview interaction. */}
+          {props.placement && props.onFinishPlacement && (
+            <PlacementLayer request={props.placement} onFinish={props.onFinishPlacement} />
+          )}
         </div>
       </div>
 
@@ -398,6 +415,187 @@ export function Stage(props: StageProps) {
           <button type="button" onClick={() => props.onNudge(-0.1)} disabled={!props.canNudge} className="rounded-md border border-line bg-elevated px-2 py-1 text-xs text-muted transition hover:text-text disabled:opacity-40">−0.1s</button>
           <button type="button" onClick={() => props.onNudge(0.1)} disabled={!props.canNudge} className="rounded-md border border-line bg-elevated px-2 py-1 text-xs text-muted transition hover:text-text disabled:opacity-40">+0.1s</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The placement capture overlay. It fills the composition frame exactly (the frame
+ * element's box IS the rendered composition rect), so a pointer position maps to a
+ * fraction as `(clientX - rect.left) / rect.width` — clamped to 0..1. Emits:
+ *  - "point": one click → a single fractional point.
+ *  - "path":  each click drops a waypoint (last = the click); Finish / Enter emits
+ *             the ordered list, Esc / empty cancels.
+ *  - "rect":  press-drag-release → a normalized rectangle (drag too small = cancel).
+ */
+function PlacementLayer({
+  request,
+  onFinish,
+}: {
+  request: PlacementRequest;
+  onFinish: (result: PlacementResult | null) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
+  const [points, setPoints] = useState<{ xFrac: number; yFrac: number }[]>([]);
+  const [rectDrag, setRectDrag] = useState<{ ax: number; ay: number; bx: number; by: number } | null>(null);
+
+  const toFrac = (cx: number, cy: number): { xFrac: number; yFrac: number } => {
+    const r = ref.current?.getBoundingClientRect();
+    if (!r || r.width === 0 || r.height === 0) return { xFrac: 0, yFrac: 0 };
+    return { xFrac: clamp01((cx - r.left) / r.width), yFrac: clamp01((cy - r.top) / r.height) };
+  };
+
+  const finishPath = () => {
+    if (points.length === 0) onFinish(null);
+    else onFinish({ mode: "path", points });
+  };
+
+  // Keyboard: Esc cancels any gesture; Enter finishes a path. The effect re-binds
+  // every render so the closure always sees the latest `points`.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onFinish(null);
+      } else if (e.key === "Enter" && request.mode === "path") {
+        e.preventDefault();
+        finishPath();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const f = toFrac(e.clientX, e.clientY);
+    if (request.mode === "point") {
+      onFinish({ mode: "point", points: [f] });
+    } else if (request.mode === "path") {
+      setPoints((p) => [...p, f]);
+    } else {
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      setRectDrag({ ax: f.xFrac, ay: f.yFrac, bx: f.xFrac, by: f.yFrac });
+    }
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const f = toFrac(e.clientX, e.clientY);
+    setHover({ x: f.xFrac, y: f.yFrac });
+    if (request.mode === "rect" && rectDrag) {
+      setRectDrag((d) => (d ? { ...d, bx: f.xFrac, by: f.yFrac } : d));
+    }
+  };
+
+  const onPointerUp = () => {
+    if (request.mode === "rect" && rectDrag) {
+      const xFrac = Math.min(rectDrag.ax, rectDrag.bx);
+      const yFrac = Math.min(rectDrag.ay, rectDrag.by);
+      const wFrac = Math.abs(rectDrag.bx - rectDrag.ax);
+      const hFrac = Math.abs(rectDrag.by - rectDrag.ay);
+      setRectDrag(null);
+      if (wFrac < 0.01 || hFrac < 0.01) onFinish(null); // a stray click, not a box
+      else onFinish({ mode: "rect", points: [{ xFrac, yFrac }], rect: { xFrac, yFrac, wFrac, hFrac } });
+    }
+  };
+
+  const pct = (n: number): string => `${n * 100}%`;
+  const liveRect =
+    rectDrag && {
+      left: pct(Math.min(rectDrag.ax, rectDrag.bx)),
+      top: pct(Math.min(rectDrag.ay, rectDrag.by)),
+      width: pct(Math.abs(rectDrag.bx - rectDrag.ax)),
+      height: pct(Math.abs(rectDrag.by - rectDrag.ay)),
+    };
+
+  return (
+    <div
+      ref={ref}
+      role="application"
+      aria-label={request.hint}
+      className="absolute inset-0 z-40 cursor-crosshair touch-none"
+      style={{ background: "rgba(10,13,18,0.28)" }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerLeave={() => setHover(null)}
+    >
+      {/* Crosshair follows the pointer (point / path modes). */}
+      {hover && request.mode !== "rect" && (
+        <>
+          <span className="pointer-events-none absolute inset-y-0 w-px bg-amber/50" style={{ left: pct(hover.x) }} />
+          <span className="pointer-events-none absolute inset-x-0 h-px bg-amber/50" style={{ top: pct(hover.y) }} />
+        </>
+      )}
+
+      {/* Path waypoints + connecting line. */}
+      {request.mode === "path" && points.length > 0 && (
+        <>
+          <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
+            <polyline
+              points={points.map((p) => `${p.xFrac * 100},${p.yFrac * 100}`).join(" ")}
+              fill="none"
+              stroke="var(--color-amber)"
+              strokeWidth={0.4}
+              strokeDasharray="1.2 1.2"
+              vectorEffect="non-scaling-stroke"
+            />
+          </svg>
+          {points.map((p, i) => {
+            const isClick = i === points.length - 1;
+            return (
+              <span
+                key={i}
+                className={[
+                  "pointer-events-none absolute grid -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full text-[9px] font-bold text-ink",
+                  isClick ? "h-5 w-5 bg-amber ring-2 ring-amber/40" : "h-4 w-4 bg-teal",
+                ].join(" ")}
+                style={{ left: pct(p.xFrac), top: pct(p.yFrac) }}
+              >
+                {isClick ? "◉" : i + 1}
+              </span>
+            );
+          })}
+        </>
+      )}
+
+      {/* Live rectangle (rect mode). */}
+      {liveRect && (
+        <span
+          className="pointer-events-none absolute rounded-md border-2 border-amber bg-amber/15"
+          style={liveRect}
+        />
+      )}
+
+      {/* Hint + controls bar. Stops pointer events so the buttons don't add points. */}
+      <div
+        className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber/40 bg-panel/95 px-3 py-1.5 text-[11px] text-text shadow-lg"
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+      >
+        <span className="text-amber">●</span>
+        <span>{request.hint}</span>
+        {request.mode === "path" && <span className="tabular-nums text-faint">{points.length} pt</span>}
+        {request.mode === "path" && (
+          <button
+            type="button"
+            onClick={finishPath}
+            disabled={points.length === 0}
+            className="rounded-full bg-amber px-2.5 py-0.5 text-[11px] font-semibold text-ink transition hover:bg-amber-bright disabled:opacity-40"
+          >
+            Finish
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onFinish(null)}
+          className="rounded-full border border-line bg-elevated px-2.5 py-0.5 text-[11px] text-muted transition hover:text-text"
+        >
+          Cancel
+        </button>
       </div>
     </div>
   );

@@ -45,6 +45,7 @@ import { download, downloadBlob } from "@/lib/format";
 import { useDocHistory } from "@/lib/history";
 import { applyExportSettings, type ExportSettings } from "@/lib/export-presets";
 import type { Message } from "@/lib/types";
+import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
 
 let msgSeq = 0;
 // Collision-proof message id. MUST be generated OUTSIDE a setState updater —
@@ -155,6 +156,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // are editor-only (there is no schema field for them) — see the report.
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [markers, setMarkers] = useState<number[]>([]);
+  // On-preview placement (Walkthrough room): the armed gesture + a resolver so the
+  // Demo room can `await` the fractions the Stage overlay reports.
+  const [placement, setPlacement] = useState<PlacementRequest | null>(null);
+  const placementResolve = useRef<((r: PlacementResult | null) => void) | null>(null);
   // Resizable side panels (persisted per browser).
   const [railWidth, setRailWidth] = useState(380);
   const [codeWidth, setCodeWidth] = useState(440);
@@ -870,6 +875,31 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     }
   }
 
+  // ---- On-preview placement (Walkthrough room) ------------------------------
+
+  /**
+   * Arm an on-preview placement gesture and return a promise that resolves with
+   * the composition fractions the Stage overlay reports (or null if cancelled).
+   * Arming a new gesture cancels any prior one; playback stops so the frame the
+   * user annotates holds still.
+   */
+  function beginPlacement(mode: PlacementMode, hint: string): Promise<PlacementResult | null> {
+    placementResolve.current?.(null); // cancel any pending gesture
+    setPlaying(false);
+    return new Promise((resolve) => {
+      placementResolve.current = resolve;
+      setPlacement({ mode, hint });
+    });
+  }
+
+  /** Resolve the armed placement (from the Stage overlay) and tear it down. */
+  function finishPlacement(result: PlacementResult | null) {
+    const resolve = placementResolve.current;
+    placementResolve.current = null;
+    setPlacement(null);
+    resolve?.(result);
+  }
+
   /** Add/remove editor-only markers (jump targets) at the playhead. */
   function addMarker() {
     const t = Math.round(timeSec * 1000) / 1000;
@@ -1020,6 +1050,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             transcribing={transcribing}
             onEnsureTranscript={ensureTranscript}
             onGenerateVoiceover={generateVoiceover}
+            onBeginPlacement={beginPlacement}
           />
         )}
         <Stage
@@ -1035,6 +1066,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           canNudge={hasVideoClip}
           muted={muted}
           onToggleMute={() => setMuted((m) => !m)}
+          placement={placement}
+          onFinishPlacement={finishPlacement}
         />
         <ResizeHandle
           orientation="horizontal"
