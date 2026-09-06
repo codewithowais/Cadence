@@ -98,15 +98,15 @@ test("video flow: upload → edits → rooms → mute → applied-status → exp
   await send(page, "make it 4K");
   await expect(applied(page)).toContainText("4K");
   await expect(drawerCode(page)).toContainText('"ultra"');
-  // Durable invariant: the upscale reaches 4K class on its long edge. NOTE: for
-  // a *vertical* doc the target overshoots to ~3844×6836 (setQuality anchors the
-  // scale to width=3840 regardless of orientation) rather than the standard
-  // 2160×3840 — see the reported bug. We assert the class, not the exact size,
-  // so this test stays green whether or not that overshoot is fixed.
+  // The doc is vertical (9:16) here, so ultra 4K must be exactly 2160×3840 —
+  // the upscale is anchored to the LONG edge (3840), not the width. (Regression
+  // guard for the vertical-overshoot bug that anchored scale to width.)
   const qText = (await applied(page).textContent()) ?? "";
   const qDims = qText.match(/4K\s+(\d+)×(\d+)/);
   expect(qDims, `expected a 4K target size in "${qText}"`).not.toBeNull();
-  expect(Math.max(Number(qDims![1]), Number(qDims![2]))).toBeGreaterThanOrEqual(3840);
+  const [qw, qh] = [Number(qDims![1]), Number(qDims![2])];
+  expect(Math.max(qw, qh)).toBe(3840); // long edge is exactly 4K, no overshoot
+  expect(Math.min(qw, qh)).toBe(2160); // short edge is 2160 → standard vertical 4K
   await shot(page, "07-4k");
 
   // ---- applied-status: full strip assertions (task's explicit checks) ----

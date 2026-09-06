@@ -47,6 +47,8 @@ import {
   ProjectState,
   StubDirector,
   runDirectorLoop,
+  reframe,
+  setQuality,
   type DirectorLike,
 } from "@cadence/director";
 import { allProviders, buildCliArgs, configFromEnv, selectProvider } from "@cadence/enhance";
@@ -155,7 +157,13 @@ async function checkEditTools(): Promise<void> {
   assert(r.doc.quality.preset === "ultra", `expected ultra, got ${r.doc.quality.preset}`);
   assert((r.doc.quality.targetWidth ?? 0) >= 2160, "expected upscaled target width");
 
-  console.log(`  [32m✔[0m check 3 (edit tools): filler + vertical/captions/look + 4K quality`);
+  // 4K must anchor to the LONG edge regardless of orientation (no vertical overshoot).
+  const land = setQuality(parseEditDoc({ version: 1, meta: { width: 1920, height: 1080 }, tracks: [] }), "ultra");
+  assert(land.quality.targetWidth === 3840 && land.quality.targetHeight === 2160, `landscape 4K should be 3840x2160, got ${land.quality.targetWidth}x${land.quality.targetHeight}`);
+  const vert = setQuality(reframe(parseEditDoc({ version: 1, meta: { width: 1920, height: 1080 }, tracks: [] }), "9:16"), "ultra");
+  assert(vert.quality.targetWidth === 2160 && vert.quality.targetHeight === 3840, `vertical 4K should be 2160x3840, got ${vert.quality.targetWidth}x${vert.quality.targetHeight}`);
+
+  console.log(`  [32m✔[0m check 3 (edit tools): filler + vertical/captions/look + 4K quality (landscape 3840×2160, vertical 2160×3840)`);
 }
 
 async function checkSlideshow(): Promise<void> {
