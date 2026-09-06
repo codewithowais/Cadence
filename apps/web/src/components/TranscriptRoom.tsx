@@ -356,6 +356,7 @@ export function TranscriptRoom({
         selectedClipId={selectedClipId}
         canAddCaptions={!!transcript}
         onAddCaptions={addCaptionsNow}
+        transcript={transcript}
       />
 
       {/* AI voice-over (money-gated) + free mic path */}

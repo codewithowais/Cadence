@@ -27,9 +27,13 @@ import {
 import {
   styleCaptions,
   positionCaptions,
+  setKaraoke,
+  addCaptions,
   type CaptionStyleOpts,
   type CaptionPosition,
+  type KaraokeStyle,
 } from "@cadence/director";
+import type { Transcript } from "@cadence/understanding";
 import type { BeginPlacement } from "@/lib/placement";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
@@ -198,6 +202,9 @@ interface CaptionState {
   boxPadY: number;
   position: CaptionPosition;
   offset: number;
+  karaokeOn: boolean;
+  karaokeHighlight: string;
+  karaokeStyle: KaraokeStyle;
 }
 
 /** Read the caption look off a clip so the controls + preview reflect the doc. */
@@ -229,6 +236,9 @@ function readState(clip: TextClip | undefined, h: number): CaptionState {
     boxPadY: box?.padY ?? Math.round((c?.fontSize ?? h * 0.05) * 0.28),
     position: c?.position ?? "bottom",
     offset: c?.positionOffset ?? 0,
+    karaokeOn: !!c?.karaoke?.enabled,
+    karaokeHighlight: toHex6(c?.karaoke?.highlight ?? "#ffd54a"),
+    karaokeStyle: c?.karaoke?.style ?? "color",
   };
 }
 
@@ -406,6 +416,34 @@ function PreviewChip({ s, h }: { s: CaptionState; h: number }) {
   const hasPanel = s.boxStyle !== "none";
   const justify = s.align === "left" ? "flex-start" : s.align === "right" ? "flex-end" : "center";
 
+  // Karaoke preview: split the sample into words and emphasize one so the chosen
+  // highlight color + style (color / fill / box) is visible before it lands.
+  const words = ["Sample", "caption"];
+  const activeIdx = 1;
+  const renderText = () =>
+    s.karaokeOn
+      ? words.map((word, i) => {
+          const active = i === activeIdx;
+          const hi = s.karaokeHighlight;
+          return (
+            <span
+              key={i}
+              style={{
+                color: active && s.karaokeStyle === "color" ? hi : s.color,
+                background: active && s.karaokeStyle === "fill" ? hi : "transparent",
+                border: active && s.karaokeStyle === "box" ? `1.5px solid ${hi}` : "1.5px solid transparent",
+                borderRadius: active ? "4px" : undefined,
+                padding: active && s.karaokeStyle !== "color" ? "0 3px" : "0 1px",
+                marginRight: i < words.length - 1 ? "3px" : undefined,
+                WebkitTextStroke: undefined,
+              }}
+            >
+              {word}
+            </span>
+          );
+        })
+      : "Sample caption";
+
   return (
     <div
       aria-hidden
@@ -439,7 +477,7 @@ function PreviewChip({ s, h }: { s: CaptionState; h: number }) {
           textOverflow: "ellipsis",
         }}
       >
-        Sample caption
+        {renderText()}
       </span>
     </div>
   );
@@ -459,6 +497,12 @@ const ANCHORS: { key: CaptionPosition; label: string }[] = [
   { key: "bottom", label: "Bottom" },
 ];
 
+const KARAOKE_STYLES: { key: KaraokeStyle; label: string }[] = [
+  { key: "color", label: "Color" },
+  { key: "fill", label: "Fill" },
+  { key: "box", label: "Box" },
+];
+
 export function CaptionStyleSection({
   doc,
   busy,
@@ -467,6 +511,7 @@ export function CaptionStyleSection({
   selectedClipId,
   canAddCaptions,
   onAddCaptions,
+  transcript,
 }: {
   doc: EditDoc;
   busy: boolean;
@@ -478,6 +523,12 @@ export function CaptionStyleSection({
   canAddCaptions?: boolean;
   /** Generate captions from the transcript (pure addCaptions → commit). */
   onAddCaptions?: () => void;
+  /**
+   * The transcript for the main clip, when loaded. Used to (re)build captions WITH
+   * per-word timings so enabling karaoke "just works" even if captions were added
+   * before word timings existed (or don't exist yet).
+   */
+  transcript?: Transcript;
 }) {
   const H = doc.meta.height;
   const clips = useMemo(() => captionClips(doc), [doc]);
@@ -492,6 +543,13 @@ export function CaptionStyleSection({
   // Read the current look off the target clip (the scoped one, else the first).
   const sourceClip = scoped ? selectedCaption! : clips[0];
   const s = readState(sourceClip, H);
+
+  // Karaoke needs per-word timings on the caption clips. addCaptions now always
+  // populates `words`; a legacy caption (added before that) may lack them.
+  const captionsHaveWords = useMemo(
+    () => clips.some((c) => ((c as TextClip & { words?: unknown[] }).words?.length ?? 0) > 0),
+    [clips],
+  );
 
   const [placing, setPlacing] = useState(false);
 
@@ -523,6 +581,37 @@ export function CaptionStyleSection({
       onApplyDoc(next);
     } catch {
       /* ignore */
+    }
+  };
+
+  // ---- karaoke (word-by-word highlight) ------------------------------------
+  // Enabling ENSURES word timings: if captions already carry `words` we just flip
+  // the flag via setKaraoke; otherwise (legacy captions without words) we rebuild
+  // them from the transcript with karaoke on, so it "just works". Color/style
+  // changes always go through setKaraoke. All via the undoable commit path.
+  const setKaraokeNow = (opts: { enabled?: boolean; highlight?: string; style?: KaraokeStyle }, coalesceKey?: string) => {
+    if (!captionsExist) return;
+    try {
+      onApplyDoc(setKaraoke(doc, { ...opts, clipId }), coalesceKey);
+    } catch {
+      /* no captions — guarded above, ignore */
+    }
+  };
+
+  const toggleKaraoke = () => {
+    if (s.karaokeOn) {
+      setKaraokeNow({ enabled: false });
+      return;
+    }
+    if (captionsExist && captionsHaveWords) {
+      setKaraokeNow({ enabled: true, highlight: s.karaokeHighlight, style: s.karaokeStyle });
+    } else if (transcript) {
+      // (Re)build captions WITH per-word timings + karaoke on in one undoable step.
+      try {
+        onApplyDoc(addCaptions(doc, transcript, { karaoke: true, highlight: s.karaokeHighlight, karaokeStyle: s.karaokeStyle }));
+      } catch {
+        /* ignore */
+      }
     }
   };
 
@@ -747,6 +836,46 @@ export function CaptionStyleSection({
               <Toggle onClick={() => void placeOnPreview()} active={placing || s.position === "free"} disabled={busy || placing} title="Click the preview to place the caption freely">
                 {placing ? "Click the preview…" : "Place on preview"}
               </Toggle>
+            )}
+          </Row>
+
+          {/* Karaoke (word-by-word highlight) */}
+          <Row label="karaoke">
+            <Toggle
+              onClick={toggleKaraoke}
+              active={s.karaokeOn}
+              disabled={busy || (!s.karaokeOn && !captionsHaveWords && !transcript)}
+              title="Highlight each word as it's spoken"
+            >
+              {s.karaokeOn ? "Karaoke on" : "Karaoke off"}
+            </Toggle>
+            {s.karaokeOn ? (
+              <>
+                <Swatch
+                  label="Highlight"
+                  value={s.karaokeHighlight}
+                  disabled={busy}
+                  onChange={(v) => setKaraokeNow({ highlight: v }, "cap-karaoke")}
+                />
+                <span className="mx-1 h-6 w-px shrink-0 bg-line" aria-hidden />
+                {KARAOKE_STYLES.map((k) => (
+                  <Toggle
+                    key={k.key}
+                    onClick={() => setKaraokeNow({ style: k.key })}
+                    active={s.karaokeStyle === k.key}
+                    disabled={busy}
+                    title={`Highlight style: ${k.label}`}
+                  >
+                    {k.label}
+                  </Toggle>
+                ))}
+              </>
+            ) : (
+              <span className="text-[11px] text-faint">
+                {captionsHaveWords || transcript
+                  ? "Highlight each word as it's spoken."
+                  : "Load or transcribe the video first — karaoke needs word timings."}
+              </span>
             )}
           </Row>
         </>

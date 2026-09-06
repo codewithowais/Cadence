@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.32 — karaoke UI (Words room)
+- A **"Karaoke (word highlight)"** control in the caption section: toggle + highlight color + **Color/Fill/Box** style, with a live preview chip showing a highlighted word. Enabling it ensures word timings (uses `setKaraoke` when captions already have `words`, else rebuilds via `addCaptions(..., {karaoke:true})`); respects "this caption only". Undoable.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **19/19**.
+
 ### S4.31 — karaoke captions (word-by-word highlight)
 - Additive `TextClip.words` + `karaoke {enabled, highlight, style: color|fill|box}`. `add_captions` now maps per-word timing to the timeline; canvas `drawText` highlights the active word per frame (spoken=full, upcoming dimmed) → animates in preview/canvas free. Export renders a **per-word PNG sequence**, each overlaid gated `between(t, word.start, word.end)` (real karaoke on the freetype-less ffmpeg). Pure `setKaraoke` + `set_karaoke`/extended `add_captions` tools. Non-karaoke path byte-identical.
 - *verified:* typecheck (root+web) + test:unit 49 + verify (+33b, check 64 encodes 14 docs incl. karaoke) + evals 5/5.
