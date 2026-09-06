@@ -1,1 +1,1 @@
-export { CanvasRenderEngine } from "./canvas-engine";
+export { CanvasRenderEngine, renderTextClipPng, renderCalloutLabelPng } from "./canvas-engine";

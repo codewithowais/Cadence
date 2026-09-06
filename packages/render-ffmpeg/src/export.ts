@@ -11,9 +11,13 @@
  * fall back to the free path silently.
  */
 import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { configFromEnv, selectProvider, type EnhanceResult } from "@cadence/enhance";
 import type { EditDoc } from "@cadence/core";
-import { buildExportPlan, type ResolveMediaPath } from "./plan";
+import { buildExportPlan, type ResolveMediaPath, type TextOverlayMap } from "./plan";
+import { renderTextOverlays, docNeedsTextOverlays } from "./text-overlays";
 import { detectFfmpeg, resolveFfmpegBin, FFMPEG_MISSING_MESSAGE, type FfmpegInfo } from "./detect";
 
 export interface RunExportOptions {
@@ -54,37 +58,51 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
   const ffmpeg = opts.skipDetect ? { available: true, bin } : await detectFfmpeg(bin);
   if (!ffmpeg.available) throw new FfmpegNotFoundError();
 
-  const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile);
-
-  await spawnFfmpeg(bin, plan.args, opts.onLog);
-
-  // Optional faithful AI enhancement pass (off by default; money/setup gated).
-  let enhance: EnhanceResult | undefined;
-  if (doc.quality.aiUpscale) {
-    const provider = selectProvider(configFromEnv());
-    // The free provider is a no-op marker (its work already happened in the
-    // filtergraph). Only run a real pass for an available, faithful AI provider.
-    if (provider.usesAI && (await provider.isAvailable())) {
-      const scale = deriveScale(doc);
-      enhance = await provider.enhance({
-        inputPath: opts.outFile,
-        outputPath: opts.outFile,
-        scale,
-        sharpen: doc.quality.sharpen,
-        denoise: doc.quality.denoise,
-        kind: "video",
-      });
-    } else {
-      enhance = {
-        outputPath: opts.outFile,
-        provider: provider.id,
-        usedAI: false,
-        note: "aiUpscale requested but no faithful AI provider available — used the free Lanczos+unsharp path",
-      };
+  // Rasterize any text-bearing clips (captions/titles/kinetic titles + callout
+  // labels) to transparent PNGs with the canvas engine, then hand the paths to the
+  // pure plan builder, which OVERLAYS them instead of emitting drawtext (the bundled
+  // ffmpeg has no libfreetype). No-text docs skip this entirely (fast path). The
+  // temp dir holding the PNGs is cleaned up once ffmpeg has consumed them.
+  let overlayDir: string | null = null;
+  try {
+    let overlays: TextOverlayMap | undefined;
+    if (docNeedsTextOverlays(doc)) {
+      overlayDir = await mkdtemp(join(tmpdir(), "cadence-text-"));
+      overlays = await renderTextOverlays(doc, overlayDir);
     }
-  }
+    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays);
+    await spawnFfmpeg(bin, plan.args, opts.onLog);
 
-  return { outFile: opts.outFile, args: plan.args, ffmpeg, enhance };
+    // Optional faithful AI enhancement pass (off by default; money/setup gated).
+    let enhance: EnhanceResult | undefined;
+    if (doc.quality.aiUpscale) {
+      const provider = selectProvider(configFromEnv());
+      // The free provider is a no-op marker (its work already happened in the
+      // filtergraph). Only run a real pass for an available, faithful AI provider.
+      if (provider.usesAI && (await provider.isAvailable())) {
+        const scale = deriveScale(doc);
+        enhance = await provider.enhance({
+          inputPath: opts.outFile,
+          outputPath: opts.outFile,
+          scale,
+          sharpen: doc.quality.sharpen,
+          denoise: doc.quality.denoise,
+          kind: "video",
+        });
+      } else {
+        enhance = {
+          outputPath: opts.outFile,
+          provider: provider.id,
+          usedAI: false,
+          note: "aiUpscale requested but no faithful AI provider available — used the free Lanczos+unsharp path",
+        };
+      }
+    }
+
+    return { outFile: opts.outFile, args: plan.args, ffmpeg, enhance };
+  } finally {
+    if (overlayDir) await rm(overlayDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /** Upscale factor implied by quality targets (2..4), else 2. */

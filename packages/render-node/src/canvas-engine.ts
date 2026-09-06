@@ -196,29 +196,40 @@ function drawCallout(ctx: SKRSContext2D, clip: CalloutClip, frameW: number, fram
     ctx.restore();
   }
 
-  if (clip.label) {
-    ctx.save();
-    const fs = Math.max(18, Math.round(Math.min(frameW, frameH) * 0.03));
-    ctx.font = `600 ${fs}px sans-serif`;
-    ctx.textBaseline = "middle";
-    ctx.textAlign = "left";
-    const padX = fs * 0.5;
-    const padY = fs * 0.35;
-    const m = ctx.measureText(clip.label);
-    const boxW = m.width + padX * 2;
-    const boxH = fs + padY * 2;
-    // Prefer above the rect; drop below when there's no room at the top.
-    const above = r.y - boxH - fs * 0.4;
-    const by = above > 0 ? above : r.y + r.h + fs * 0.4;
-    const bx = Math.max(0, Math.min(frameW - boxW, r.x));
-    ctx.fillStyle = clip.color;
-    ctx.beginPath();
-    ctx.roundRect(bx, by, boxW, boxH, boxH * 0.28);
-    ctx.fill();
-    ctx.fillStyle = "#0a0d12";
-    ctx.fillText(clip.label, bx + padX, by + boxH / 2);
-    ctx.restore();
-  }
+  drawCalloutLabel(ctx, clip, frameW, frameH);
+}
+
+/**
+ * Draw ONLY a callout's label pill (the text part) in screen coordinates. Factored
+ * out of drawCallout so the ffmpeg EXPORT can rasterize just the label to a
+ * transparent PNG overlay (the drawbox border/dim stay in the filtergraph) — the
+ * label needs a real font, which the bundled ffmpeg (no libfreetype/drawtext) can't
+ * render. No-op when there is no label. Shared drawing ⇒ preview == export.
+ */
+function drawCalloutLabel(ctx: SKRSContext2D, clip: CalloutClip, frameW: number, frameH: number): void {
+  if (!clip.label) return;
+  const r = calloutScreenRect(clip);
+  ctx.save();
+  const fs = Math.max(18, Math.round(Math.min(frameW, frameH) * 0.03));
+  ctx.font = `600 ${fs}px sans-serif`;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  const padX = fs * 0.5;
+  const padY = fs * 0.35;
+  const m = ctx.measureText(clip.label);
+  const boxW = m.width + padX * 2;
+  const boxH = fs + padY * 2;
+  // Prefer above the rect; drop below when there's no room at the top.
+  const above = r.y - boxH - fs * 0.4;
+  const by = above > 0 ? above : r.y + r.h + fs * 0.4;
+  const bx = Math.max(0, Math.min(frameW - boxW, r.x));
+  ctx.fillStyle = clip.color;
+  ctx.beginPath();
+  ctx.roundRect(bx, by, boxW, boxH, boxH * 0.28);
+  ctx.fill();
+  ctx.fillStyle = "#0a0d12";
+  ctx.fillText(clip.label, bx + padX, by + boxH / 2);
+  ctx.restore();
 }
 
 /**
@@ -561,4 +572,61 @@ export class CanvasRenderEngine implements RenderEngine {
     const data = canvas.toBuffer("image/png");
     return { width, height, format: "png", data };
   }
+}
+
+// --- text overlay rasterizers (for the ffmpeg export) -----------------------
+//
+// The bundled ffmpeg (ffmpeg-static) has NO drawtext filter (no libfreetype), so
+// captions/titles/kinetic titles and callout labels can't be burned in via
+// drawtext. Instead the export rasterizes each text-bearing clip to a transparent,
+// composition-sized PNG here — REUSING the exact canvas drawText/drawCalloutLabel
+// that render the preview — and overlays those PNGs in the filtergraph. That both
+// works with ANY ffmpeg build and gives perfect preview↔export text parity.
+
+/**
+ * The "resting" time within a text clip's span at which we rasterize it for export:
+ * far enough in that any intro animation (kinetic slide/scale, typewriter reveal)
+ * has settled AND the transition opacity is full. Export renders animated text at
+ * this resting/final state (a static PNG); the live preview still animates. Chosen
+ * as the clip midpoint, but never before the intro animation finishes.
+ */
+function textRestTime(clip: TextClip): number {
+  const animDur = clip.anim.style !== "none" ? clip.anim.durationSec : 0;
+  const span = Math.max(0, clip.duration);
+  const settle = Math.min(Math.max(span * 0.5, animDur + 0.05), Math.max(0, span - 1e-3));
+  return clip.start + settle;
+}
+
+/**
+ * Rasterize ONE text clip (caption / title / kinetic title / typewriter) to a
+ * transparent, composition-sized PNG at its resting state, using the SAME canvas
+ * drawText as the preview — so the exported text matches the preview exactly, with
+ * its font, size, color, alignment, pill background and outline. Returns raw PNG
+ * bytes. Server-only (native Skia canvas). Animated text is captured at rest (see
+ * textRestTime); the export overlays this static PNG time-gated to the clip span.
+ */
+export function renderTextClipPng(doc: EditDoc, clip: TextClip): Buffer {
+  const { width, height } = doc.meta;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  // Transparent ground (no background fill) so only the glyphs/pill carry alpha.
+  clipTimeCache = textRestTime(clip);
+  drawText(ctx, clip);
+  return canvas.toBuffer("image/png");
+}
+
+/**
+ * Rasterize ONE callout's LABEL (only) to a transparent, composition-sized PNG,
+ * reusing the canvas label drawing. The callout's drawbox border + outside-dim stay
+ * in the ffmpeg filtergraph (drawbox needs no font); only the label needs a real
+ * font, so it becomes a PNG overlay. Returns null when the callout has no label.
+ */
+export function renderCalloutLabelPng(doc: EditDoc, clip: CalloutClip): Buffer | null {
+  if (!clip.label) return null;
+  const { width, height } = doc.meta;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  clipTimeCache = clip.start + Math.max(0, clip.duration) / 2;
+  drawCalloutLabel(ctx, clip, width, height);
+  return canvas.toBuffer("image/png");
 }

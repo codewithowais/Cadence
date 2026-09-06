@@ -5,13 +5,21 @@
  *
  * EDITS-AS-CODE: the EditDoc is the source of truth; this translates it faithfully
  * into an ffmpeg filtergraph. FAITHFULNESS: every filter used here is
- * identity-preserving (trim/concat/scale/crop/eq/colorbalance/drawtext/zoompan/
+ * identity-preserving (trim/concat/scale/crop/eq/colorbalance/overlay/zoompan/
  * xfade/fade/unsharp/hqdn3d) — real detail work only, NEVER a generative redraw of
  * faces or content.
  *
+ * TEXT: captions / titles / kinetic titles and callout labels are NOT drawn with
+ * `drawtext` — the bundled ffmpeg (`ffmpeg-static`) has no libfreetype, so drawtext
+ * is absent and any such export used to fail. Instead each text clip is rasterized
+ * to a transparent PNG by the canvas engine (@cadence/render-node) — the SAME code
+ * that draws the live preview — and this graph OVERLAYS those PNGs, time-gated. That
+ * works with ANY ffmpeg build AND gives perfect preview↔export text parity. The PNG
+ * paths arrive via `textOverlays` so this builder stays pure (no rasterization here).
+ *
  * Filter names/syntax follow ffmpeg's documented filtergraph API
  * (ffmpeg.org/ffmpeg-filters.html) — trim, setpts, scale, crop, eq, colorbalance,
- * drawtext, zoompan, xfade, fade, unsharp, hqdn3d, concat, amix, adelay — all
+ * overlay, drawbox, zoompan, xfade, fade, unsharp, hqdn3d, concat, amix, adelay — all
  * long-stable, standard filters.
  */
 import {
@@ -56,6 +64,13 @@ export interface ExportPlan {
 
 /** Resolves a media id to a concrete file path (server path / URL). */
 export type ResolveMediaPath = (mediaId: string) => string;
+
+/**
+ * clipId → rendered transparent PNG path for text-bearing clips. Built by the impure
+ * driver (renderTextOverlays, via the canvas engine) and passed into the pure
+ * buildExportPlan, which overlays the PNGs in place of `drawtext`.
+ */
+export type TextOverlayMap = Map<string, string>;
 
 const r3 = (n: number): number => Math.round(n * 1000) / 1000;
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -446,96 +461,19 @@ export function escapeDrawtext(text: string): string {
     .replace(/[\r\n]+/g, " ");
 }
 
-/**
- * One drawtext filter drawing `text` for a clip's styling, gated to
- * [gateStart, gateEnd]. Factored out so the typewriter can emit one slice per
- * character-count (each a prefix of the full text) reusing the same styling.
- */
-function oneDrawtext(clip: TextClip, text: string, gateStart: number, gateEnd: number): string {
-  const { color, alpha } = hexToFfColor(clip.color);
-  const tx = Math.round(clip.transform.x);
-  const ty = Math.round(clip.transform.y);
-  const start = r3(clip.start);
-  // transform.x/y is the clip anchor; canvas uses center anchor + middle baseline.
-  let x =
-    clip.align === "center"
-      ? `${tx}-text_w/2`
-      : clip.align === "right"
-        ? `${tx}-text_w`
-        : `${tx}`;
-  let y = `${ty}-text_h/2`;
-
-  // Kinetic intro: slide from (fromX, fromY) toward the resting position over
-  // `durationSec`, eased (1-(1-p)^3) — mirrors core's textKinetic. Commas inside
-  // expression fn-calls are escaped for the filtergraph. (Export honors the slide;
-  // the scale-in is a preview/canvas nicety.) Typewriter never slides.
-  const a = clip.anim;
-  if (a.style === "kinetic" && a.durationSec > 0 && (a.fromX !== 0 || a.fromY !== 0)) {
-    const p = `clip((t-${start})/${r3(a.durationSec)}\\,0\\,1)`;
-    const e = `(1-pow(1-${p}\\,3))`;
-    if (a.fromX !== 0) x = `(${x})+(${r3(a.fromX)})*(1-${e})`;
-    if (a.fromY !== 0) y = `(${y})+(${r3(a.fromY)})*(1-${e})`;
-  }
-
-  const parts = [
-    `text='${escapeDrawtext(text)}'`,
-    `x=${x}`,
-    `y=${y}`,
-    `fontsize=${Math.round(clip.fontSize)}`,
-    `fontcolor=${color}${alpha < 1 ? `@${alpha}` : ""}`,
-  ];
-  // Stroked outline (drawtext border) behind the glyphs, for readability.
-  if (clip.outline && clip.outline.width > 0) {
-    const oc = hexToFfColor(clip.outline.color);
-    parts.push(`borderw=${Math.max(1, Math.round(clip.outline.width))}`);
-    parts.push(`bordercolor=${oc.color}${oc.alpha < 1 ? `@${oc.alpha}` : ""}`);
-  }
-  // Pill background behind captions.
-  if (clip.background) {
-    const bg = hexToFfColor(clip.background);
-    parts.push("box=1");
-    parts.push(`boxcolor=${bg.color}${bg.alpha < 1 ? `@${bg.alpha}` : ""}`);
-    parts.push(`boxborderw=${Math.max(6, Math.round(clip.fontSize * 0.3))}`);
-  }
-  parts.push(`enable='between(t\\,${r3(gateStart)}\\,${r3(gateEnd)})'`);
-  return `drawtext=${parts.join(":")}`;
-}
+// --- callout / highlight (drawbox border + optional dim) ---------------------
 
 /**
- * drawtext filter(s) for a text clip. A normal clip → one drawtext gated to its
- * whole span. A "typewriter" clip → one drawtext PER character-count: slice k
- * (the first k chars) is shown over [start+(k-1)·step, start+k·step), and the
- * final slice holds to the clip end — reproducing the core `typewriterText`
- * reveal with the documented "reveal via time-gated text slices" approach.
- */
-function drawtextsFor(clip: TextClip): string[] {
-  const end = clip.start + clip.duration;
-  const a = clip.anim;
-  if (a.style === "typewriter" && a.durationSec > 0 && clip.text.length > 0) {
-    const full = clip.text;
-    const n = full.length;
-    const step = a.durationSec / n;
-    const out: string[] = [];
-    for (let k = 1; k <= n; k++) {
-      const gStart = clip.start + (k - 1) * step;
-      const gEnd = k < n ? clip.start + k * step : end;
-      out.push(oneDrawtext(clip, full.slice(0, k), gStart, gEnd));
-    }
-    return out;
-  }
-  return [oneDrawtext(clip, clip.text, clip.start, end)];
-}
-
-// --- callout / highlight (drawbox border + optional dim + label) -------------
-
-/**
- * Filter segments for one callout: a bright rounded-ish border (drawbox), an
+ * Filter segments for one callout: a bright rounded-ish border (drawbox) and an
  * optional dim of the area OUTSIDE the rect (four filled drawboxes: top / bottom
- * / left / right), and an optional label (drawtext). All time-gated with the
- * clip's [start, end] via `enable`. Coordinates are the PLAIN rect {x,y,w,h}:
- * drawbox can't magnify, so the export keeps the faithful highlight (the zoom is
- * a canvas/Stage preview affordance). Every filter here is documented ffmpeg
- * (drawbox / drawtext), confirmed against ffmpeg-all.html.
+ * / left / right). All time-gated with the clip's [start, end] via `enable`.
+ * Coordinates are the PLAIN rect {x,y,w,h}: drawbox can't magnify, so the export
+ * keeps the faithful highlight (the zoom is a canvas/Stage preview affordance).
+ * Every filter here is documented ffmpeg (drawbox), confirmed against ffmpeg-all.html.
+ *
+ * The callout's LABEL is NOT drawn here: it needs a real font, which the bundled
+ * ffmpeg (no libfreetype/drawtext) can't render, so it is rasterized to a
+ * transparent PNG (render-node) and overlaid separately by buildExportPlan.
  */
 function calloutFilters(clip: CalloutClip, W: number, H: number): string[] {
   const start = r3(clip.start);
@@ -572,16 +510,6 @@ function calloutFilters(clip: CalloutClip, W: number, H: number): string[] {
     );
   }
 
-  // Optional label above (or below when there's no room) the rect.
-  if (clip.label) {
-    const fs = Math.max(18, Math.round(Math.min(W, H) * 0.03));
-    const bc = hexToFfColor(clip.color);
-    const above = ry - Math.round(fs * 1.6);
-    const ly = above > 0 ? above : ry + rh + Math.round(fs * 0.5);
-    out.push(
-      `drawtext=text='${escapeDrawtext(clip.label)}':x=${rx}:y=${ly}:fontsize=${fs}:fontcolor=0x0a0d12:box=1:boxcolor=${bc.color}${bc.alpha < 1 ? `@${bc.alpha}` : ""}:boxborderw=${Math.round(fs * 0.4)}:${gate}`,
-    );
-  }
   return out;
 }
 
@@ -1056,6 +984,15 @@ export function buildExportPlan(
   doc: EditDoc,
   resolveMediaPath: ResolveMediaPath,
   outFile: string,
+  /**
+   * clipId → rendered transparent PNG path for text-bearing clips (captions,
+   * titles, kinetic titles, typewriter, and callout labels). Produced by
+   * `renderTextOverlays` (canvas engine) BEFORE this pure builder runs; the builder
+   * only OVERLAYS the paths it is given — it never rasterizes. Text with no entry
+   * here is simply not drawn. Keeping this a parameter preserves the purity of
+   * buildExportPlan (still deterministic, no I/O). Omitted ⇒ no text overlays.
+   */
+  textOverlays?: TextOverlayMap,
 ): ExportPlan {
   const { width: W, height: H, fps } = doc.meta;
   const total = r3(docDurationSec(doc));
@@ -1487,14 +1424,39 @@ export function buildExportPlan(
     videoLabel = out;
   });
 
-  // ---- Burn-in captions / titles (drawtext, time-gated) -------------------
-  // Typewriter text expands to one drawtext per character-count (drawtextsFor).
+  // ---- Text overlay helper (transparent PNG, time-gated) ------------------
+  // Overlay one pre-rendered transparent PNG (composition-sized, text already
+  // positioned/styled by the canvas engine) onto the current video, gated to
+  // [start,end]. This REPLACES `drawtext` entirely for text: it needs no
+  // libfreetype (works with the bundled ffmpeg) and matches the preview exactly.
+  // A looped still supplies the PNG for the clip's span; the setpts shift places it
+  // at `start` on the timeline; format=rgba keeps the alpha so only the glyphs/pill
+  // composite. No-text docs never call this, so their graph is byte-for-byte
+  // unchanged (the fast path).
+  const overlayPng = (pngPath: string, start: number, end: number, tag: string): void => {
+    const dur = Math.max(1e-6, r3(end - start));
+    const idx = addInput(["-loop", "1", "-t", String(dur)], pngPath);
+    filters.push(`[${idx}:v]format=rgba,setpts=PTS-STARTPTS+${r3(start)}/TB,fps=${fps}[${tag}s]`);
+    filters.push(
+      `[${videoLabel}][${tag}s]overlay=0:0:enable='between(t\\,${r3(start)}\\,${r3(end)})'[${tag}]`,
+    );
+    videoLabel = tag;
+  };
+
+  // ---- Burn-in captions / titles / kinetic titles (PNG overlays) ----------
+  // Each text clip is rasterized to a transparent PNG (font/size/color/align, pill
+  // background, outline — all from the canvas engine, so preview == export) and
+  // overlaid time-gated to its span. ANIMATED text (kinetic slide/scale, typewriter,
+  // text keyframes) is rendered at its RESTING/FINAL state — one static PNG over the
+  // clip span; the preview still animates (documented limitation). Static captions
+  // and titles are pixel-perfect. Clips with no rendered PNG in `textOverlays` are
+  // skipped.
   const texts = collectTextClips(doc);
-  if (texts.length > 0) {
-    const chain = texts.flatMap(drawtextsFor).join(",");
-    filters.push(`[${videoLabel}]${chain}[vtext]`);
-    videoLabel = "vtext";
-  }
+  texts.forEach((clip, i) => {
+    const png = textOverlays?.get(clip.id);
+    if (!png) return;
+    overlayPng(png, clip.start, clip.start + clip.duration, `vtext${i}`);
+  });
 
   // ---- Callout / highlight boxes (drawbox border + optional dim + label) ---
   // Faithful overlay: a bright border around the rect, an optional dim of the
@@ -1504,10 +1466,14 @@ export function buildExportPlan(
   const callouts = collectCallouts(doc);
   callouts.forEach((clip, i) => {
     const parts = calloutFilters(clip, W, H);
-    if (parts.length === 0) return;
-    const out = `vco${i}`;
-    filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
-    videoLabel = out;
+    if (parts.length > 0) {
+      const out = `vco${i}`;
+      filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
+      videoLabel = out;
+    }
+    // The label (a real font) is a transparent PNG overlay, not drawtext.
+    const png = textOverlays?.get(clip.id);
+    if (png) overlayPng(png, clip.start, clip.start + clip.duration, `vcolbl${i}`);
   });
 
   // ---- Cursor overlay (moving pointer + click ripples) --------------------

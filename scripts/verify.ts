@@ -151,6 +151,7 @@ import {
   detectFfmpeg,
   ffBlendMode,
   keyframeTransformExpr,
+  renderTextOverlays,
   resolveFfmpegBin,
   runExport,
   xfadeTransition,
@@ -181,6 +182,24 @@ function fail(msg: string): never {
 }
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) fail(msg);
+}
+
+/**
+ * A synthetic textOverlays map (clipId → placeholder PNG path) for PURE plan tests
+ * that only assert on the filtergraph STRING: text/caption/title/kinetic clips and
+ * callout LABELS become transparent-PNG overlays on export (drawtext is gone — the
+ * bundled ffmpeg has no libfreetype), so the pure builder needs a path per such clip.
+ * The real PNGs are rendered (via the canvas engine) only in the real-encode check.
+ */
+function fakeTextOverlays(doc: EditDoc): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const t of doc.tracks) {
+    for (const c of t.clips) {
+      if (c.kind === "text") m.set(c.id, `/ov/${c.id}.png`);
+      else if (c.kind === "callout" && c.label) m.set(c.id, `/ov/${c.id}.png`);
+    }
+  }
+  return m;
 }
 
 async function renderAndAssert(doc: EditDoc, timeSec: number, outName: string): Promise<number> {
@@ -350,7 +369,9 @@ async function checkExportPlan(): Promise<void> {
   assert(ha.includes("-map [vcat]") && ha.includes("-map [acat]"), "highlight: expected video+audio maps");
   assert(ha.endsWith("/out/hl.mp4"), "highlight: outFile should be last arg");
 
-  // (b) captions → drawtext (time-gated) with a pill box + escaped text.
+  // (b) captions → transparent PNG overlay (time-gated), NOT drawtext (the bundled
+  //     ffmpeg has no libfreetype). The PNG is rasterized by the canvas engine, so
+  //     text/pill/outline all match the preview exactly.
   const captioned = parseEditDoc({
     version: 1,
     meta: { title: "cap", width: 1080, height: 1920, fps: 30 },
@@ -366,11 +387,11 @@ async function checkExportPlan(): Promise<void> {
       },
     ],
   });
-  const cp = buildExportPlan(captioned, resolve, "/out/cap.mp4");
-  assert(cp.filterComplex.includes("drawtext="), "captions: expected drawtext");
-  assert(cp.filterComplex.includes("enable='between(t\\,0.2\\,2.2)'"), "captions: expected time-gated enable");
-  assert(cp.filterComplex.includes("box=1"), "captions: expected pill box");
-  assert(cp.filterComplex.includes("It\\'s 100\\%") && cp.filterComplex.includes("a\\, b\\; c"), "captions: expected escaped special chars");
+  const cp = buildExportPlan(captioned, resolve, "/out/cap.mp4", fakeTextOverlays(captioned));
+  assert(!cp.filterComplex.includes("drawtext="), "captions: text must be a PNG overlay, not drawtext");
+  assert(cp.inputs.includes("/ov/cap0.png"), "captions: expected the rasterized caption PNG as an input");
+  assert(cp.filterComplex.includes("overlay=0:0:enable='between(t\\,0.2\\,2.2)'"), "captions: expected a time-gated PNG overlay");
+  assert(cp.filterComplex.includes("format=rgba"), "captions: PNG overlay should preserve alpha (format=rgba)");
 
   // (c) quality ultra → lanczos upscale + unsharp (+ hqdn3d denoise).
   const ultra = parseEditDoc({
@@ -398,7 +419,7 @@ async function checkExportPlan(): Promise<void> {
   assert((sp.args.filter((a) => a === "-loop").length) >= 4, "slideshow: each still should be looped");
   assert(sp.filterComplex.includes("colorbalance="), "slideshow: expected warm colorbalance from the look");
 
-  console.log(`  [32m✔[0m check 7 (export plan): 2-cut concat + captions/drawtext + ultra lanczos/unsharp + slideshow xfade`);
+  console.log(`  [32m✔[0m check 7 (export plan): 2-cut concat + captions/PNG-overlay (no drawtext) + ultra lanczos/unsharp + slideshow xfade`);
 }
 
 async function checkFfmpegGraceful(): Promise<void> {
@@ -590,10 +611,13 @@ async function checkKineticTitle(): Promise<void> {
   assert(state.dy !== 0 || state.dx !== 0, "mid-animation should still be offset (sliding)");
   const n = await renderAndAssert(r.doc, midAnim, "verify-kinetic.png");
 
-  // Export slides the title via a time-dependent drawtext expression.
-  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/kinetic.mp4");
-  assert(plan.filterComplex.includes("pow(1-"), "kinetic: expected an eased slide expression in export");
-  console.log(`  [32m✔[0m check 13 (kinetic title): mid-animation frame (${n}b) — sliding+scaling; slide expr on export`);
+  // Export renders the kinetic title as a resting-state transparent PNG overlay
+  // (animated text is captured at rest; the preview still slides/scales). No drawtext.
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/kinetic.mp4", fakeTextOverlays(r.doc));
+  assert(!plan.filterComplex.includes("drawtext="), "kinetic: title must be a PNG overlay, not drawtext");
+  assert(plan.inputs.includes(`/ov/${kt!.id}.png`), "kinetic: expected the rasterized title PNG as an input");
+  assert(plan.filterComplex.includes("overlay=0:0:enable='between(t\\,"), "kinetic: expected a time-gated PNG overlay");
+  console.log(`  [32m✔[0m check 13 (kinetic title): mid-animation frame (${n}b) — sliding+scaling in preview; resting-state PNG overlay on export`);
 }
 
 async function checkEmphasis(): Promise<void> {
@@ -1135,11 +1159,14 @@ async function checkCaptionStyle(): Promise<void> {
   assert(withOutline.subarray(0, 4).equals(PNG_MAGIC), "caption frame should be a real PNG");
   assert(!withOutline.equals(withoutOutline), "the caption outline should change the rendered pixels");
 
-  // Export burns the outline in via drawtext borderw/bordercolor.
-  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/caps.mp4");
-  assert(plan.filterComplex.includes("borderw=") && plan.filterComplex.includes("bordercolor="), "captions: expected drawtext border on export");
+  // Export bakes the outline into the caption PNG (rendered by the canvas engine),
+  // then overlays it — no drawtext (the outline changing the frame is asserted above).
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/caps.mp4", fakeTextOverlays(r.doc));
+  assert(!plan.filterComplex.includes("drawtext="), "captions: outlined text must be a PNG overlay, not drawtext");
+  assert(plan.inputs.includes(`/ov/${cap!.id}.png`), "captions: expected the rasterized outlined-caption PNG as an input");
+  assert(plan.filterComplex.includes("overlay=0:0:enable='between(t\\,"), "captions: expected a time-gated PNG overlay");
 
-  console.log(`  [32m✔[0m check 27 (caption style): white/bold/outline/top → outline changes the frame (${withOutline.length}b) + drawtext borderw on export`);
+  console.log(`  [32m✔[0m check 27 (caption style): white/bold/outline/top → outline changes the frame (${withOutline.length}b) + baked into the PNG overlay on export`);
 }
 
 async function checkTypewriter(): Promise<void> {
@@ -1159,13 +1186,15 @@ async function checkTypewriter(): Promise<void> {
   assert(typewriterText(clip!, clip!.start + clip!.anim.durationSec + 0.01).done, "typewriter should finish");
   const n = await renderAndAssert(doc, mid, "verify-typewriter.png");
 
-  // Export sequences one drawtext PER character-count (time-gated slices).
-  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/type.mp4");
-  const drawtexts = plan.filterComplex.match(/drawtext=/g) ?? [];
-  assert(drawtexts.length >= full.length, `typewriter: expected >=${full.length} drawtext slices, got ${drawtexts.length}`);
-  assert(plan.filterComplex.includes("text='y':"), "typewriter: expected a single-char first slice text='y'");
-  assert(plan.filterComplex.includes("text='you@example.com':"), "typewriter: expected the full final slice");
-  console.log(`  [32m✔[0m check 28 (typewriter): mid-type "${state.text}" renders (${n}b) + ${drawtexts.length} time-gated drawtext slices on export`);
+  // Export renders the typewriter at its resting state — the FULL text as one
+  // transparent PNG overlay (the preview still types character-by-character). No
+  // drawtext (the bundled ffmpeg has no libfreetype).
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/type.mp4", fakeTextOverlays(doc));
+  assert(!plan.filterComplex.includes("drawtext="), "typewriter: text must be a PNG overlay, not drawtext");
+  assert(plan.inputs.includes(`/ov/${clip!.id}.png`), "typewriter: expected the rasterized (full-text) PNG as an input");
+  const overlays = plan.filterComplex.match(/overlay=0:0:enable=/g) ?? [];
+  assert(overlays.length === 1, `typewriter: expected exactly ONE resting-state overlay, got ${overlays.length}`);
+  console.log(`  [32m✔[0m check 28 (typewriter): mid-type "${state.text}" renders (${n}b); export overlays ONE resting-state PNG with the full text (preview still types)`);
 }
 
 async function checkCursor(): Promise<void> {
@@ -1227,12 +1256,16 @@ async function checkCallout(): Promise<void> {
   assert(withBytes.length > 1000 && withBytes.subarray(0, 4).equals(PNG_MAGIC), "callout frame should be a real PNG");
   assert(!withBytes.equals(withoutBytes), "the callout border/dim should change the rendered pixels");
 
-  // Export: drawbox border + drawbox dim boxes + a label drawtext.
-  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/callout.mp4");
+  // Export: drawbox border + drawbox dim boxes (no font needed) STAY in the graph;
+  // the label (a real font) becomes a transparent PNG overlay, not drawtext.
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/callout.mp4", fakeTextOverlays(doc));
   assert(plan.filterComplex.includes("drawbox="), "callout: expected a drawbox border on export");
   assert(plan.filterComplex.includes("color=black@"), "callout: expected dim boxes (black@opacity) on export");
-  assert(plan.filterComplex.includes("Sign in"), "callout: expected the label drawtext on export");
-  console.log(`  [32m✔[0m check 30 (callout): dim+border change the frame (${withBytes.length}b); zoom rect/transform ×2; drawbox border+dim & label on export`);
+  assert(!plan.filterComplex.includes("drawtext="), "callout: the label must be a PNG overlay, not drawtext");
+  assert(!plan.filterComplex.includes("Sign in"), "callout: label text should live in the PNG, not the filtergraph");
+  assert(plan.inputs.includes(`/ov/${clip!.id}.png`), "callout: expected the rasterized label PNG as an input");
+  assert(plan.filterComplex.includes("overlay=0:0:enable='between(t\\,"), "callout: expected a time-gated label PNG overlay");
+  console.log(`  [32m✔[0m check 30 (callout): dim+border change the frame (${withBytes.length}b); zoom rect/transform ×2; drawbox border+dim + label PNG overlay on export`);
 }
 
 async function checkBuildDemo(): Promise<void> {
@@ -1280,11 +1313,15 @@ async function checkBuildDemo(): Promise<void> {
   assert((zoomCall!.input as { zoom?: number }).zoom === 1.4, "'zoom into' should set a callout zoom");
   assert(!zoomRes.toolCalls.some((c) => c.name === "zoom"), "'zoom into the …' should NOT trigger the static zoom tool");
 
-  // (c) The demo doc exports: screen xfade + typed drawtext slices + cursor drawtext.
-  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/demo.mp4");
+  // (c) The demo doc exports: screen xfade + typed-field PNG overlays + a cursor.
+  //     Typed fields are rasterized to resting-state PNGs (no drawtext); the cursor
+  //     pointer glyph is the one remaining drawtext (a moving marker, out of scope
+  //     for this pass).
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/demo.mp4", fakeTextOverlays(doc));
   assert(plan.filterComplex.includes("xfade="), "demo: expected screen transitions (xfade) on export");
-  assert((plan.filterComplex.match(/drawtext=/g) ?? []).length >= 3, "demo: expected typed slices + cursor drawtext on export");
-  console.log(`  [32m✔[0m check 31 (build_demo): 3-screen login walkthrough renders (typing ${nType}b, cursor ${nMove}b); phrases → build_demo/add_callout; xfade+drawtext on export`);
+  const textOverlayCount = (plan.filterComplex.match(/overlay=0:0:enable=/g) ?? []).length;
+  assert(textOverlayCount >= 2, `demo: expected >=2 typed-field PNG overlays on export, got ${textOverlayCount}`);
+  console.log(`  [32m✔[0m check 31 (build_demo): 3-screen login walkthrough renders (typing ${nType}b, cursor ${nMove}b); phrases → build_demo/add_callout; xfade + ${textOverlayCount} typed-field PNG overlays on export`);
 }
 
 /** Structural clone of a doc (verify has no structuredClone import elsewhere). */
@@ -2959,11 +2996,14 @@ async function checkTransformKeyframes(): Promise<void> {
  *
  * Inputs are synthesized here with lavfi (testsrc + sine → a short mp4 WITH audio,
  * plus two still PNGs) so the check is fully self-contained. If ffmpeg is
- * unavailable the check SKIPS gracefully (logs + passes). `ffmpeg-static` ships
- * without libfreetype, so `drawtext` (captions/titles) may be absent in this build;
- * when it is, the caption clips are omitted from the encoded docs (and it is logged)
- * while the rest of each complex graph — the part that actually broke — still
- * encodes for real.
+ * unavailable the check SKIPS gracefully (logs + passes).
+ *
+ * TEXT: `ffmpeg-static` ships WITHOUT libfreetype, so it has no `drawtext` filter —
+ * captions/titles used to be omitted here (and exports with them failed). Now every
+ * text-bearing clip is rasterized to a transparent PNG (renderTextOverlays, canvas
+ * engine) and OVERLAID, so this check ALWAYS burns in captions AND a title and still
+ * encodes cleanly on the bundled ffmpeg — the direct proof the user's captioned
+ * export works. Text overlays are rendered per doc and threaded into buildExportPlan.
  */
 async function checkRealEncode(): Promise<void> {
   const info = await detectFfmpeg();
@@ -2974,10 +3014,6 @@ async function checkRealEncode(): Promise<void> {
     return;
   }
   const bin = resolveFfmpegBin();
-
-  // Which optional filters does this build carry? (drawtext needs libfreetype.)
-  const filtersOut = spawnSync(bin, ["-hide_banner", "-filters"], { encoding: "utf8" }).stdout ?? "";
-  const hasDrawtext = /\bdrawtext\b/.test(filtersOut);
 
   const encDir = resolve(OUT_DIR, "encode");
   mkdirSync(encDir, { recursive: true });
@@ -2998,12 +3034,18 @@ async function checkRealEncode(): Promise<void> {
 
   const resolveMedia = (id: string): string => (id.startsWith("photo") ? (id === "photo-0" ? pngA : pngB) : srcMp4);
 
-  // A cinematic look + a caption track (dropped when the build lacks drawtext).
+  // A cinematic look + a caption track. Captions are ALWAYS burned in now (as a
+  // rasterized PNG overlay), regardless of whether the ffmpeg build has drawtext.
   const look = { brightness: 1.06, contrast: 1.12, saturation: 1.15, warmth: 0.35 };
-  const captions = (y: number): unknown[] =>
-    hasDrawtext
-      ? [{ id: "captions", kind: "visual", clips: [{ id: "cap0", kind: "text", start: 0.2, duration: 1.2, text: "Big news, folks: 100% real!", background: "#0a0d12cc", transform: { x: 540, y } }] }]
-      : [];
+  const captions = (y: number): unknown[] => [
+    { id: "captions", kind: "visual", clips: [{ id: "cap0", kind: "text", start: 0.2, duration: 1.2, text: "Big news, folks: 100% real!", background: "#0a0d12cc", transform: { x: 540, y } }] },
+  ];
+  // A bold title (also a PNG overlay on export). Distinct track/id from captions.
+  const titles = (): unknown => ({
+    id: "titles", kind: "visual", clips: [
+      { id: "title0", kind: "text", start: 0, duration: 2, text: "The Big Reveal", fontSize: 96, fontWeight: "bold", color: "#ffcf70", transform: { x: 540, y: 500 } },
+    ],
+  });
   // Fade-from-black / fade-to-black solids spanning a `total`-second doc.
   const fades = (total: number): unknown => ({
     id: "fades", kind: "visual", clips: [
@@ -3013,12 +3055,18 @@ async function checkRealEncode(): Promise<void> {
   });
 
   let encoded = 0;
-  const encode = (label: string, rawDoc: unknown): void => {
+  const encode = async (label: string, rawDoc: unknown): Promise<void> => {
     const doc = parseEditDoc(rawDoc);
     const out = resolve(encDir, `enc-${label}.mp4`);
-    const plan = buildExportPlan(doc, resolveMedia, out);
+    // Rasterize any text-bearing clips (captions/titles/callout labels) to
+    // transparent PNGs, then overlay them — NO drawtext, so it works on the bundled
+    // freetype-less ffmpeg. This is the exact path the export route now takes.
+    const overlays = await renderTextOverlays(doc, encDir);
+    const plan = buildExportPlan(doc, resolveMedia, out, overlays);
     // Guard the exact class of the fixed bug: a `\,` that got escaped twice.
     assert(!plan.filterComplex.includes("\\\\,"), `real encode [${label}]: double-escaped comma (\\\\,) in filtergraph — ffmpeg's eval will reject it`);
+    // Text is PNG overlays now, never drawtext (which the bundled ffmpeg lacks).
+    assert(!plan.filterComplex.includes("drawtext="), `real encode [${label}]: text must be PNG overlays, not drawtext (bundled ffmpeg has no libfreetype)`);
     const r = spawnSync(bin, plan.args, { encoding: "utf8" });
     assert(
       r.status === 0,
@@ -3032,7 +3080,7 @@ async function checkRealEncode(): Promise<void> {
   // (a) THE reported failing combo: highlight cut + 9:16 reframe (1080x1920) + 4K
   //     quality (1216x2160) + cinematic look + burn-in captions + fade in/out +
   //     punch-in emphasis (the sine-pulse zoompan) — every ingredient at once.
-  encode("a_failing_combo", {
+  await encode("a_failing_combo", {
     version: 1, meta: { title: "a", width: 1080, height: 1920, fps: 30, background: "#000000" },
     media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
     quality: { preset: "ultra", targetWidth: 1216, targetHeight: 2160, sharpen: 0.5, denoise: 0.3, aiUpscale: false, faithful: true },
@@ -3048,7 +3096,7 @@ async function checkRealEncode(): Promise<void> {
 
   // (b) reframe + 4K + look + captions + fades + emphasis on a single long clip,
   //     with a richer grade (hue + tone curve) to exercise the whole look chain.
-  encode("b_reframe_4k", {
+  await encode("b_reframe_4k", {
     version: 1, meta: { title: "b", width: 1080, height: 1920, fps: 30, background: "#000000" },
     media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
     quality: { preset: "high", targetWidth: 1216, targetHeight: 2160, sharpen: 0.4, denoise: 0.2, aiUpscale: false, faithful: true },
@@ -3064,7 +3112,7 @@ async function checkRealEncode(): Promise<void> {
   });
 
   // (c) multi-clip highlight with real A→B transitions (xfade video + acrossfade audio).
-  encode("c_xfade_transitions", {
+  await encode("c_xfade_transitions", {
     version: 1, meta: { title: "c", width: 1080, height: 1920, fps: 30 },
     media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
     tracks: [{ id: "video", kind: "visual", clips: [
@@ -3076,7 +3124,7 @@ async function checkRealEncode(): Promise<void> {
 
   // (d) keyframed transform on an overlay/PiP (x + y + rotation + opacity → overlay
   //     x/y expr, rotate=a(t), geq alpha(T)) composited over a base clip.
-  encode("d_kf_overlay", {
+  await encode("d_kf_overlay", {
     version: 1, meta: { title: "d", width: 1080, height: 1920, fps: 30 },
     media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
     tracks: [
@@ -3093,7 +3141,7 @@ async function checkRealEncode(): Promise<void> {
 
   // (e) adjustment layer + LUT-less grade (eq/curves/colorbalance/hue + grain/vignette,
   //     time-gated) over the whole composite.
-  encode("e_adjustment_grade", {
+  await encode("e_adjustment_grade", {
     version: 1, meta: { title: "e", width: 1080, height: 1920, fps: 30 },
     media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
     tracks: [
@@ -3106,7 +3154,7 @@ async function checkRealEncode(): Promise<void> {
 
   // (f) slideshow with crossfades (looped stills + Ken Burns zoompan + xfade). Small
   //     composition keeps the per-pixel zoompan cheap for the gate.
-  encode("f_slideshow_xfade", {
+  await encode("f_slideshow_xfade", {
     version: 1, meta: { title: "f", width: 540, height: 960, fps: 30 },
     media: [{ id: "photo-0", kind: "image", src: pngA, width: 1280, height: 720 }, { id: "photo-1", kind: "image", src: pngB, width: 1280, height: 720 }],
     tracks: [{ id: "video", kind: "visual", clips: [
@@ -3117,7 +3165,7 @@ async function checkRealEncode(): Promise<void> {
 
   // (g) shaped-reveal / green-screen overlay: chroma key + geq alpha mask over a base
   //     clip — the exact geq path the escaping bug (\\, ) and the alpha(x,y) fix live in.
-  encode("g_chroma_mask", {
+  await encode("g_chroma_mask", {
     version: 1, meta: { title: "g", width: 1080, height: 1920, fps: 30 },
     media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
     tracks: [
@@ -3128,16 +3176,28 @@ async function checkRealEncode(): Promise<void> {
     ],
   });
 
+  // (h) THE user's case, direct: burn-in captions AND a bold title over a real clip,
+  //     encoded by the BUNDLED (freetype-less) ffmpeg via PNG overlays. This is the
+  //     proof that a captioned/titled export now produces a real, non-empty .mp4.
+  await encode("h_captions_title", {
+    version: 1, meta: { title: "h", width: 1080, height: 1920, fps: 30, background: "#000000" },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 3, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } }] },
+      titles(),
+      ...captions(1600),
+    ],
+  });
+
   // (4) regression guard: a plain, simple single-clip export must still encode.
-  encode("plain_simple", {
+  await encode("plain_simple", {
     version: 1, meta: { title: "plain", width: 1080, height: 1920, fps: 30 },
     media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
     tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 2, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } }] }],
   });
 
-  const capNote = hasDrawtext ? "captions burned in" : "captions omitted (build lacks freetype/drawtext)";
   console.log(
-    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, plain; ${capNote}`,
+    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades+CAPTIONS), captions+title (user's case), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, plain; all text burned in as PNG overlays (works on the bundled freetype-less ffmpeg)`,
   );
 }
 

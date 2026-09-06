@@ -4,6 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.25 — export text via canvas PNG overlays (captions/titles work on any ffmpeg)
+- **Captioned/titled export now works** on the bundled ffmpeg (which has no `drawtext`/libfreetype): text clips (captions, titles, kinetic titles, callout labels) are rasterized by the canvas engine to transparent PNGs and overlaid (time-gated, positioned) instead of `drawtext` — universal compatibility AND pixel-exact preview↔export parity. `runExport` renders the PNGs (server-only, lazy canvas import) and threads paths into the pure `buildExportPlan`; `@cadence/render-node` added as a render-ffmpeg dep.
+- Animated text exports at its resting state (documented); preview still animates. Real-encode check 64 now burns captions+title and asserts exit 0.
+- *verified:* typecheck (root+web) + test:unit 49 + verify **64/64** (9 complex docs encoded incl. captions) + evals 5/5 + `next build`.
+
 ### S4.24 — easier transitions: apply-to-all · Auto · hover-preview · drag-drop
 - **Apply to all cuts** + one-tap **✦ Auto** (crossfade 0.5s to every cut) + **Remove all** — a prominent timeline-toolbar group and popover footer actions; each a single coalesced undo (`lib/transition-ops.ts` folds over the engine's pure per-cut ops).
 - **Hover mini-preview** — hovering any of the 55 transition swatches plays a tiny live A/B animation (pure `transitionStyle`, one rAF loop) so you see it before applying.
