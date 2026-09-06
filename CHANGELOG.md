@@ -4,6 +4,12 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.5 — Cycle F wave C (web): keyframe editor + transition chips + fade handles
+- **On-timeline keyframe editor:** select a clip → **⬦ Keyframes** expands a sub-lane per animatable prop (x/y/scale/rotation/opacity; volume for audio) with **draggable diamonds** — add at playhead, drag to retime, per-diamond value input + easing, right-click/Delete to remove (`setKeyframe`/`moveKeyframe`/`removeKeyframe`, coalesced undo).
+- **Per-cut transition chips:** a ◇ on every cut of a main visual track → popover with the 7-type gallery + duration slider + Hard cut (`setTransition({clipId})`/`clearTransition`).
+- **Audio fade handles:** drag the corner handles on audio/video clips to set fade-in/out (writes the existing `fadeInSec`/`fadeOutSec` via a new `setClipFade` client op), with a fade-ramp triangle.
+- All undoable + live-previewed. *verified:* typecheck (root+web) + `next build` + Playwright e2e **10/10** (+ artifact spec).
+
 ### S4.4 — Cycle F wave C (engine): per-cut transitions + manual keyframe ops
 - **Per-cut transitions:** `setTransition` gains an optional target (`clipId`/`atSec`) so a transition applies to ONE cut (global path unchanged when omitted); new `clearTransition(doc, clipId)` returns a cut to a hard cut. `set_transition` tool accepts `clipId`/`atSec` (+ all 7 types); new `clear_transition` tool.
 - **Manual keyframe ops** (for the on-timeline diamond editor): `setKeyframe` (upsert at t), `moveKeyframe` (re-time/re-sort), `removeKeyframe` (delete, drops empty array), `clipKeyframes` helper — `t` is clip-progress 0..1 matching `valueAt`. New `move_keyframe`/`remove_keyframe` tools (`add_keyframe` already covers add). No schema change (fields already existed).

@@ -1,8 +1,28 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { docDurationSec, parseEditDoc, type EditDoc, type MediaAsset, type TrackKind } from "@cadence/core";
-import { addTrack, removeTrack, setTrack, reorderTrack, moveClipToTrack } from "@cadence/director";
+import {
+  docDurationSec,
+  parseEditDoc,
+  type EditDoc,
+  type KeyframeEasing,
+  type KeyframeProp,
+  type MediaAsset,
+  type TrackKind,
+  type TransitionType,
+} from "@cadence/core";
+import {
+  addTrack,
+  removeTrack,
+  setTrack,
+  reorderTrack,
+  moveClipToTrack,
+  setTransition,
+  clearTransition,
+  setKeyframe,
+  moveKeyframe,
+  removeKeyframe,
+} from "@cadence/director";
 import type { TrackFlag } from "./CutsStrip";
 import type { Transcript } from "@cadence/understanding";
 import { RoomsRail, type RoomKey } from "./RoomsRail";
@@ -38,6 +58,7 @@ import {
   deleteClip,
   duplicateClip,
   setClipVolume,
+  setClipFade,
   type TrimEdge,
 } from "@/lib/edit-ops";
 import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
@@ -875,6 +896,83 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     }
   }
 
+  // ---- Per-cut transitions (P1-1) -------------------------------------------
+
+  /** Set one cut's incoming transition (type + duration) — undoable. */
+  function setClipTransition(clipId: string, type: TransitionType, durSec: number) {
+    setPlaying(false);
+    try {
+      commit(setTransition(doc, type, durSec, { clipId }));
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't set that transition.", "error");
+    }
+  }
+
+  /** Turn one cut back into a hard cut (clear its transition) — undoable. */
+  function clearClipTransition(clipId: string) {
+    setPlaying(false);
+    try {
+      commit(clearTransition(doc, clipId));
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't clear that transition.", "error");
+    }
+  }
+
+  // ---- On-timeline keyframes (P1-2) -----------------------------------------
+  // All three use the FUNCTIONAL commit form so a live diamond drag reads the
+  // freshest doc (not a stale closure) between coalesced steps, and swallow the
+  // pure fn's throw (a missed keyframe on a fast drag) as a no-op.
+
+  /** Upsert a keyframe on one clip (add-at-playhead, value edit, easing change). */
+  function setClipKeyframe(
+    clipId: string,
+    input: { prop: KeyframeProp; t: number; value: number; easing?: KeyframeEasing },
+  ) {
+    commit((prev) => {
+      try {
+        return setKeyframe(prev, clipId, input);
+      } catch {
+        return prev;
+      }
+    });
+  }
+
+  /** Move a keyframe in time (diamond horizontal drag) — coalesced per clip+prop. */
+  function moveClipKeyframe(clipId: string, prop: KeyframeProp, fromT: number, toT: number, value?: number) {
+    commit(
+      (prev) => {
+        try {
+          return moveKeyframe(prev, clipId, prop, fromT, toT, value);
+        } catch {
+          return prev;
+        }
+      },
+      { coalesce: `kf-${clipId}-${prop}` },
+    );
+  }
+
+  /** Remove a keyframe (right-click / menu on a diamond). */
+  function removeClipKeyframe(clipId: string, prop: KeyframeProp, t: number) {
+    commit((prev) => {
+      try {
+        return removeKeyframe(prev, clipId, prop, t);
+      } catch {
+        return prev;
+      }
+    });
+  }
+
+  // ---- Audio fade handles (P1-5) --------------------------------------------
+
+  /** Set one clip's fade-in / fade-out (corner drag) — coalesced into one undo. */
+  function setClipFadeAt(
+    clipId: string,
+    fade: { fadeInSec?: number; fadeOutSec?: number },
+    coalesceKey: string,
+  ) {
+    commit(setClipFade(doc, clipId, fade), { coalesce: coalesceKey });
+  }
+
   // ---- On-preview placement (Walkthrough room) ------------------------------
 
   /**
@@ -1105,6 +1203,12 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onSetTrackFlag: setTrackFlag,
               onReorderTrack: reorderTrackTo,
               onMoveClipToTrack: moveClipToTrackAt,
+              onSetTransition: setClipTransition,
+              onClearTransition: clearClipTransition,
+              onSetKeyframe: setClipKeyframe,
+              onMoveKeyframe: moveClipKeyframe,
+              onRemoveKeyframe: removeClipKeyframe,
+              onSetAudioFade: setClipFadeAt,
             }}
           />
         </div>

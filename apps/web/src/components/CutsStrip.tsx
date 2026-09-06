@@ -1,7 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Clip, EditDoc, Track, TrackKind } from "@cadence/core";
+import {
+  clipProgress,
+  valueAt,
+  type Clip,
+  type EditDoc,
+  type KeyframeEasing,
+  type KeyframeProp,
+  type Track,
+  type TrackKind,
+  type TransitionType,
+} from "@cadence/core";
+import { clipKeyframes } from "@cadence/director";
 import { fmtTime } from "@/lib/format";
 import { computeWaveform } from "@/lib/waveform";
 import { findClip, isMainSequentialTrack, maxTimelineDuration, MIN_CLIP_SEC, type TrimEdge } from "@/lib/edit-ops";
@@ -48,6 +59,28 @@ export interface TimelineEdit {
   onReorderTrack: (trackId: string, toIndex: number) => void;
   /** Move a clip onto another track at a (snapped) start; magnetic lanes gap-close. */
   onMoveClipToTrack: (clipId: string, toTrackId: string, toStartSec?: number) => void;
+  // ---- Per-cut transitions (Wave C — P1-1) --------------------------------
+  /** Set one cut's incoming transition (type + duration in seconds). */
+  onSetTransition: (clipId: string, type: TransitionType, durSec: number) => void;
+  /** Turn one cut back into a hard cut (clear its transition). */
+  onClearTransition: (clipId: string) => void;
+  // ---- On-timeline keyframes (Wave C — P1-2) ------------------------------
+  /** Upsert a keyframe on a clip (add-at-playhead / value edit / easing change). */
+  onSetKeyframe: (
+    clipId: string,
+    input: { prop: KeyframeProp; t: number; value: number; easing?: KeyframeEasing },
+  ) => void;
+  /** Move a keyframe in time (diamond drag); coalesced into one undo step. */
+  onMoveKeyframe: (clipId: string, prop: KeyframeProp, fromT: number, toT: number, value?: number) => void;
+  /** Remove a keyframe (right-click / menu on a diamond). */
+  onRemoveKeyframe: (clipId: string, prop: KeyframeProp, t: number) => void;
+  // ---- Audio fade handles (Wave C — P1-5) ---------------------------------
+  /** Set one clip's fade-in / fade-out (corner drag); coalesced into one undo. */
+  onSetAudioFade: (
+    clipId: string,
+    fade: { fadeInSec?: number; fadeOutSec?: number },
+    coalesceKey: string,
+  ) => void;
 }
 
 interface CutsStripProps {
@@ -178,7 +211,7 @@ const ICONS = {
 
 // ---- drag state ------------------------------------------------------------
 
-type DragKind = "trim-left" | "trim-right" | "move" | "seek" | null;
+type DragKind = "trim-left" | "trim-right" | "move" | "seek" | "fade-in" | "fade-out" | null;
 
 interface DragState {
   kind: DragKind;
@@ -189,6 +222,9 @@ interface DragState {
   /** Geometry captured at drag start so edge math is independent of live commits. */
   origStart: number;
   origEnd: number;
+  /** Fade seconds captured at drag start (for fade-in / fade-out handle drags). */
+  origFadeIn: number;
+  origFadeOut: number;
   moved: boolean;
   /** A within-main-track reorder resolves to a sequential index. */
   dropIndex: number | null;
@@ -196,6 +232,49 @@ interface DragState {
   dropTrackId: string | null;
   dropStart: number | null;
 }
+
+// ---- transitions / keyframes (Wave C) --------------------------------------
+
+/** The 7 faithful transition types, with short human labels for the gallery. */
+const TRANSITIONS: { type: TransitionType; label: string }[] = [
+  { type: "crossfade", label: "Crossfade" },
+  { type: "dip-to-black", label: "Dip to black" },
+  { type: "slide", label: "Slide" },
+  { type: "wipe", label: "Wipe" },
+  { type: "dissolve", label: "Dissolve" },
+  { type: "zoom", label: "Zoom" },
+  { type: "smooth", label: "Smooth" },
+];
+
+/** Which animatable props a clip kind supports (mirrors core's clipSupportsProp). */
+function animatableProps(clip: Clip): KeyframeProp[] {
+  if (clip.kind === "audio") return ["volume"];
+  if (clip.kind === "video") return ["x", "y", "scale", "rotation", "opacity", "volume"];
+  if (clip.kind === "image" || clip.kind === "text" || clip.kind === "solid") {
+    return ["x", "y", "scale", "rotation", "opacity"];
+  }
+  return [];
+}
+
+/** A clip's STATIC value for `prop` (the keyframe baseline `valueAt` falls back to). */
+function baseValue(clip: Clip, prop: KeyframeProp): number {
+  if (prop === "volume") return clip.kind === "video" || clip.kind === "audio" ? clip.volume : 1;
+  const t = "transform" in clip ? clip.transform : undefined;
+  const dflt = prop === "scale" || prop === "opacity" ? 1 : 0;
+  return t ? (t[prop] ?? dflt) : dflt;
+}
+
+/** Human label + formatting for a keyframe prop's value input. */
+const PROP_META: Record<KeyframeProp, { label: string; step: number; unit: string }> = {
+  x: { label: "X", step: 1, unit: "px" },
+  y: { label: "Y", step: 1, unit: "px" },
+  scale: { label: "Scale", step: 0.05, unit: "×" },
+  rotation: { label: "Rotation", step: 1, unit: "°" },
+  opacity: { label: "Opacity", step: 0.05, unit: "" },
+  volume: { label: "Volume", step: 0.05, unit: "" },
+};
+
+const EASINGS: KeyframeEasing[] = ["linear", "ease-in", "ease-out", "ease-in-out"];
 
 interface TrackDragState {
   trackId: string;
@@ -326,6 +405,10 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   // Inline rename editor state.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
+  // Per-cut transition popover: the clip being edited + its anchor screen rect.
+  const [transitionEdit, setTransitionEdit] = useState<{ clipId: string; x: number; y: number } | null>(null);
+  // Whether the selected clip's keyframe editor is expanded (tucked by default).
+  const [kfOpen, setKfOpen] = useState(false);
 
   const findTrackById = useCallback((id: string): Track | undefined => doc.tracks.find((t) => t.id === id), [doc.tracks]);
 
@@ -358,6 +441,8 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
     if (track.locked) return; // locked lane: clips are click-through for seek only
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    const fadeIn = clip.kind === "video" || clip.kind === "audio" ? clip.fadeInSec : 0;
+    const fadeOut = clip.kind === "video" || clip.kind === "audio" ? clip.fadeOutSec : 0;
     drag.current = {
       kind: edge ?? "move",
       clipId: clip.id,
@@ -366,6 +451,8 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
       startX: e.clientX,
       origStart: clip.start,
       origEnd: clip.start + clip.duration,
+      origFadeIn: fadeIn,
+      origFadeOut: fadeOut,
       moved: false,
       dropIndex: null,
       dropTrackId: null,
@@ -420,6 +507,20 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
         if (cur.kind === "trim-left") {
           const edgeTime = snap(cur.origStart + deltaSec, cur.clipId);
           edit.onTrim(cur.clipId, "left", edgeTime, `trim-${cur.clipId}`);
+          return;
+        }
+
+        // ---- audio fade handles ------------------------------------------
+        // Left handle drags RIGHT to lengthen the fade-in; right handle drags
+        // LEFT to lengthen the fade-out. setClipFade clamps each to [0, duration].
+        if (cur.kind === "fade-in") {
+          const next = Math.max(0, cur.origFadeIn + deltaSec);
+          edit.onSetAudioFade(cur.clipId, { fadeInSec: next }, `fade-${cur.clipId}`);
+          return;
+        }
+        if (cur.kind === "fade-out") {
+          const next = Math.max(0, cur.origFadeOut - deltaSec);
+          edit.onSetAudioFade(cur.clipId, { fadeOutSec: next }, `fade-${cur.clipId}`);
           return;
         }
 
@@ -749,6 +850,12 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
               {displayTracks.map((track) => {
                 const laneDimmed = track.hidden || (track.kind === "audio" && anyAudioSolo && !track.solo);
                 const isDropTarget = dropIndicator?.trackId === track.id;
+                // Per-cut transition chips: on a magnetic (main) VISUAL track only,
+                // every sequential video/image clip except the first sits over a cut.
+                const showChips = isMainSequentialTrack(track) && track.kind === "visual" && !track.locked;
+                const chipClips = showChips
+                  ? track.clips.filter((c) => c.kind === "video" || c.kind === "image")
+                  : [];
                 return (
                   <div
                     key={track.id}
@@ -812,6 +919,27 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                           ].join(" ")}
                           style={{ left, width }}
                         >
+                          {/* Audio fade ramps (video/audio) — subtle triangles at the edges. */}
+                          {(clip.kind === "video" || clip.kind === "audio") && clip.fadeInSec > 0 && (
+                            <span
+                              aria-hidden
+                              className="pointer-events-none absolute inset-y-0 left-0 bg-teal/25"
+                              style={{
+                                width: Math.min(width, secToPx(clip.fadeInSec)),
+                                clipPath: "polygon(0 100%, 100% 0, 100% 100%)",
+                              }}
+                            />
+                          )}
+                          {(clip.kind === "video" || clip.kind === "audio") && clip.fadeOutSec > 0 && (
+                            <span
+                              aria-hidden
+                              className="pointer-events-none absolute inset-y-0 right-0 bg-teal/25"
+                              style={{
+                                width: Math.min(width, secToPx(clip.fadeOutSec)),
+                                clipPath: "polygon(0 0, 0 100%, 100% 100%)",
+                              }}
+                            />
+                          )}
                           <span className="pointer-events-none block truncate">{clipLabel(clip)}</span>
                           {/* Trim handles — only meaningful once selected, but always grabbable. */}
                           {!track.locked && (
@@ -834,7 +962,89 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                               />
                             </>
                           )}
+                          {/* Audio fade handles — top corners, shown when selected. */}
+                          {!track.locked && isSelected && (clip.kind === "video" || clip.kind === "audio") && (
+                            <>
+                              <span
+                                onPointerDown={(e) => onClipPointerDown(e, clip, track, "fade-in")}
+                                role="slider"
+                                aria-label={`Fade in: ${clip.fadeInSec.toFixed(1)}s — drag right to lengthen`}
+                                aria-valuenow={Math.round(clip.fadeInSec * 10) / 10}
+                                aria-valuemin={0}
+                                aria-valuemax={Math.round(clip.duration * 10) / 10}
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const d = e.key === "ArrowRight" ? 0.1 : -0.1;
+                                    edit.onSetAudioFade(clip.id, { fadeInSec: Math.max(0, clip.fadeInSec + d) }, `fade-${clip.id}`);
+                                  }
+                                }}
+                                title="Fade in — drag right (or ←/→) to set"
+                                className="absolute top-0 z-20 -mt-1 -ml-1.5 h-3 w-3 cursor-ew-resize rounded-full border border-panel bg-teal shadow"
+                                style={{ left: Math.min(width, secToPx(clip.fadeInSec)) }}
+                              />
+                              <span
+                                onPointerDown={(e) => onClipPointerDown(e, clip, track, "fade-out")}
+                                role="slider"
+                                aria-label={`Fade out: ${clip.fadeOutSec.toFixed(1)}s — drag left to lengthen`}
+                                aria-valuenow={Math.round(clip.fadeOutSec * 10) / 10}
+                                aria-valuemin={0}
+                                aria-valuemax={Math.round(clip.duration * 10) / 10}
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const d = e.key === "ArrowLeft" ? 0.1 : -0.1;
+                                    edit.onSetAudioFade(clip.id, { fadeOutSec: Math.max(0, clip.fadeOutSec + d) }, `fade-${clip.id}`);
+                                  }
+                                }}
+                                title="Fade out — drag left (or ←/→) to set"
+                                className="absolute top-0 z-20 -mt-1 -mr-1.5 h-3 w-3 cursor-ew-resize rounded-full border border-panel bg-teal shadow"
+                                style={{ right: Math.min(width, secToPx(clip.fadeOutSec)) }}
+                              />
+                            </>
+                          )}
                         </div>
+                      );
+                    })}
+                    {/* Per-cut transition chips (sit over each cut boundary). */}
+                    {chipClips.map((clip, i) => {
+                      if (i === 0) return null; // the first clip has no incoming cut
+                      const on = clip.transitionInSec > 0;
+                      return (
+                        <button
+                          key={`xf-${clip.id}`}
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                            setTransitionEdit(
+                              transitionEdit?.clipId === clip.id
+                                ? null
+                                : { clipId: clip.id, x: r.left + r.width / 2, y: r.bottom },
+                            );
+                          }}
+                          title={on ? `Transition: ${clip.transitionType} ${clip.transitionInSec.toFixed(1)}s — click to edit` : "Hard cut — click to add a transition"}
+                          aria-label={on ? `Edit transition on this cut (${clip.transitionType})` : "Add a transition on this cut"}
+                          aria-haspopup="dialog"
+                          aria-expanded={transitionEdit?.clipId === clip.id}
+                          className="absolute top-1/2 z-30 grid h-4 w-4 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-[3px] text-amber outline-none transition hover:scale-110"
+                          style={{ left: secToPx(clip.start) }}
+                        >
+                          <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden focusable="false">
+                            <path
+                              d="M6 1 11 6 6 11 1 6Z"
+                              fill={on ? "var(--color-amber)" : "var(--color-panel)"}
+                              stroke="var(--color-amber)"
+                              strokeWidth={1.5}
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </button>
                       );
                     })}
                   </div>
@@ -851,9 +1061,142 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
         </div>
       </div>
 
-      {/* Inspector for the selected clip */}
-      {selected && <ClipInspector doc={doc} found={selected} timeSec={timeSec} edit={edit} />}
+      {/* Inspector for the selected clip + its (tucked) keyframe editor */}
+      {selected && (
+        <>
+          <ClipInspector
+            doc={doc}
+            found={selected}
+            timeSec={timeSec}
+            edit={edit}
+            kfOpen={kfOpen}
+            onToggleKf={() => setKfOpen((o) => !o)}
+          />
+          {kfOpen && <KeyframeEditor clip={selected.clip} timeSec={timeSec} edit={edit} />}
+        </>
+      )}
+
+      {/* Per-cut transition popover (fixed to the chip's screen position) */}
+      {transitionEdit && (() => {
+        const found = findClip(doc, transitionEdit.clipId);
+        if (!found || (found.clip.kind !== "video" && found.clip.kind !== "image")) return null;
+        return (
+          <TransitionPopover
+            clip={found.clip}
+            x={transitionEdit.x}
+            y={transitionEdit.y}
+            edit={edit}
+            onClose={() => setTransitionEdit(null)}
+          />
+        );
+      })()}
     </section>
+  );
+}
+
+// ---- per-cut transition popover --------------------------------------------
+
+function TransitionPopover({
+  clip,
+  x,
+  y,
+  edit,
+  onClose,
+}: {
+  clip: Extract<Clip, { kind: "video" | "image" }>;
+  x: number;
+  y: number;
+  edit: TimelineEdit;
+  onClose: () => void;
+}) {
+  const on = clip.transitionInSec > 0;
+  // Seed the duration slider from the current transition, else a sensible 0.6s.
+  const [dur, setDur] = useState(on ? Math.max(0.1, Math.min(2, clip.transitionInSec)) : 0.6);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Keep the panel on-screen (it is ~248px wide).
+  const left = typeof window !== "undefined" ? Math.min(x - 124, window.innerWidth - 260) : x - 124;
+  return (
+    <>
+      {/* click-catcher */}
+      <div className="fixed inset-0 z-40" onPointerDown={onClose} aria-hidden />
+      <div
+        role="dialog"
+        aria-label="Cut transition"
+        className="fixed z-50 rounded-xl border border-line bg-elevated p-3 text-xs shadow-2xl"
+        style={{ left: Math.max(8, left), top: y + 6, width: 248 }}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <div className="mb-2 flex items-center justify-between">
+          <span className="font-medium text-text">Transition</span>
+          <button
+            type="button"
+            onClick={() => {
+              edit.onClearTransition(clip.id);
+              onClose();
+            }}
+            className={[
+              "rounded-md border px-2 py-0.5 text-[11px] transition",
+              on ? "border-line bg-panel text-muted hover:text-text" : "border-amber/40 bg-amber/10 text-amber",
+            ].join(" ")}
+          >
+            Hard cut
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-1.5">
+          {TRANSITIONS.map(({ type, label }) => {
+            const active = on && clip.transitionType === type;
+            return (
+              <button
+                key={type}
+                type="button"
+                onClick={() => edit.onSetTransition(clip.id, type, dur)}
+                aria-pressed={active}
+                className={[
+                  "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition",
+                  active
+                    ? "border-amber bg-amber/10 text-amber"
+                    : "border-line bg-panel text-muted hover:border-amber/40 hover:text-text",
+                ].join(" ")}
+              >
+                <span
+                  aria-hidden
+                  className={["h-2.5 w-2.5 shrink-0 rounded-[2px]", active ? "bg-amber" : "bg-teal/50"].join(" ")}
+                />
+                <span className="truncate text-[11px]">{label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <label className="mt-3 flex items-center gap-2">
+          <span className="shrink-0 text-faint">Duration</span>
+          <input
+            type="range"
+            min={0.1}
+            max={2}
+            step={0.1}
+            value={dur}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setDur(v);
+              // Live-update only when a transition is already set (keeps the type).
+              if (clip.transitionInSec > 0) edit.onSetTransition(clip.id, clip.transitionType, v);
+            }}
+            aria-label={`Transition duration: ${dur.toFixed(1)}s`}
+            style={{ accentColor: "var(--color-amber)" }}
+            className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-line"
+          />
+          <span className="w-8 shrink-0 text-right tabular-nums text-muted">{dur.toFixed(1)}s</span>
+        </label>
+      </div>
+    </>
   );
 }
 
@@ -1010,13 +1353,19 @@ function ClipInspector({
   found,
   timeSec,
   edit,
+  kfOpen,
+  onToggleKf,
 }: {
   doc: EditDoc;
   found: NonNullable<ReturnType<typeof findClip>>;
   timeSec: number;
   edit: TimelineEdit;
+  kfOpen: boolean;
+  onToggleKf: () => void;
 }) {
   const { clip, track } = found;
+  const canKeyframe = animatableProps(clip).length > 0;
+  const kfCount = "keyframes" in clip && clip.keyframes ? clip.keyframes.length : 0;
   const hasVolume = clip.kind === "video" || clip.kind === "audio";
   const volume = hasVolume ? clip.volume : 1;
   const muted = hasVolume && clip.volume === 0;
@@ -1116,6 +1465,21 @@ function ClipInspector({
           </button>
         </span>
       )}
+      {canKeyframe && (
+        <button
+          type="button"
+          onClick={onToggleKf}
+          aria-pressed={kfOpen}
+          aria-label={kfOpen ? "Hide keyframes" : "Show keyframes"}
+          title="Keyframe the clip's motion / opacity / volume"
+          className={[
+            "rounded-md border px-2 py-1 transition",
+            kfOpen ? "border-amber/40 bg-amber/10 text-amber" : "border-line bg-panel text-muted hover:text-text",
+          ].join(" ")}
+        >
+          ⬦ Keyframes{kfCount > 0 ? ` (${kfCount})` : ""}
+        </button>
+      )}
       <button
         type="button"
         onClick={() => edit.onSplitAt(clip.id, timeSec)}
@@ -1148,6 +1512,226 @@ function ClipInspector({
       >
         Delete
       </button>
+    </div>
+  );
+}
+
+// ---- on-timeline keyframe editor -------------------------------------------
+
+const KF_EPS = 1e-3;
+const round3 = (n: number): number => Math.round(n * 1000) / 1000;
+
+/** Format a keyframe value for the compact display (per-prop precision). */
+function fmtKfValue(prop: KeyframeProp, v: number): string {
+  if (prop === "scale" || prop === "opacity" || prop === "volume") return v.toFixed(2);
+  return String(Math.round(v));
+}
+
+/**
+ * The expandable per-prop keyframe editor for the selected clip. One thin sub-lane
+ * per animatable prop (t = 0 at the clip's head → 1 at its tail); each keyframe is
+ * a draggable diamond at `t · laneWidth`. Add at the playhead, edit the selected
+ * diamond's value/easing, drag to retime, right-click / Del to remove. Every edit
+ * routes through the timeline callbacks → the editor's undoable commit.
+ */
+function KeyframeEditor({
+  clip,
+  timeSec,
+  edit,
+}: {
+  clip: Clip;
+  timeSec: number;
+  edit: TimelineEdit;
+}) {
+  const props = animatableProps(clip);
+  const [sel, setSel] = useState<{ prop: KeyframeProp; t: number } | null>(null);
+  const laneRefs = useRef<Map<KeyframeProp, HTMLDivElement>>(new Map());
+  const drag = useRef<{ prop: KeyframeProp; origT: number; fromT: number; startX: number; width: number } | null>(null);
+  const progress = clipProgress(clip, timeSec);
+  const kfs = "keyframes" in clip ? clip.keyframes : undefined;
+  // Every clip KeyframeEditor renders for (video/image/text/solid/audio) carries a
+  // `keyframes` field; narrow past the cursor/callout union members for clipKeyframes.
+  const kfClip = clip as Parameters<typeof clipKeyframes>[0];
+
+  // Drop the selection if its diamond no longer exists (removed / undone).
+  useEffect(() => {
+    if (sel && !clipKeyframes(kfClip, sel.prop).some((k) => Math.abs(k.t - sel.t) < KF_EPS)) setSel(null);
+  }, [kfClip, sel]);
+
+  const startDiamondDrag = (e: React.PointerEvent, prop: KeyframeProp, t: number) => {
+    e.stopPropagation();
+    const lane = laneRefs.current.get(prop);
+    const width = lane?.getBoundingClientRect().width ?? 1;
+    drag.current = { prop, origT: t, fromT: t, startX: e.clientX, width };
+    setSel({ prop, t });
+    let moved = false;
+    const move = (ev: PointerEvent) => {
+      const d = drag.current;
+      if (!d) return;
+      const dx = ev.clientX - d.startX;
+      if (!moved && Math.abs(dx) < 3) return;
+      moved = true;
+      const newT = round3(Math.max(0, Math.min(1, d.origT + dx / Math.max(1, d.width))));
+      if (Math.abs(newT - d.fromT) >= KF_EPS) {
+        edit.onMoveKeyframe(clip.id, d.prop, d.fromT, newT);
+        d.fromT = newT;
+        setSel({ prop: d.prop, t: newT });
+      }
+    };
+    const up = () => {
+      drag.current = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
+  const addAtPlayhead = (prop: KeyframeProp) => {
+    const value = valueAt(kfs, prop, progress, baseValue(clip, prop));
+    const t = round3(progress);
+    edit.onSetKeyframe(clip.id, { prop, t, value });
+    setSel({ prop, t });
+  };
+
+  const selectedKf =
+    sel ? clipKeyframes(kfClip, sel.prop).find((k) => Math.abs(k.t - sel.t) < KF_EPS) ?? null : null;
+
+  return (
+    <div className="mt-2 rounded-xl border border-line bg-elevated/40 px-3 py-2">
+      <div className="mb-1.5 flex items-center gap-2 text-[11px]">
+        <span className="uppercase tracking-wider text-faint">Keyframes</span>
+        <span className="text-line">·</span>
+        <span className="text-muted">click a lane&apos;s ⬦ to add at the playhead · drag diamonds to retime · right-click to remove</span>
+      </div>
+      <div className="flex flex-col gap-1">
+        {props.map((prop) => {
+          const rowKfs = clipKeyframes(kfClip, prop);
+          const meta = PROP_META[prop];
+          return (
+            <div key={prop} className="flex items-center gap-2">
+              <span className="w-14 shrink-0 text-[10px] uppercase text-faint">{meta.label}</span>
+              <button
+                type="button"
+                onClick={() => addAtPlayhead(prop)}
+                aria-label={`Add a ${meta.label} keyframe at the playhead`}
+                title={`Add a ${meta.label} keyframe at the playhead`}
+                className="grid h-5 w-5 shrink-0 place-items-center rounded-md border border-line bg-panel text-amber outline-none transition hover:border-amber/40"
+              >
+                ⬦
+              </button>
+              <div
+                ref={(el) => {
+                  if (el) laneRefs.current.set(prop, el);
+                  else laneRefs.current.delete(prop);
+                }}
+                className="relative h-5 flex-1 rounded-md bg-line-soft/40"
+              >
+                {/* clip-progress playhead marker */}
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-y-0 z-0 w-px bg-amber/70"
+                  style={{ left: `${progress * 100}%` }}
+                />
+                {rowKfs.map((k) => {
+                  const isSel = sel?.prop === prop && Math.abs(sel.t - k.t) < KF_EPS;
+                  return (
+                    <button
+                      key={`${prop}-${k.t}`}
+                      type="button"
+                      onPointerDown={(e) => startDiamondDrag(e, prop, k.t)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSel({ prop, t: k.t });
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        edit.onRemoveKeyframe(clip.id, prop, k.t);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Delete" || e.key === "Backspace") {
+                          e.preventDefault();
+                          edit.onRemoveKeyframe(clip.id, prop, k.t);
+                        } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                          e.preventDefault();
+                          const nt = round3(Math.max(0, Math.min(1, k.t + (e.key === "ArrowRight" ? 0.02 : -0.02))));
+                          edit.onMoveKeyframe(clip.id, prop, k.t, nt);
+                          setSel({ prop, t: nt });
+                        }
+                      }}
+                      aria-label={`${meta.label} keyframe at ${Math.round(k.t * 100)}%, value ${fmtKfValue(prop, k.value)}${isSel ? ", selected" : ""}`}
+                      title={`${meta.label} ${fmtKfValue(prop, k.value)} @ ${Math.round(k.t * 100)}% · drag to retime · right-click to remove`}
+                      className="absolute top-1/2 z-10 grid h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize place-items-center outline-none"
+                      style={{ left: `${k.t * 100}%` }}
+                    >
+                      <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden focusable="false">
+                        <path
+                          d="M6 1 11 6 6 11 1 6Z"
+                          fill={isSel ? "var(--color-amber)" : "var(--color-teal)"}
+                          stroke={isSel ? "var(--color-amber)" : "var(--color-teal)"}
+                          strokeWidth={1}
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Selected-diamond controls: value + easing + remove */}
+      {sel && selectedKf && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-line-soft pt-2 text-xs">
+          <span className="rounded bg-panel px-1.5 py-0.5 text-[10px] uppercase text-faint">
+            {PROP_META[sel.prop].label} @ {Math.round(sel.t * 100)}%
+          </span>
+          <label className="flex items-center gap-1.5">
+            <span className="text-faint">Value</span>
+            <input
+              type="number"
+              step={PROP_META[sel.prop].step}
+              value={selectedKf.value}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (Number.isFinite(v)) edit.onSetKeyframe(clip.id, { prop: sel.prop, t: sel.t, value: v, easing: selectedKf.easing });
+              }}
+              aria-label={`${PROP_META[sel.prop].label} value`}
+              className="w-20 rounded-md border border-line bg-panel px-1.5 py-0.5 text-text outline-none"
+            />
+            {PROP_META[sel.prop].unit && <span className="text-faint">{PROP_META[sel.prop].unit}</span>}
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span className="text-faint">Easing</span>
+            <select
+              value={selectedKf.easing}
+              onChange={(e) =>
+                edit.onSetKeyframe(clip.id, { prop: sel.prop, t: sel.t, value: selectedKf.value, easing: e.target.value as KeyframeEasing })
+              }
+              aria-label="Keyframe easing"
+              className="rounded-md border border-line bg-panel px-1.5 py-0.5 text-muted outline-none"
+            >
+              {EASINGS.map((es) => (
+                <option key={es} value={es}>
+                  {es}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={() => edit.onRemoveKeyframe(clip.id, sel.prop, sel.t)}
+            className="rounded-md border border-line bg-panel px-2 py-0.5 text-red-300 transition hover:bg-red-500/15"
+          >
+            Remove
+          </button>
+        </div>
+      )}
     </div>
   );
 }

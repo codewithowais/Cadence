@@ -217,6 +217,31 @@ export function setClipVolume(doc: EditDoc, clipId: string, volume: number): Edi
   return parseEditDoc(clone);
 }
 
+// ---- Audio fade (per-clip fade handles) ------------------------------------
+
+/**
+ * Set a single clip's audio fade-in / fade-out (seconds) — the same
+ * `fadeInSec` / `fadeOutSec` schema fields the Audio room's `audioFade` fn writes,
+ * but targeted at ONE clip by id (the timeline's corner fade handles always know
+ * which clip they are dragging). Only video and audio clips carry a fade; any
+ * other kind is a no-op. Each value is clamped to [0, clip.duration] so a ramp
+ * never exceeds the clip. Pure + re-parsed through the schema.
+ */
+export function setClipFade(
+  doc: EditDoc,
+  clipId: string,
+  fade: { fadeInSec?: number; fadeOutSec?: number },
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const found = findClip(clone, clipId);
+  if (found && (found.clip.kind === "video" || found.clip.kind === "audio")) {
+    const max = found.clip.duration;
+    if (fade.fadeInSec !== undefined) found.clip.fadeInSec = clamp(round(fade.fadeInSec), 0, max);
+    if (fade.fadeOutSec !== undefined) found.clip.fadeOutSec = clamp(round(fade.fadeOutSec), 0, max);
+  }
+  return parseEditDoc(clone);
+}
+
 // ---- Trim ------------------------------------------------------------------
 
 export type TrimEdge = "left" | "right";
