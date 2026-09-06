@@ -14,7 +14,11 @@
 import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
 import {
   activeClipsAt,
+  calloutScreenRect,
+  calloutTransform,
   cssFilter,
+  cursorPositionAt,
+  cursorRipples,
   emphasisScale,
   fontWeightToCss,
   imageMotion,
@@ -22,6 +26,10 @@ import {
   textKinetic,
   transitionMotion,
   transitionOpacity,
+  typewriterText,
+  type CalloutClip,
+  type Clip,
+  type CursorClip,
   type EditDoc,
   type ImageClip,
   type RenderedFrame,
@@ -50,8 +58,14 @@ function drawText(ctx: SKRSContext2D, clip: TextClip): void {
   ctx.textAlign = clip.align;
   ctx.textBaseline = "middle";
 
+  // Typewriter: reveal only the substring visible at this time (shared core
+  // helper), and optionally a blinking caret — mirrors the export's drawtext slices.
+  const tw = clip.anim.style === "typewriter" ? typewriterText(clip, clipTimeCache) : null;
+  const shown = tw ? tw.text + (tw.caretVisible ? "|" : "") : clip.text;
+
   if (clip.background) {
-    const m = ctx.measureText(clip.text);
+    // Size the pill to the FULL text so the field box doesn't grow while typing.
+    const m = ctx.measureText(tw ? clip.text : shown);
     const padX = clip.fontSize * 0.4;
     const padY = clip.fontSize * 0.28;
     const w = m.width + padX * 2;
@@ -69,12 +83,112 @@ function drawText(ctx: SKRSContext2D, clip: TextClip): void {
     ctx.strokeStyle = clip.outline.color;
     ctx.lineJoin = "round";
     ctx.miterLimit = 2;
-    ctx.strokeText(clip.text, 0, 0);
+    ctx.strokeText(shown, 0, 0);
   }
 
   ctx.fillStyle = clip.color;
-  ctx.fillText(clip.text, 0, 0);
+  ctx.fillText(shown, 0, 0);
   ctx.restore();
+}
+
+/**
+ * An arrow mouse-pointer at the interpolated cursor position, plus an expanding
+ * ring for each active click (shared core helpers cursorPositionAt / cursorRipples).
+ * The arrow is a small classic pointer polygon whose tip sits at (x, y).
+ */
+function drawCursor(ctx: SKRSContext2D, clip: CursorClip, frameW: number, frameH: number): void {
+  const { x, y } = cursorPositionAt(clip, clipTimeCache);
+
+  // Click ripples first, so the pointer sits on top of them.
+  const maxR = clip.size * 1.6;
+  for (const rip of cursorRipples(clip, clipTimeCache)) {
+    ctx.save();
+    ctx.globalAlpha = rip.opacity;
+    ctx.strokeStyle = clip.color;
+    ctx.lineWidth = Math.max(2, clip.size * 0.08);
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(1, rip.radiusFrac * maxR), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Arrow pointer: a classic pointer whose tip is the hotspot at (x, y).
+  const s = clip.size;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, s);
+  ctx.lineTo(s * 0.28, s * 0.75);
+  ctx.lineTo(s * 0.46, s * 1.1);
+  ctx.lineTo(s * 0.6, s * 1.04);
+  ctx.lineTo(s * 0.42, s * 0.68);
+  ctx.lineTo(s * 0.72, s * 0.68);
+  ctx.closePath();
+  ctx.fillStyle = clip.color;
+  ctx.strokeStyle = "#0a0d12";
+  ctx.lineWidth = Math.max(1, s * 0.04);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  void frameW;
+  void frameH;
+}
+
+/**
+ * A callout / highlight: optionally dim everything OUTSIDE the rect, then a bright
+ * rounded border, then an optional label. Drawn in SCREEN coordinates using the
+ * shared calloutScreenRect (which already accounts for any zoom, applied to the
+ * content by the caller). Faithful: an overlay, no content change.
+ */
+function drawCallout(ctx: SKRSContext2D, clip: CalloutClip, frameW: number, frameH: number): void {
+  const r = calloutScreenRect(clip);
+
+  if (clip.dim && clip.dimOpacity > 0) {
+    // Dim the frame, then punch the rect back to clear via destination-out.
+    ctx.save();
+    ctx.fillStyle = `rgba(0,0,0,${Math.min(0.95, clip.dimOpacity).toFixed(3)})`;
+    ctx.fillRect(0, 0, frameW, frameH);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.beginPath();
+    ctx.roundRect(r.x, r.y, r.w, r.h, clip.radius);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  if (clip.borderWidth > 0) {
+    ctx.save();
+    ctx.strokeStyle = clip.color;
+    ctx.lineWidth = clip.borderWidth;
+    ctx.beginPath();
+    ctx.roundRect(r.x, r.y, r.w, r.h, clip.radius);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  if (clip.label) {
+    ctx.save();
+    const fs = Math.max(18, Math.round(Math.min(frameW, frameH) * 0.03));
+    ctx.font = `600 ${fs}px sans-serif`;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    const padX = fs * 0.5;
+    const padY = fs * 0.35;
+    const m = ctx.measureText(clip.label);
+    const boxW = m.width + padX * 2;
+    const boxH = fs + padY * 2;
+    // Prefer above the rect; drop below when there's no room at the top.
+    const above = r.y - boxH - fs * 0.4;
+    const by = above > 0 ? above : r.y + r.h + fs * 0.4;
+    const bx = Math.max(0, Math.min(frameW - boxW, r.x));
+    ctx.fillStyle = clip.color;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, boxW, boxH, boxH * 0.28);
+    ctx.fill();
+    ctx.fillStyle = "#0a0d12";
+    ctx.fillText(clip.label, bx + padX, by + boxH / 2);
+    ctx.restore();
+  }
 }
 
 function drawMedia(
@@ -226,6 +340,28 @@ function tintFor(id: string): string {
   return `#${hex}`;
 }
 
+/** Draw one non-overlay clip (text / image / video / solid). Audio is silent. */
+function drawContentClip(ctx: SKRSContext2D, clip: Clip, doc: EditDoc, width: number, height: number): void {
+  switch (clip.kind) {
+    case "text":
+      drawText(ctx, clip);
+      break;
+    case "image":
+    case "video": {
+      const asset = doc.media.find((m) => m.id === clip.mediaId);
+      drawMedia(ctx, clip, asset?.label ?? asset?.src ?? clip.mediaId, tintFor(clip.mediaId), width, height);
+      break;
+    }
+    case "solid":
+      drawSolid(ctx, clip, width, height);
+      break;
+    case "audio":
+    case "cursor":
+    case "callout":
+      break;
+  }
+}
+
 // The active render time, so draw helpers can read it without threading it
 // through every call. Set at the top of renderFrame (single-threaded).
 let clipTimeCache = 0;
@@ -240,24 +376,28 @@ export class CanvasRenderEngine implements RenderEngine {
     ctx.fillStyle = background;
     ctx.fillRect(0, 0, width, height);
 
-    for (const { clip } of activeClipsAt(doc, timeSec)) {
-      switch (clip.kind) {
-        case "text":
-          drawText(ctx, clip);
-          break;
-        case "image":
-        case "video": {
-          const asset = doc.media.find((m) => m.id === clip.mediaId);
-          drawMedia(ctx, clip, asset?.label ?? asset?.src ?? clip.mediaId, tintFor(clip.mediaId), width, height);
-          break;
-        }
-        case "solid":
-          drawSolid(ctx, clip, width, height);
-          break;
-        case "audio":
-          break;
-      }
+    const active = activeClipsAt(doc, timeSec).map(({ clip }) => clip);
+    const callouts = active.filter((c): c is CalloutClip => c.kind === "callout");
+    const cursors = active.filter((c): c is CursorClip => c.kind === "cursor");
+    const content = active.filter((c) => c.kind !== "callout" && c.kind !== "cursor");
+
+    // A callout with zoom magnifies the composited CONTENT toward its rect. Apply
+    // that transform (scale about the rect center, shared core helper) around the
+    // content draw only; the callout border/dim/label and the cursor stay in
+    // screen space so they frame/point at the final pixels.
+    const zoomCallout = callouts.find((c) => c.zoom > 1);
+    if (zoomCallout) {
+      const t = calloutTransform(zoomCallout);
+      ctx.save();
+      ctx.translate(t.tx, t.ty);
+      ctx.scale(t.scale, t.scale);
     }
+    for (const clip of content) drawContentClip(ctx, clip as Clip, doc, width, height);
+    if (zoomCallout) ctx.restore();
+
+    // Callouts (dim + border + label), then cursors, over the content.
+    for (const c of callouts) drawCallout(ctx, c, width, height);
+    for (const c of cursors) drawCursor(ctx, c, width, height);
 
     // Whole-frame finishing overlays (vignette / grain / light-leak), over everything.
     drawVfx(ctx, doc.vfx, width, height);

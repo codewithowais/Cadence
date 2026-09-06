@@ -17,9 +17,12 @@ import type { ProjectState } from "./project";
 import { buildHighlightDoc } from "./highlight";
 import { fillerCut } from "./filler";
 import { buildSlideshowDoc } from "./slideshow";
+import { buildDemo, type BuildDemoOptions } from "./demo";
 import {
   addBroll,
+  addCallout,
   addCaptions,
+  addCursor,
   addEmphasis,
   addFades,
   addKineticTitle,
@@ -36,6 +39,7 @@ import {
   setTransition,
   setZoom,
   styleCaptions,
+  typeText,
   type AspectKey,
   type BrollCorner,
   type CaptionStyleOpts,
@@ -516,6 +520,141 @@ export const transitionTool: DirectorTool<{ type: TransitionType }> = {
   },
 };
 
+// ---- build_demo (interaction walkthrough from screenshots) -----------------
+
+export const buildDemoTool: DirectorTool<{ perScreenSec?: number; transition?: TransitionType; login?: boolean }> = {
+  name: "build_demo",
+  description:
+    "Turn the project's screenshots (image media, in order = screens) into an animated product walkthrough: each screenshot becomes a full-frame screen, sequenced with a transition. When `login` is set, screen 1 gets a demo interaction — a typed email + password (typewriter) and a cursor that moves to a button and clicks. Field/button positions are sensible defaults (no vision) the user can nudge with add_cursor / type_text / add_callout.",
+  inputSchema: z.object({
+    perScreenSec: z.number().positive().optional(),
+    transition: z.enum(["crossfade", "dip-to-black", "slide", "wipe", "dissolve", "zoom", "smooth"]).optional(),
+    login: z.boolean().optional(),
+  }),
+  async execute(input, ctx) {
+    const imgs = images(ctx.project);
+    if (imgs.length === 0) throw new Error("Add screenshots (images) first to build a demo.");
+    const opts: BuildDemoOptions = {
+      perScreenSec: input.perScreenSec,
+      transition: input.transition,
+      login: input.login,
+    };
+    const doc = buildDemo(imgs, opts);
+    return commit(
+      ctx.project,
+      doc,
+      `Built a ${Math.round(docDurationSec(doc))}s walkthrough from ${imgs.length} screen${imgs.length === 1 ? "" : "s"}` +
+        `${input.login ? " with a typed login + click on screen 1" : ""}. ` +
+        `Field/button positions are defaults — nudge them with add_cursor / type_text / add_callout.`,
+    );
+  },
+};
+
+// ---- add_cursor ------------------------------------------------------------
+
+export const addCursorTool: DirectorTool<{
+  waypoints: { x: number; y: number; atSec: number }[];
+  clicks?: number[];
+  size?: number;
+  color?: string;
+}> = {
+  name: "add_cursor",
+  description:
+    "Add an animated mouse pointer that eases through `waypoints` (composition px, each with a timeline `atSec`) and fires a click ripple at each time in `clicks`.",
+  inputSchema: z.object({
+    waypoints: z
+      .array(z.object({ x: z.number(), y: z.number(), atSec: z.number().nonnegative() }))
+      .min(1),
+    clicks: z.array(z.number().nonnegative()).optional(),
+    size: z.number().positive().optional(),
+    color: z.string().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = addCursor(ctx.project.doc, input);
+    return commit(
+      ctx.project,
+      doc,
+      `Added a cursor through ${input.waypoints.length} waypoint${input.waypoints.length === 1 ? "" : "s"}` +
+        `${input.clicks?.length ? ` with ${input.clicks.length} click${input.clicks.length === 1 ? "" : "s"}` : ""}.`,
+    );
+  },
+};
+
+// ---- type_text (typewriter) ------------------------------------------------
+
+export const typeTextTool: DirectorTool<{
+  text: string;
+  x: number;
+  y: number;
+  atSec?: number;
+  typeSec?: number;
+  holdSec?: number;
+  fontSize?: number;
+  color?: string;
+  align?: "left" | "center" | "right";
+  background?: string;
+}> = {
+  name: "type_text",
+  description:
+    "Add a typewriter text clip that types `text` out at (x, y) in composition px over `typeSec`, then holds for `holdSec`. Great for typing into a form field in a demo.",
+  inputSchema: z.object({
+    text: z.string().min(1),
+    x: z.number(),
+    y: z.number(),
+    atSec: z.number().nonnegative().optional(),
+    typeSec: z.number().positive().optional(),
+    holdSec: z.number().nonnegative().optional(),
+    fontSize: z.number().positive().optional(),
+    color: z.string().optional(),
+    align: z.enum(["left", "center", "right"]).optional(),
+    background: z.string().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = typeText(ctx.project.doc, input);
+    return commit(ctx.project, doc, `Typed “${input.text}” at (${Math.round(input.x)}, ${Math.round(input.y)}).`);
+  },
+};
+
+// ---- add_callout -----------------------------------------------------------
+
+export const addCalloutTool: DirectorTool<{
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label?: string;
+  zoom?: number;
+  dim?: boolean;
+  color?: string;
+  atSec?: number;
+  durationSec?: number;
+}> = {
+  name: "add_callout",
+  description:
+    "Highlight a rectangular region {x,y,w,h} (composition px) with a bright rounded border, optionally dimming everything outside it, with an optional `label` and an optional `zoom` (1–4) toward the rect.",
+  inputSchema: z.object({
+    x: z.number(),
+    y: z.number(),
+    w: z.number().positive(),
+    h: z.number().positive(),
+    label: z.string().optional(),
+    zoom: z.number().min(1).max(4).optional(),
+    dim: z.boolean().optional(),
+    color: z.string().optional(),
+    atSec: z.number().nonnegative().optional(),
+    durationSec: z.number().positive().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = addCallout(ctx.project.doc, input);
+    return commit(
+      ctx.project,
+      doc,
+      `Highlighted ${Math.round(input.w)}×${Math.round(input.h)} at (${Math.round(input.x)}, ${Math.round(input.y)})` +
+        `${input.zoom && input.zoom > 1 ? ` and zoomed ${input.zoom}×` : ""}${input.label ? ` — “${input.label}”` : ""}.`,
+    );
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
   create_highlight: createHighlightTool,
@@ -538,4 +677,8 @@ export const DIRECTOR_TOOLS = {
   set_transition: transitionTool,
   apply_vfx: vfxTool,
   style_captions: styleCaptionsTool,
+  build_demo: buildDemoTool,
+  add_cursor: addCursorTool,
+  type_text: typeTextTool,
+  add_callout: addCalloutTool,
 } as const;

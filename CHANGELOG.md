@@ -4,6 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.6 — Cycle E wave 1: interaction-demo engine + direct timeline editing
+- **Interaction-demo engine (E1):** turn app/UI screenshots into an animated walkthrough — new `cursor` clip (eased waypoints + click ripples), `callout` clip (highlight box + dim + optional zoom), and a **typewriter** text animation (+caret). A `build_demo` skill assembles screens → sequenced image clips with typed email/password + a cursor that glides to a button and clicks; manual `add_cursor` / `type_text` / `add_callout` tools. Rendered in canvas + ffmpeg (drawbox/drawtext, time-gated). Verify checks 28–31. *(Vision-based auto field detection = money-gated follow-up; positions are nudgeable.)*
+- **Direct timeline editing (E2):** select a clip → inspector; **drag-trim** edges (with snapping to edges/playhead/markers), **split at playhead** (S), **drag-reorder**, **ripple-delete** (Del) / delete, **duplicate**, per-clip **volume/mute**, **timeline zoom** (1–24×) + ruler scrub, and **markers** (M). All pure ops in `lib/edit-ops.ts`, routed through the undo/redo commit path. (Schema follow-ups noted: persist markers; first-class per-clip `muted`.)
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify 31/31 + `next build` clean.
+
 ### S3.5 — Cycle D: multi-video + audio + "more options" engine; login/Neon fixes
 - **Multiple videos (DB):** upload several videos → one combined timeline (`combinedVideoDoc`/`appendVideos`); Media room clip-manager (reorder/remove, undoable); multi-video preview.
 - **Voice-over + music (DB):** in-browser **voice-over recording** (mic, graceful permission/no-mic handling) + audio upload → `voiceover`/`music` tracks; live volume sliders + duck; mixed on export.

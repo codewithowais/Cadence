@@ -4,6 +4,7 @@ export * from "./highlight";
 export * from "./edits";
 export * from "./filler";
 export * from "./slideshow";
+export * from "./demo";
 export { StubDirector, type DirectorResult } from "./stub-director";
 export {
   runDirectorLoop,

@@ -1,0 +1,351 @@
+/**
+ * Pure, client-side timeline edit operations for Cadence.
+ *
+ * Every function here is a PURE transform: `(doc, …args) => EditDoc`. They never
+ * mutate the input (they `structuredClone` first) and always return a value run
+ * back through `parseEditDoc` so the result is a fully-valid, fully-defaulted
+ * doc. This is the single place the editor's direct-manipulation timeline goes
+ * through, and — like every other mutation in the app — the caller routes the
+ * result through the editor's `commit` (undo/redo) path.
+ *
+ * Nothing here changes the schema: trims/splits/reorders/ripples all operate on
+ * the existing `start` / `duration` / `sourceIn` / `volume` fields.
+ *
+ * All times are seconds on the project timeline.
+ */
+import { parseEditDoc, type Clip, type EditDoc, type Track } from "@cadence/core";
+
+const round = (n: number): number => Math.round(n * 1000) / 1000;
+const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
+
+/** Smallest timeline duration any clip may be trimmed/split to (seconds). */
+export const MIN_CLIP_SEC = 0.05;
+
+/**
+ * Track ids that carry OVERLAYS (titles, captions, PiP b-roll, fades, music,
+ * voice-over) rather than the MAIN back-to-back footage. Kept in sync with
+ * `@/lib/doc`'s OVERLAY_TRACK_IDS. Overlay clips are positioned freely; the main
+ * sequential tracks are re-laid back-to-back (rippled) after every structural
+ * edit so there are never gaps.
+ */
+const OVERLAY_TRACK_IDS = new Set(["titles", "captions", "broll", "fades", "music", "voiceover"]);
+
+/** True for a track whose clips are laid out as a gapless back-to-back sequence. */
+export function isMainSequentialTrack(track: Track): boolean {
+  return !OVERLAY_TRACK_IDS.has(track.id);
+}
+
+/** Monotonic id source for clips created by split/duplicate (unique per session). */
+let idSeq = 0;
+const newClipId = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${(idSeq++).toString(36)}`;
+
+/** The kinds of clip that participate in a track's back-to-back reflow. */
+function isSequentialClip(track: Track, clip: Clip): boolean {
+  if (track.kind === "audio") return clip.kind === "audio";
+  return clip.kind === "video" || clip.kind === "image";
+}
+
+/**
+ * Re-lay a track's sequential clips in array order with no gaps, honoring each
+ * visual clip's `transitionInSec` as an OVERLAP with the previous clip (so
+ * hard-cut videos land back-to-back while crossfading images keep their
+ * overlap). Non-sequential clips (text/solid overlays) are left untouched.
+ * Mutates the passed track.
+ */
+function reflowTrack(track: Track): void {
+  let prevEnd = 0;
+  let first = true;
+  for (const clip of track.clips) {
+    if (!isSequentialClip(track, clip)) continue;
+    const overlap = clip.kind === "video" || clip.kind === "image" ? clip.transitionInSec : 0;
+    const start = first ? 0 : Math.max(0, prevEnd - overlap);
+    clip.start = round(start);
+    prevEnd = clip.start + clip.duration;
+    first = false;
+  }
+}
+
+/** Reflow every main sequential track of a doc (mutates it). */
+function reflowMainTracks(doc: EditDoc): void {
+  for (const track of doc.tracks) if (isMainSequentialTrack(track)) reflowTrack(track);
+}
+
+/** A located clip together with its position in the doc. */
+export interface FoundClip {
+  trackIndex: number;
+  clipIndex: number;
+  track: Track;
+  clip: Clip;
+}
+
+/** Find a clip (and its track) by clip id, or `null`. Read-only. */
+export function findClip(doc: EditDoc, clipId: string): FoundClip | null {
+  for (let ti = 0; ti < doc.tracks.length; ti++) {
+    const track = doc.tracks[ti]!;
+    for (let ci = 0; ci < track.clips.length; ci++) {
+      const clip = track.clips[ci]!;
+      if (clip.id === clipId) return { trackIndex: ti, clipIndex: ci, track, clip };
+    }
+  }
+  return null;
+}
+
+/** Source duration (seconds) of the media a clip references, or `null` if unknown. */
+function mediaDurationSec(doc: EditDoc, mediaId: string): number | null {
+  const m = doc.media.find((x) => x.id === mediaId);
+  return m?.durationSec != null ? m.durationSec : null;
+}
+
+/**
+ * Largest timeline `duration` a clip may occupy given how much SOURCE remains
+ * after its `sourceIn` (video honors `speed`; audio is 1:1). Images and clips
+ * whose media duration is unknown are unbounded (`Infinity`).
+ */
+export function maxTimelineDuration(doc: EditDoc, clip: Clip): number {
+  if (clip.kind === "video") {
+    const md = mediaDurationSec(doc, clip.mediaId);
+    if (md == null) return Infinity;
+    const speed = clip.speed ?? 1;
+    return Math.max(MIN_CLIP_SEC, (md - clip.sourceIn) / speed);
+  }
+  if (clip.kind === "audio") {
+    const md = mediaDurationSec(doc, clip.mediaId);
+    if (md == null) return Infinity;
+    return Math.max(MIN_CLIP_SEC, md - clip.sourceIn);
+  }
+  return Infinity;
+}
+
+// ---- Volume / mute ---------------------------------------------------------
+
+/**
+ * Set a single clip's volume (0..1). Only video and audio clips carry volume;
+ * for any other kind this is a no-op. Pure.
+ */
+export function setClipVolume(doc: EditDoc, clipId: string, volume: number): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const found = findClip(clone, clipId);
+  if (found && (found.clip.kind === "video" || found.clip.kind === "audio")) {
+    found.clip.volume = clamp(round(volume), 0, 1);
+  }
+  return parseEditDoc(clone);
+}
+
+// ---- Trim ------------------------------------------------------------------
+
+export type TrimEdge = "left" | "right";
+
+/**
+ * Trim a clip by dragging one of its edges to timeline time `edgeTime`.
+ *
+ *  - RIGHT edge → changes `duration` only (the out point); the in point stays.
+ *  - LEFT edge  → changes `start` + `sourceIn` + `duration` (trim from head);
+ *    the out point (start+duration) stays fixed, and `sourceIn` moves with the
+ *    head so the same source frame stays under the new left edge. Extending the
+ *    head earlier is allowed only while `sourceIn > 0` (there is more source to
+ *    reveal).
+ *
+ * Durations are clamped to `[MIN_CLIP_SEC, availableSource]`. Afterwards the
+ * clip's main sequential track is rippled (re-laid back-to-back) so trimming
+ * never leaves a gap and later clips shift; overlay clips keep their free
+ * position. Pure.
+ */
+export function trimClip(doc: EditDoc, clipId: string, edge: TrimEdge, edgeTime: number): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const found = findClip(clone, clipId);
+  if (!found) return parseEditDoc(clone);
+  const { track, clip } = found;
+  const speed = clip.kind === "video" ? clip.speed ?? 1 : 1;
+  const oldStart = clip.start;
+  const oldEnd = clip.start + clip.duration;
+  const maxDur = maxTimelineDuration(clone, clip);
+
+  if (edge === "right") {
+    // Out point moves; in point (start / sourceIn) fixed.
+    let duration = edgeTime - oldStart;
+    duration = clamp(duration, MIN_CLIP_SEC, maxDur);
+    clip.duration = round(duration);
+  } else {
+    // Head trim: out point fixed at oldEnd; start + sourceIn + duration move.
+    // How far left we may extend is bounded by remaining source before sourceIn.
+    let earliest = 0;
+    if ((clip.kind === "video" || clip.kind === "audio") && clip.sourceIn > 0) {
+      earliest = oldStart - clip.sourceIn / speed;
+    } else if (clip.kind === "video" || clip.kind === "audio") {
+      earliest = oldStart; // no source before sourceIn → can't extend head earlier
+    }
+    const latest = oldEnd - MIN_CLIP_SEC; // can't cross the out point
+    const newStart = clamp(edgeTime, Math.max(0, earliest), latest);
+    const delta = newStart - oldStart; // >0 = trimming head shorter, <0 = extending
+    if (clip.kind === "video" || clip.kind === "audio") {
+      clip.sourceIn = Math.max(0, round(clip.sourceIn + delta * speed));
+    }
+    clip.start = round(newStart);
+    clip.duration = round(oldEnd - newStart);
+  }
+
+  if (isMainSequentialTrack(track)) reflowTrack(track);
+  return parseEditDoc(clone);
+}
+
+// ---- Split -----------------------------------------------------------------
+
+/**
+ * Split a clip in two at timeline time `atSec`. The first half keeps the
+ * original in point; the second half starts at `atSec` with `sourceIn` advanced
+ * to the matching source frame (video honors `speed`; audio is 1:1; images have
+ * no source offset). Interior transitions are dropped (the first loses its out
+ * transition, the second loses its in transition) so a mid-sequence cut is
+ * clean. A punch-in `emphasis` (video) is kept on whichever half still contains
+ * its window. No reflow is needed — the two halves exactly tile the original.
+ * Returns the doc unchanged if `atSec` isn't strictly inside the clip (or either
+ * half would be shorter than `MIN_CLIP_SEC`). Pure.
+ */
+export function splitClip(doc: EditDoc, clipId: string, atSec: number): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const found = findClip(clone, clipId);
+  if (!found) return parseEditDoc(clone);
+  const { track, clipIndex, clip } = found;
+
+  const local = atSec - clip.start;
+  const firstDur = round(local);
+  const secondDur = round(clip.duration - local);
+  if (firstDur < MIN_CLIP_SEC || secondDur < MIN_CLIP_SEC) return parseEditDoc(clone);
+
+  const first: Clip = structuredClone(clip);
+  const second: Clip = structuredClone(clip);
+
+  first.duration = firstDur;
+  second.id = newClipId(`${clip.id}-b`);
+  second.start = round(clip.start + local);
+  second.duration = secondDur;
+
+  if (second.kind === "video") {
+    const speed = second.speed ?? 1;
+    second.sourceIn = round(second.sourceIn + local * speed);
+  } else if (second.kind === "audio") {
+    second.sourceIn = round(second.sourceIn + local);
+  }
+
+  // Interior edge = a hard cut: no fades in the middle of the original span.
+  if ("transitionOutSec" in first) first.transitionOutSec = 0;
+  if ("transitionInSec" in second) second.transitionInSec = 0;
+
+  // Keep a punch-in only on the half whose timeline range contains its window.
+  if (first.kind === "video" && first.emphasis) {
+    const at = first.emphasis.atSec;
+    if (!(at >= first.start && at < first.start + first.duration)) first.emphasis = undefined;
+  }
+  if (second.kind === "video" && second.emphasis) {
+    const at = second.emphasis.atSec;
+    if (!(at >= second.start && at < second.start + second.duration)) second.emphasis = undefined;
+  }
+
+  track.clips.splice(clipIndex, 1, first, second);
+  return parseEditDoc(clone);
+}
+
+// ---- Reorder ---------------------------------------------------------------
+
+/** The sequential (reflowed) clips of a track, in order, with their array indices. */
+function sequentialEntries(track: Track): { clip: Clip; arrayIndex: number }[] {
+  const out: { clip: Clip; arrayIndex: number }[] = [];
+  track.clips.forEach((clip, arrayIndex) => {
+    if (isSequentialClip(track, clip)) out.push({ clip, arrayIndex });
+  });
+  return out;
+}
+
+/**
+ * Move a clip to a new position among the sequential clips of its own track,
+ * then ripple the track back-to-back. `toSeqIndex` is an index into the track's
+ * sequential clips (0 = first). No-op for non-sequential (overlay) clips. Pure.
+ */
+export function reorderClip(doc: EditDoc, clipId: string, toSeqIndex: number): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const found = findClip(clone, clipId);
+  if (!found) return parseEditDoc(clone);
+  const { track, clip } = found;
+  if (!isSequentialClip(track, clip)) return parseEditDoc(clone);
+
+  const seq = sequentialEntries(track);
+  const fromSeq = seq.findIndex((e) => e.clip.id === clipId);
+  const to = clamp(Math.round(toSeqIndex), 0, seq.length - 1);
+  if (fromSeq < 0 || fromSeq === to) return parseEditDoc(clone);
+
+  // Rebuild the ordered list of sequential clips, then write them back into the
+  // same array slots (positions of non-sequential clips are preserved).
+  const ordered = seq.map((e) => e.clip);
+  const [moved] = ordered.splice(fromSeq, 1);
+  ordered.splice(to, 0, moved!);
+  seq.forEach((e, i) => {
+    track.clips[e.arrayIndex] = ordered[i]!;
+  });
+
+  reflowTrack(track);
+  return parseEditDoc(clone);
+}
+
+/** Move a clip one slot earlier/later among its track's sequential clips (arrow keys). */
+export function moveClip(doc: EditDoc, clipId: string, dir: "earlier" | "later"): EditDoc {
+  const found = findClip(doc, clipId);
+  if (!found || !isSequentialClip(found.track, found.clip)) return doc;
+  const seq = sequentialEntries(found.track);
+  const at = seq.findIndex((e) => e.clip.id === clipId);
+  if (at < 0) return doc;
+  return reorderClip(doc, clipId, dir === "earlier" ? at - 1 : at + 1);
+}
+
+// ---- Delete / duplicate ----------------------------------------------------
+
+/**
+ * Delete a clip WITHOUT closing the gap (leaves later clips where they are).
+ * Empty tracks are dropped. Pure.
+ */
+export function deleteClip(doc: EditDoc, clipId: string): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  for (const track of clone.tracks) track.clips = track.clips.filter((c) => c.id !== clipId);
+  clone.tracks = clone.tracks.filter((t) => t.clips.length > 0);
+  return parseEditDoc(clone);
+}
+
+/**
+ * Ripple-delete a clip: remove it and close the gap by re-laying its main
+ * sequential track back-to-back. Overlay clips are simply removed (nothing to
+ * ripple). Empty tracks are dropped. Pure.
+ */
+export function rippleDeleteClip(doc: EditDoc, clipId: string): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const found = findClip(clone, clipId);
+  if (!found) return parseEditDoc(clone);
+  const wasMain = isMainSequentialTrack(found.track);
+  for (const track of clone.tracks) track.clips = track.clips.filter((c) => c.id !== clipId);
+  clone.tracks = clone.tracks.filter((t) => t.clips.length > 0);
+  if (wasMain) reflowMainTracks(clone);
+  return parseEditDoc(clone);
+}
+
+/**
+ * Duplicate a clip. On a main sequential track the copy is inserted directly
+ * after the original and the track is rippled (so the timeline grows by the
+ * clip's duration and everything after shifts right). On an overlay track the
+ * copy is placed immediately after the original (its `start` offset by the
+ * original's duration) with no reflow. Pure.
+ */
+export function duplicateClip(doc: EditDoc, clipId: string): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const found = findClip(clone, clipId);
+  if (!found) return parseEditDoc(clone);
+  const { track, clipIndex, clip } = found;
+  const copy: Clip = structuredClone(clip);
+  copy.id = newClipId(`${clip.id}-copy`);
+
+  if (isMainSequentialTrack(track)) {
+    track.clips.splice(clipIndex + 1, 0, copy);
+    reflowTrack(track);
+  } else {
+    copy.start = round(clip.start + clip.duration);
+    track.clips.splice(clipIndex + 1, 0, copy);
+  }
+  return parseEditDoc(clone);
+}

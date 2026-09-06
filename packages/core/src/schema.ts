@@ -64,8 +64,14 @@ export const TextAnim = z.object({
    *  - "kinetic" — slide + scale in, eased (ease-out cubic).
    *  - "pop"     — scale in with a small overshoot (ease-out-back).
    *  - "bounce"  — slide in with a damped bounce settle (ease-out-bounce).
+   *  - "typewriter" — the text TYPES OUT one character at a time over
+   *                   `durationSec`, with an optional blinking caret. The visible
+   *                   substring is resolved by the PURE `typewriterText` helper in
+   *                   grade.ts (canvas draws the substring; the ffmpeg export
+   *                   sequences time-gated drawtext slices) — no slide/scale, so it
+   *                   is the natural style for typing into a form field in a demo.
    */
-  style: z.enum(["none", "kinetic", "pop", "bounce"]).default("none"),
+  style: z.enum(["none", "kinetic", "pop", "bounce", "typewriter"]).default("none"),
   /** Offset (composition px) the text slides FROM, toward its resting x. */
   fromX: z.number().default(0),
   /** Offset (composition px) the text slides FROM, toward its resting y. */
@@ -74,6 +80,11 @@ export const TextAnim = z.object({
   fromScale: z.number().positive().default(1),
   /** How long the intro animation lasts, in seconds (0 = no animation). */
   durationSec: z.number().nonnegative().default(0),
+  /**
+   * Show a blinking caret while (and after) typing, for the "typewriter" style.
+   * Ignored by every other style. Off by default so existing docs are unchanged.
+   */
+  caret: z.boolean().default(false),
 });
 export type TextAnim = z.infer<typeof TextAnim>;
 
@@ -278,12 +289,89 @@ export const SolidClip = z.object({
 });
 export type SolidClip = z.infer<typeof SolidClip>;
 
+/**
+ * One point the pointer eases THROUGH, in composition pixels, reached at `atSec`
+ * (TIMELINE seconds). A CursorClip's waypoints are resolved by the PURE
+ * `cursorPositionAt` helper in grade.ts so the pointer sits at the same place in
+ * the canvas preview, the browser Stage, and the ffmpeg export.
+ */
+export const CursorWaypoint = z.object({
+  x: z.number(),
+  y: z.number(),
+  /** Timeline time (seconds) the pointer reaches this waypoint. */
+  atSec: z.number().nonnegative().default(0),
+});
+export type CursorWaypoint = z.infer<typeof CursorWaypoint>;
+
+/**
+ * An animated mouse-pointer overlay for product walkthroughs / interaction demos.
+ * The pointer eases between `waypoints` (ease-in-out) and each time in `clicks`
+ * triggers an expanding click ripple. Purely data-driven — position and ripples
+ * are resolved by PURE helpers (`cursorPositionAt`, `cursorRipples`) so canvas,
+ * Stage, and export agree. Faithful: a synthetic overlay, never a content change.
+ */
+export const CursorClip = z.object({
+  ...clipBase,
+  kind: z.literal("cursor"),
+  /** Points (composition px) the pointer eases through, ordered by `atSec`. */
+  waypoints: z.array(CursorWaypoint).min(1),
+  /** Timeline times (seconds) at which a click ripple fires. */
+  clicks: z.array(z.number().nonnegative()).default([]),
+  /** Pointer size (px, the arrow's long edge). */
+  size: z.number().positive().default(48),
+  /** Pointer fill color. */
+  color: HexColor.default("#ffffff"),
+  /** How long each click ripple lasts, in seconds. */
+  rippleSec: z.number().positive().default(0.45),
+});
+export type CursorClip = z.infer<typeof CursorClip>;
+
+/**
+ * A callout / highlight box over a rectangular region of the frame — for
+ * pointing at a field, button, or menu in a walkthrough. Draws a bright rounded
+ * border around {x,y,w,h} (composition px, top-left anchored), optionally dims
+ * everything OUTSIDE the rect, shows an optional `label`, and can `zoom` the frame
+ * toward the rect (scale about the rect's center). All extras are defaulted so the
+ * clip is valid with just a rect. Faithful: an overlay + optional magnify, never a
+ * content change. The zoom transform is resolved by the PURE `calloutTransform`
+ * helper and the border position by `calloutScreenRect`, shared by canvas + export.
+ */
+export const CalloutClip = z.object({
+  ...clipBase,
+  kind: z.literal("callout"),
+  /** Left edge of the highlighted rect, composition px. */
+  x: z.number(),
+  /** Top edge of the highlighted rect, composition px. */
+  y: z.number(),
+  /** Width of the highlighted rect, composition px. */
+  w: z.number().positive(),
+  /** Height of the highlighted rect, composition px. */
+  h: z.number().positive(),
+  /** Optional caption drawn just above (or below) the rect. */
+  label: z.string().optional(),
+  /** Border color (defaults to the amber action color). */
+  color: HexColor.default("#ffcf70"),
+  /** Border thickness, composition px. */
+  borderWidth: z.number().min(0).default(4),
+  /** Corner radius of the rounded border, composition px. */
+  radius: z.number().min(0).default(12),
+  /** Dim everything outside the rect. */
+  dim: z.boolean().default(true),
+  /** 0..1 strength of the outside dim when `dim` is on. */
+  dimOpacity: z.number().min(0).max(1).default(0.55),
+  /** Scale the frame toward the rect's center (1 = no zoom). */
+  zoom: z.number().min(1).default(1),
+});
+export type CalloutClip = z.infer<typeof CalloutClip>;
+
 export const Clip = z.discriminatedUnion("kind", [
   VideoClip,
   ImageClip,
   TextClip,
   AudioClip,
   SolidClip,
+  CursorClip,
+  CalloutClip,
 ]);
 export type Clip = z.infer<typeof Clip>;
 

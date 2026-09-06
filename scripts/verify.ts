@@ -17,6 +17,10 @@
  *   20 zoom (manual reframe): zoom → transform.scale on clips + scale/crop on export
  *   21 transitions: set_transition dip-to-black/slide/wipe → xfade name on slideshow export
  *   22 color adjust: adjustColor merges a manual grade + renders; NL "brighter/warmer" → adjust_color
+ *   28 typewriter: type_text typewriter → partial mid-type substring + time-gated drawtext slices on export
+ *   29 cursor: add_cursor → pointer interpolated mid-move + ripple at a click + time-expr drawtext/ripple drawboxes
+ *   30 callout: add_callout → dim+border change the frame; zoom rect/transform; drawbox border+dim & label on export
+ *   31 build_demo: screenshots → login walkthrough renders; "demo/login/highlight/zoom into" phrases route correctly
  *   15 whisper parse: parseWhisperJson (OpenAI + whisper.cpp shapes) → valid Transcript
  *   16 transcriber factory: real Whisper when available, else graceful StubTranscriber
  *   17 agentic loop: runDirectorLoop (plan→act→verify→correct) verifies + renders,
@@ -32,6 +36,13 @@ import {
   emphasisScale,
   sourceTimeAt,
   textKinetic,
+  typewriterText,
+  cursorPositionAt,
+  cursorRipples,
+  calloutScreenRect,
+  calloutTransform,
+  type CalloutClip,
+  type CursorClip,
   type EditDoc,
   type MediaAsset,
   type TextClip,
@@ -57,6 +68,10 @@ import {
   reframe,
   reframeTo,
   setQuality,
+  buildDemo,
+  addCursor,
+  addCallout,
+  typeText,
   ASPECTS,
   type DirectorLike,
 } from "@cadence/director";
@@ -986,6 +1001,151 @@ async function checkCaptionStyle(): Promise<void> {
   console.log(`  [32m✔[0m check 27 (caption style): white/bold/outline/top → outline changes the frame (${withOutline.length}b) + drawtext borderw on export`);
 }
 
+async function checkTypewriter(): Promise<void> {
+  const base = parseEditDoc({ version: 1, meta: { width: 1280, height: 720, background: "#101418" }, tracks: [] });
+  const full = "you@example.com";
+  const doc = typeText(base, { text: full, x: 200, y: 360, atSec: 0, typeSec: 1.5, holdSec: 1 });
+  const clip = doc.tracks.flatMap((t) => t.clips).find((c): c is TextClip => c.kind === "text");
+  assert(clip && clip.anim.style === "typewriter" && clip.anim.durationSec > 0, "expected a typewriter text clip");
+
+  // Mid-type the visible substring is a NON-EMPTY strict PREFIX of the full text.
+  const mid = clip!.start + clip!.anim.durationSec / 2;
+  const state = typewriterText(clip!, mid);
+  assert(state.text.length > 0 && state.text.length < full.length, `mid-type should be partial, got "${state.text}"`);
+  assert(full.startsWith(state.text), `mid-type "${state.text}" should be a prefix of "${full}"`);
+  // Before start → nothing; after the type window → the whole string.
+  assert(typewriterText(clip!, clip!.start).text.length === 0, "typewriter should start empty");
+  assert(typewriterText(clip!, clip!.start + clip!.anim.durationSec + 0.01).done, "typewriter should finish");
+  const n = await renderAndAssert(doc, mid, "verify-typewriter.png");
+
+  // Export sequences one drawtext PER character-count (time-gated slices).
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/type.mp4");
+  const drawtexts = plan.filterComplex.match(/drawtext=/g) ?? [];
+  assert(drawtexts.length >= full.length, `typewriter: expected >=${full.length} drawtext slices, got ${drawtexts.length}`);
+  assert(plan.filterComplex.includes("text='y':"), "typewriter: expected a single-char first slice text='y'");
+  assert(plan.filterComplex.includes("text='you@example.com':"), "typewriter: expected the full final slice");
+  console.log(`  [32m✔[0m check 28 (typewriter): mid-type "${state.text}" renders (${n}b) + ${drawtexts.length} time-gated drawtext slices on export`);
+}
+
+async function checkCursor(): Promise<void> {
+  const base = parseEditDoc({ version: 1, meta: { width: 1280, height: 720, background: "#101418" }, tracks: [] });
+  const doc = addCursor(base, {
+    waypoints: [
+      { x: 100, y: 100, atSec: 0 },
+      { x: 900, y: 500, atSec: 1 },
+    ],
+    clicks: [1.0],
+  });
+  const clip = doc.tracks.flatMap((t) => t.clips).find((c): c is CursorClip => c.kind === "cursor");
+  assert(clip, "expected a cursor clip");
+
+  // Mid-move the pointer sits strictly BETWEEN the two waypoints.
+  const pos = cursorPositionAt(clip!, 0.5);
+  assert(pos.x > 100 && pos.x < 900 && pos.y > 100 && pos.y < 500, `mid-move should be between waypoints, got ${JSON.stringify(pos)}`);
+  // Endpoints hold before/after.
+  assert(cursorPositionAt(clip!, 0).x === 100 && cursorPositionAt(clip!, 5).x === 900, "cursor endpoints should hold");
+  // A ripple is active AT the click time and gone well after.
+  assert(cursorRipples(clip!, 1.0).length >= 1, "expected an active click ripple at the click time");
+  assert(cursorRipples(clip!, 1.0 + clip!.rippleSec + 0.2).length === 0, "ripple should be gone after its lifetime");
+
+  const nMove = await renderAndAssert(doc, 0.5, "verify-cursor-move.png");
+  const nClick = await renderAndAssert(doc, 1.0, "verify-cursor-click.png");
+
+  // Export: a moving pointer drawtext (time expr) + concentric ripple drawboxes.
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/cursor.mp4");
+  assert(plan.filterComplex.includes("drawtext=") && plan.filterComplex.includes("if(lt(t\\,"), "cursor: expected a time-interpolated pointer drawtext on export");
+  assert(plan.filterComplex.includes("drawbox=") && plan.filterComplex.includes(":t=3:"), "cursor: expected ripple ring drawboxes on export");
+  console.log(`  [32m✔[0m check 29 (cursor): pointer mid-move (${nMove}b) + ripple at click (${nClick}b) + time-expr drawtext & ripple drawboxes on export`);
+}
+
+async function checkCallout(): Promise<void> {
+  const media: MediaAsset = { id: "shot", kind: "image", src: "shots/a.png", width: 1280, height: 720, label: "a.png" };
+  const withContent = parseEditDoc({
+    version: 1,
+    meta: { width: 1280, height: 720, background: "#101418" },
+    media: [media],
+    tracks: [{ id: "screens", kind: "visual", clips: [{ id: "s0", kind: "image", start: 0, duration: 4, mediaId: "shot", transform: { x: 640, y: 360 } }] }],
+  });
+  const doc = addCallout(withContent, { x: 200, y: 200, w: 500, h: 220, label: "Sign in", dim: true });
+  const clip = doc.tracks.flatMap((t) => t.clips).find((c): c is CalloutClip => c.kind === "callout");
+  assert(clip, "expected a callout clip");
+  assert(clip!.dim === true && clip!.borderWidth > 0, "callout should have dim + a border");
+
+  // Zoom math: screen rect + transform grow about the rect center.
+  assert(JSON.stringify(calloutScreenRect(clip!)) === JSON.stringify({ x: 200, y: 200, w: 500, h: 220 }), "no-zoom screen rect should equal the rect");
+  const zc = addCallout(withContent, { x: 200, y: 200, w: 400, h: 200, zoom: 2 });
+  const zClip = zc.tracks.flatMap((t) => t.clips).find((c): c is CalloutClip => c.kind === "callout")!;
+  assert(calloutTransform(zClip).scale === 2, "callout zoom transform should scale by the zoom");
+  const zr = calloutScreenRect(zClip);
+  assert(zr.w === 800 && zr.h === 400, `zoomed screen rect should double, got ${zr.w}x${zr.h}`);
+
+  // The callout (dim + border) changes the rendered pixels vs the same doc without it.
+  const withBytes = await renderBytes(doc, 1.0);
+  writeFileSync(resolve(OUT_DIR, "verify-callout.png"), withBytes);
+  const withoutBytes = await renderBytes(withContent, 1.0);
+  assert(withBytes.length > 1000 && withBytes.subarray(0, 4).equals(PNG_MAGIC), "callout frame should be a real PNG");
+  assert(!withBytes.equals(withoutBytes), "the callout border/dim should change the rendered pixels");
+
+  // Export: drawbox border + drawbox dim boxes + a label drawtext.
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/callout.mp4");
+  assert(plan.filterComplex.includes("drawbox="), "callout: expected a drawbox border on export");
+  assert(plan.filterComplex.includes("color=black@"), "callout: expected dim boxes (black@opacity) on export");
+  assert(plan.filterComplex.includes("Sign in"), "callout: expected the label drawtext on export");
+  console.log(`  [32m✔[0m check 30 (callout): dim+border change the frame (${withBytes.length}b); zoom rect/transform ×2; drawbox border+dim & label on export`);
+}
+
+async function checkBuildDemo(): Promise<void> {
+  const shots: MediaAsset[] = Array.from({ length: 3 }, (_, i) => ({
+    id: `screen-${i}`, kind: "image" as const, src: `shots/s${i}.png`, width: 1280, height: 720, label: `s${i}.png`,
+  }));
+
+  // (a) Direct builder: a login walkthrough — screens sequenced, typed fields, a cursor+click.
+  const doc = buildDemo(shots, { login: true });
+  const screens = doc.tracks.find((t) => t.id === "screens");
+  assert((screens?.clips.length ?? 0) === 3, "demo should have 3 screen clips");
+  assert(screens!.clips.some((c) => c.kind === "image" && c.transitionInSec > 0), "demo screens should be sequenced with a transition");
+  const typed = doc.tracks.find((t) => t.id === "demo-text");
+  const typedClips = typed?.clips.filter((c): c is TextClip => c.kind === "text" && c.anim.style === "typewriter") ?? [];
+  assert(typedClips.length === 2, `login demo should type 2 fields (email+password), got ${typedClips.length}`);
+  const cursor = doc.tracks.find((t) => t.id === "cursor");
+  const cursorClip = cursor?.clips.find((c): c is CursorClip => c.kind === "cursor");
+  assert(cursorClip && cursorClip.clicks.length >= 1, "login demo should have a cursor with a click");
+
+  // Renders while a field is typing and while the cursor is moving.
+  const nType = await renderAndAssert(doc, 1.0, "verify-demo-typing.png");
+  const nMove = await renderAndAssert(doc, 3.6, "verify-demo-cursor.png");
+
+  // (b) StubDirector routing for the three phrases.
+  const project = new ProjectState({ media: shots });
+  const demoRes = await new StubDirector().interpret("make an interactive demo from these screenshots", project);
+  assert(demoRes.toolCalls.some((c) => c.name === "build_demo"), "expected build_demo from the walkthrough phrase");
+
+  const loginProject = new ProjectState({ media: shots });
+  const loginRes = await new StubDirector().interpret("type the email and password then click login", loginProject);
+  const loginCall = loginRes.toolCalls.find((c) => c.name === "build_demo");
+  assert(loginCall, "expected build_demo from the login phrase");
+  assert((loginCall!.input as { login?: boolean }).login === true, "login phrase should build the demo with login=true");
+  assert(loginRes.doc.tracks.some((t) => t.id === "cursor"), "login demo should include a cursor track");
+
+  const hlProject = new ProjectState({ media: shots });
+  const hlRes = await new StubDirector().interpret("highlight the sign-in button", hlProject);
+  assert(hlRes.toolCalls.some((c) => c.name === "add_callout"), "expected add_callout from 'highlight the …'");
+
+  const zoomProject = new ProjectState({ media: shots });
+  await new StubDirector().interpret("make an interactive demo from these screenshots", zoomProject);
+  const zoomRes = await new StubDirector().interpret("zoom into the menu", zoomProject);
+  const zoomCall = zoomRes.toolCalls.find((c) => c.name === "add_callout");
+  assert(zoomCall, "expected add_callout from 'zoom into …'");
+  assert((zoomCall!.input as { zoom?: number }).zoom === 1.4, "'zoom into' should set a callout zoom");
+  assert(!zoomRes.toolCalls.some((c) => c.name === "zoom"), "'zoom into the …' should NOT trigger the static zoom tool");
+
+  // (c) The demo doc exports: screen xfade + typed drawtext slices + cursor drawtext.
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/demo.mp4");
+  assert(plan.filterComplex.includes("xfade="), "demo: expected screen transitions (xfade) on export");
+  assert((plan.filterComplex.match(/drawtext=/g) ?? []).length >= 3, "demo: expected typed slices + cursor drawtext on export");
+  console.log(`  [32m✔[0m check 31 (build_demo): 3-screen login walkthrough renders (typing ${nType}b, cursor ${nMove}b); phrases → build_demo/add_callout; xfade+drawtext on export`);
+}
+
 /** Structural clone of a doc (verify has no structuredClone import elsewhere). */
 function structuredCloneDoc(doc: EditDoc): EditDoc {
   return JSON.parse(JSON.stringify(doc)) as EditDoc;
@@ -1016,6 +1176,10 @@ async function main(): Promise<void> {
   await checkMoreTransitions();
   await checkVfx();
   await checkCaptionStyle();
+  await checkTypewriter();
+  await checkCursor();
+  await checkCallout();
+  await checkBuildDemo();
   await checkWhisperParse();
   await checkTranscriberFactory();
   await checkAgenticLoop();

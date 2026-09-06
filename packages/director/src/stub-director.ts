@@ -10,9 +10,11 @@ import { docDurationSec, type ColorGrade, type EditDoc } from "@cadence/core";
 import type { ProjectState } from "./project";
 import type { TransitionType } from "@cadence/core";
 import {
+  addCalloutTool,
   adjustColorTool,
   autoMixTool,
   brollTool,
+  buildDemoTool,
   captionsTool,
   createHighlightTool,
   emphasisTool,
@@ -307,6 +309,30 @@ function parseColorAdjust(req: string, doc: EditDoc): Partial<ColorGrade> | null
   return Object.keys(out).length ? out : null;
 }
 
+/**
+ * Parse a callout / highlight request → a default rect (with optional zoom + label)
+ * over the frame. Handles "highlight the …", "call out the …", and "zoom into the
+ * …" (a callout zoom, distinct from the numeric static "zoom in 1.5x"). Since raw
+ * screenshots carry no field pixels, the rect is a sensible centered default the
+ * user can nudge. Returns null when the request is neither.
+ */
+function parseCallout(
+  req: string,
+  doc: EditDoc,
+): { x: number; y: number; w: number; h: number; label?: string; zoom?: number } | null {
+  const hasFactor = /\d+(?:\.\d+)?\s*x\b/.test(req);
+  const isZoomInto = /zoom\s+(?:into|in on|in to|on)\b/.test(req) && !hasFactor;
+  const isHighlight = /highlight|call ?out|point (?:to|at)|draw attention to/.test(req);
+  if (!isZoomInto && !isHighlight) return null;
+  const W = doc.meta.width;
+  const H = doc.meta.height;
+  // Centered default rect (~half width, a band tall).
+  const rect = { x: round(W * 0.25), y: round(H * 0.4), w: round(W * 0.5), h: round(H * 0.18) };
+  const m = req.match(/(?:highlight|call ?out|zoom\s+(?:into|in on|in to|on)|point (?:to|at))\s+(?:the\s+)?([a-z0-9 ]{1,30})/);
+  const label = m?.[1]?.trim() || undefined;
+  return { ...rect, ...(label ? { label } : {}), ...(isZoomInto ? { zoom: 1.4 } : {}) };
+}
+
 function parseQuality(req: string): { preset: QualityKey; aiUpscale: boolean } | null {
   const aiUpscale = /\bai\b.*upscal|upscale.*\bai\b|super.?resolution|super.?res/.test(req);
   if (/4k|ultra|2160/.test(req)) return { preset: "ultra", aiUpscale };
@@ -324,6 +350,18 @@ export class StubDirector {
     const steps: PlannedStep[] = [];
 
     // ---- builders (replace the doc); pick at most one ----
+    const hasImages = project.media.some((m) => m.kind === "image");
+    // Interaction demo / walkthrough from screenshots (wins over slideshow when
+    // the request is demo-shaped and there are screenshots to assemble).
+    const wantsLoginDemo =
+      /type (?:the )?(?:e-?mail|email)\b[\s\S]*\bpassword\b[\s\S]*(?:click|press|log ?in|sign ?in|login|button)|(?:e-?mail|email) and password then (?:click|press|log ?in|sign ?in)|login (?:demo|walk.?through)/.test(
+        req,
+      );
+    const wantsDemo =
+      wantsLoginDemo ||
+      /interactive demo|walk.?through|product (?:demo|tour|walkthrough)|demo (?:from|of|video|walk.?through)|(?:make|build|create|turn)[\s\S]*(?:screenshots?|screens)[\s\S]*(?:demo|video|walk.?through|interactive)|from (?:these|the|my)\s+screenshots?/.test(
+        req,
+      );
     const wantsSlideshow = /slide ?show|photo montage|from (my |these |the )?(photos|pictures|images)|make.*(video|clip).*(photos|pictures|images)/.test(req);
     // "make it <n> seconds/minutes" means a highlight; "make it 4K/1080p" does
     // NOT (that's a quality change), so the duration unit is required here.
@@ -331,7 +369,14 @@ export class StubDirector {
       /highlight|best (parts|bits|moments)|shorten|make it [\d.]+[-\s]*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes)\b|trim to|\bcut\b.*\d/.test(req);
     const wantsFiller = /filler|remove (the )?(um|uh|ums|uhs|pauses|silence|dead ?air)|tighten|clean ?up|remove pauses/.test(req);
 
-    if (wantsSlideshow && project.media.some((m) => m.kind === "image")) {
+    if (wantsDemo && hasImages) {
+      const login = wantsLoginDemo || /\blog ?in\b|\bsign ?in\b|\blogin\b/.test(req);
+      const input = { login };
+      steps.push({
+        run: (p) => buildDemoTool.execute(input, { project: p }),
+        call: { name: buildDemoTool.name, input },
+      });
+    } else if (wantsSlideshow && hasImages) {
       const look = parseLook(req) ?? undefined;
       steps.push({
         run: (p) => slideshowTool.execute({ look }, { project: p }),
@@ -431,9 +476,21 @@ export class StubDirector {
       });
     }
 
+    // Callout / highlight ("highlight the …", "zoom into the …"). Parsed before
+    // the static zoom so "zoom into the sidebar" highlights+zooms a region rather
+    // than doing a numeric reframe.
+    const callout = parseCallout(req, project.doc);
+    if (callout) {
+      steps.push({
+        run: (p) => addCalloutTool.execute(callout, { project: p }),
+        call: { name: addCalloutTool.name, input: callout },
+      });
+    }
+
     // Manual static zoom / reframe (fixed punch-in) — checked before the
-    // animated emphasis so "zoom in 1.5x" reframes instead of pulsing.
-    const zoomReframe = parseZoomReframe(req);
+    // animated emphasis so "zoom in 1.5x" reframes instead of pulsing. Skipped
+    // when the request is a callout "zoom into the …".
+    const zoomReframe = !callout ? parseZoomReframe(req) : null;
     if (zoomReframe) {
       const input = { ...zoomReframe, atSec: parseAtSeconds(req) };
       steps.push({
@@ -545,7 +602,7 @@ export class StubDirector {
     const hasImages = project.media.some((m) => m.kind === "image");
     if (!hasVideo && !hasImages) return "Add a video or some photos to begin.";
     if (hasImages && !hasVideo)
-      return 'Try: "make a slideshow", "make it 21:9", "reframe to 1600x900", "golden-hour look", "use dissolve transitions", "add a vignette", or "make it high quality".';
+      return 'Try: "make a slideshow", "make an interactive demo from these screenshots", "type email and password then click login", "highlight the sign-in button", "zoom into the menu", "make it 21:9", "golden-hour look", "use dissolve transitions", or "make it high quality".';
     return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "white bold captions with an outline", "captions at the top", "cinematic look", "bleach-bypass look", "make it 2.39:1", "reframe to 1600x900", "slow motion", "zoom in 1.5x", "punch in at 5s", "smooth transitions", "add a vignette and film grain", "a bouncing title that says …", "add background music", or "make it 4K".';
   }
 }

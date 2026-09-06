@@ -15,10 +15,14 @@
  * long-stable, standard filters.
  */
 import {
+  calloutScreenRect,
+  cursorPositionAt,
   docDurationSec,
   sourceSpanSec,
+  type CalloutClip,
   type Clip,
   type ColorGrade,
+  type CursorClip,
   type EditDoc,
   type ImageClip,
   type SolidClip,
@@ -212,13 +216,16 @@ export function escapeDrawtext(text: string): string {
     .replace(/[\r\n]+/g, " ");
 }
 
-/** One drawtext filter for a text clip, time-gated with between(t,start,end). */
-function drawtextFor(clip: TextClip): string {
+/**
+ * One drawtext filter drawing `text` for a clip's styling, gated to
+ * [gateStart, gateEnd]. Factored out so the typewriter can emit one slice per
+ * character-count (each a prefix of the full text) reusing the same styling.
+ */
+function oneDrawtext(clip: TextClip, text: string, gateStart: number, gateEnd: number): string {
   const { color, alpha } = hexToFfColor(clip.color);
   const tx = Math.round(clip.transform.x);
   const ty = Math.round(clip.transform.y);
   const start = r3(clip.start);
-  const end = r3(clip.start + clip.duration);
   // transform.x/y is the clip anchor; canvas uses center anchor + middle baseline.
   let x =
     clip.align === "center"
@@ -231,7 +238,7 @@ function drawtextFor(clip: TextClip): string {
   // Kinetic intro: slide from (fromX, fromY) toward the resting position over
   // `durationSec`, eased (1-(1-p)^3) — mirrors core's textKinetic. Commas inside
   // expression fn-calls are escaped for the filtergraph. (Export honors the slide;
-  // the scale-in is a preview/canvas nicety.)
+  // the scale-in is a preview/canvas nicety.) Typewriter never slides.
   const a = clip.anim;
   if (a.style === "kinetic" && a.durationSec > 0 && (a.fromX !== 0 || a.fromY !== 0)) {
     const p = `clip((t-${start})/${r3(a.durationSec)}\\,0\\,1)`;
@@ -241,7 +248,7 @@ function drawtextFor(clip: TextClip): string {
   }
 
   const parts = [
-    `text='${escapeDrawtext(clip.text)}'`,
+    `text='${escapeDrawtext(text)}'`,
     `x=${x}`,
     `y=${y}`,
     `fontsize=${Math.round(clip.fontSize)}`,
@@ -260,8 +267,161 @@ function drawtextFor(clip: TextClip): string {
     parts.push(`boxcolor=${bg.color}${bg.alpha < 1 ? `@${bg.alpha}` : ""}`);
     parts.push(`boxborderw=${Math.max(6, Math.round(clip.fontSize * 0.3))}`);
   }
-  parts.push(`enable='between(t\\,${start}\\,${end})'`);
+  parts.push(`enable='between(t\\,${r3(gateStart)}\\,${r3(gateEnd)})'`);
   return `drawtext=${parts.join(":")}`;
+}
+
+/**
+ * drawtext filter(s) for a text clip. A normal clip → one drawtext gated to its
+ * whole span. A "typewriter" clip → one drawtext PER character-count: slice k
+ * (the first k chars) is shown over [start+(k-1)·step, start+k·step), and the
+ * final slice holds to the clip end — reproducing the core `typewriterText`
+ * reveal with the documented "reveal via time-gated text slices" approach.
+ */
+function drawtextsFor(clip: TextClip): string[] {
+  const end = clip.start + clip.duration;
+  const a = clip.anim;
+  if (a.style === "typewriter" && a.durationSec > 0 && clip.text.length > 0) {
+    const full = clip.text;
+    const n = full.length;
+    const step = a.durationSec / n;
+    const out: string[] = [];
+    for (let k = 1; k <= n; k++) {
+      const gStart = clip.start + (k - 1) * step;
+      const gEnd = k < n ? clip.start + k * step : end;
+      out.push(oneDrawtext(clip, full.slice(0, k), gStart, gEnd));
+    }
+    return out;
+  }
+  return [oneDrawtext(clip, clip.text, clip.start, end)];
+}
+
+// --- callout / highlight (drawbox border + optional dim + label) -------------
+
+/**
+ * Filter segments for one callout: a bright rounded-ish border (drawbox), an
+ * optional dim of the area OUTSIDE the rect (four filled drawboxes: top / bottom
+ * / left / right), and an optional label (drawtext). All time-gated with the
+ * clip's [start, end] via `enable`. Coordinates are the PLAIN rect {x,y,w,h}:
+ * drawbox can't magnify, so the export keeps the faithful highlight (the zoom is
+ * a canvas/Stage preview affordance). Every filter here is documented ffmpeg
+ * (drawbox / drawtext), confirmed against ffmpeg-all.html.
+ */
+function calloutFilters(clip: CalloutClip, W: number, H: number): string[] {
+  const start = r3(clip.start);
+  const end = r3(clip.start + clip.duration);
+  const gate = `enable='between(t\\,${start}\\,${end})'`;
+  const rx = Math.round(clip.x);
+  const ry = Math.round(clip.y);
+  const rw = Math.round(clip.w);
+  const rh = Math.round(clip.h);
+  const out: string[] = [];
+
+  // Dim OUTSIDE the rect: four filled black boxes around it.
+  if (clip.dim && clip.dimOpacity > 0) {
+    const a = r3(Math.min(0.95, clip.dimOpacity));
+    const dcol = `black@${a}`;
+    const boxes: [number, number, number, number][] = [
+      [0, 0, W, Math.max(0, ry)], // top
+      [0, ry + rh, W, Math.max(0, H - (ry + rh))], // bottom
+      [0, ry, Math.max(0, rx), rh], // left
+      [rx + rw, ry, Math.max(0, W - (rx + rw)), rh], // right
+    ];
+    for (const [bx, by, bw, bh] of boxes) {
+      if (bw <= 0 || bh <= 0) continue;
+      out.push(`drawbox=x=${bx}:y=${by}:w=${bw}:h=${bh}:color=${dcol}:t=fill:${gate}`);
+    }
+  }
+
+  // Bright border around the rect.
+  if (clip.borderWidth > 0) {
+    const bc = hexToFfColor(clip.color);
+    const t = Math.max(1, Math.round(clip.borderWidth));
+    out.push(
+      `drawbox=x=${rx}:y=${ry}:w=${rw}:h=${rh}:color=${bc.color}${bc.alpha < 1 ? `@${bc.alpha}` : ""}:t=${t}:${gate}`,
+    );
+  }
+
+  // Optional label above (or below when there's no room) the rect.
+  if (clip.label) {
+    const fs = Math.max(18, Math.round(Math.min(W, H) * 0.03));
+    const bc = hexToFfColor(clip.color);
+    const above = ry - Math.round(fs * 1.6);
+    const ly = above > 0 ? above : ry + rh + Math.round(fs * 0.5);
+    out.push(
+      `drawtext=text='${escapeDrawtext(clip.label)}':x=${rx}:y=${ly}:fontsize=${fs}:fontcolor=0x0a0d12:box=1:boxcolor=${bc.color}${bc.alpha < 1 ? `@${bc.alpha}` : ""}:boxborderw=${Math.round(fs * 0.4)}:${gate}`,
+    );
+  }
+  return out;
+}
+
+// --- cursor overlay (moving pointer + click ripples) ------------------------
+
+/**
+ * A piecewise-linear time (`t`) expression for one axis of the pointer path.
+ * Before the first waypoint it holds the first value, after the last it holds the
+ * last, and between each pair it interpolates linearly in `t`. Commas inside the
+ * `if()`/`between()` calls are escaped for the filtergraph. (The canvas/Stage use
+ * the eased `cursorPositionAt`; the export approximates with linear segments.)
+ */
+function cursorAxisExpr(wps: { atSec: number; v: number }[]): string {
+  const pts = [...wps].sort((a, b) => a.atSec - b.atSec);
+  const last = pts[pts.length - 1]!;
+  let expr = `${r3(last.v)}`;
+  // Build from the last segment backwards so the nesting reads first-to-last.
+  for (let i = pts.length - 2; i >= 0; i--) {
+    const a = pts[i]!;
+    const b = pts[i + 1]!;
+    const span = Math.max(1e-6, b.atSec - a.atSec);
+    const seg = `${r3(a.v)}+(${r3(b.v - a.v)})*(t-${r3(a.atSec)})/${r3(span)}`;
+    expr = `if(lt(t\\,${r3(b.atSec)})\\,${seg}\\,${expr})`;
+  }
+  // Before the first waypoint, hold the first value.
+  const first = pts[0]!;
+  return `if(lt(t\\,${r3(first.atSec)})\\,${r3(first.v)}\\,${expr})`;
+}
+
+/**
+ * Filter segments for one cursor clip: a single drawtext whose x/y are time
+ * expressions gliding a pointer glyph along the waypoints (with a dark box behind
+ * it so the marker stays visible under any font fallback), plus, for each click,
+ * concentric drawbox rings gated in sequence to approximate the expanding ripple.
+ */
+function cursorFilters(clip: CursorClip): string[] {
+  const start = r3(clip.start);
+  const end = r3(clip.start + clip.duration);
+  const bc = hexToFfColor(clip.color);
+  const col = `${bc.color}${bc.alpha < 1 ? `@${bc.alpha}` : ""}`;
+  const out: string[] = [];
+
+  const xExpr = cursorAxisExpr(clip.waypoints.map((w) => ({ atSec: w.atSec, v: w.x })));
+  const yExpr = cursorAxisExpr(clip.waypoints.map((w) => ({ atSec: w.atSec, v: w.y })));
+  const fs = Math.max(10, Math.round(clip.size));
+  // A pointer glyph, gliding with t; box=1 keeps a visible marker if the glyph
+  // falls back. Approximates the canvas arrow (documented).
+  out.push(
+    `drawtext=text='${escapeDrawtext("➤")}':x='${xExpr}':y='${yExpr}':fontsize=${fs}:fontcolor=${col}:box=1:boxcolor=black@0.35:boxborderw=2:enable='between(t\\,${start}\\,${end})'`,
+  );
+
+  // Click ripples: at each click, sample the (fixed) pointer position and draw
+  // three rings, each gated to a third of the ripple's life (expanding outward).
+  const dur = clip.rippleSec;
+  const rings = 3;
+  const maxR = clip.size * 1.6;
+  for (const c of clip.clicks) {
+    const pos = cursorPositionAt(clip, c);
+    for (let j = 0; j < rings; j++) {
+      const rad = Math.round((maxR * (j + 1)) / rings);
+      const gs = r3(c + (j * dur) / rings);
+      const ge = r3(c + ((j + 1) * dur) / rings);
+      const bx = Math.round(pos.x - rad);
+      const by = Math.round(pos.y - rad);
+      out.push(
+        `drawbox=x=${bx}:y=${by}:w=${rad * 2}:h=${rad * 2}:color=${col}:t=3:enable='between(t\\,${gs}\\,${ge})'`,
+      );
+    }
+  }
+  return out;
 }
 
 // --- clip collection --------------------------------------------------------
@@ -296,6 +456,24 @@ function collectTextClips(doc: EditDoc): TextClip[] {
   const out: TextClip[] = [];
   for (const track of doc.tracks) {
     for (const clip of track.clips) if (clip.kind === "text") out.push(clip);
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+function collectCallouts(doc: EditDoc): CalloutClip[] {
+  const out: CalloutClip[] = [];
+  for (const track of doc.tracks) {
+    for (const clip of track.clips) if (clip.kind === "callout") out.push(clip);
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+function collectCursors(doc: EditDoc): CursorClip[] {
+  const out: CursorClip[] = [];
+  for (const track of doc.tracks) {
+    for (const clip of track.clips) if (clip.kind === "cursor") out.push(clip);
   }
   out.sort((a, b) => a.start - b.start);
   return out;
@@ -541,12 +719,41 @@ export function buildExportPlan(
   });
 
   // ---- Burn-in captions / titles (drawtext, time-gated) -------------------
+  // Typewriter text expands to one drawtext per character-count (drawtextsFor).
   const texts = collectTextClips(doc);
   if (texts.length > 0) {
-    const chain = texts.map(drawtextFor).join(",");
+    const chain = texts.flatMap(drawtextsFor).join(",");
     filters.push(`[${videoLabel}]${chain}[vtext]`);
     videoLabel = "vtext";
   }
+
+  // ---- Callout / highlight boxes (drawbox border + optional dim + label) ---
+  // Faithful overlay: a bright border around the rect, an optional dim of the
+  // area OUTSIDE it (four filled drawboxes), and an optional label. All
+  // time-gated via drawbox/drawtext `enable`. (The optional `zoom` magnifies in
+  // the canvas/Stage preview; the export keeps the faithful highlight box.)
+  const callouts = collectCallouts(doc);
+  callouts.forEach((clip, i) => {
+    const parts = calloutFilters(clip, W, H);
+    if (parts.length === 0) return;
+    const out = `vco${i}`;
+    filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
+    videoLabel = out;
+  });
+
+  // ---- Cursor overlay (moving pointer + click ripples) --------------------
+  // drawtext x/y are time (`t`) expressions, so ONE drawtext glides the pointer
+  // glyph along the waypoints (piecewise-linear). Each click fires concentric
+  // drawbox rings gated in sequence (an expanding ripple; drawbox geometry can't
+  // read `t`, so the ripple is built from time-gated static rings).
+  const cursors = collectCursors(doc);
+  cursors.forEach((clip, i) => {
+    const parts = cursorFilters(clip);
+    if (parts.length === 0) return;
+    const out = `vcur${i}`;
+    filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
+    videoLabel = out;
+  });
 
   // ---- Fade from / to black -----------------------------------------------
   const fades = detectFades(doc, total);

@@ -22,7 +22,16 @@ const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.m
  * titles, captions, b-roll PiP, fades or music). Speed / zoom / transition edits
  * apply to these, never to the overlays.
  */
-const OVERLAY_TRACK_IDS = new Set(["titles", "captions", "broll", "fades", "music"]);
+const OVERLAY_TRACK_IDS = new Set([
+  "titles",
+  "captions",
+  "broll",
+  "fades",
+  "music",
+  "cursor",
+  "callouts",
+  "demo-text",
+]);
 const isMainVisualTrack = (id: string): boolean => !OVERLAY_TRACK_IDS.has(id);
 
 // ---- Aspect ratios ---------------------------------------------------------
@@ -671,6 +680,163 @@ export function setTransition(doc: EditDoc, type: TransitionType, transitionSec 
 }
 
 // ---- Fades -----------------------------------------------------------------
+
+// ---- Interaction demo: cursor / typed text / callout -----------------------
+
+/** How fast typewriter text types, in seconds per character (a sensible default). */
+const TYPE_SEC_PER_CHAR = 0.075;
+
+export interface CursorWaypointInput {
+  x: number;
+  y: number;
+  atSec: number;
+}
+
+export interface AddCursorOpts {
+  waypoints: CursorWaypointInput[];
+  clicks?: number[];
+  size?: number;
+  color?: string;
+  start?: number;
+  duration?: number;
+}
+
+/**
+ * Add an animated mouse-pointer overlay (a CursorClip) on the "cursor" track. The
+ * pointer eases through `waypoints` (composition px, each with a timeline `atSec`)
+ * and fires a click ripple at each time in `clicks`. Pure + re-parsed through the
+ * schema. Faithful: a synthetic overlay, no content change. Positions are the
+ * caller's to choose — exact field pixels can't be detected from a raw screenshot
+ * without vision, so demos seed sensible defaults the user can nudge.
+ */
+export function addCursor(doc: EditDoc, opts: AddCursorOpts): EditDoc {
+  if (!opts.waypoints || opts.waypoints.length === 0) {
+    throw new Error("A cursor needs at least one waypoint.");
+  }
+  const clone: EditDoc = structuredClone(doc);
+  const wps = [...opts.waypoints].sort((a, b) => a.atSec - b.atSec);
+  const clicks = (opts.clicks ?? []).map((c) => round(Math.max(0, c)));
+  const firstAt = wps[0]!.atSec;
+  const lastAt = wps[wps.length - 1]!.atSec;
+  const start = round(Math.max(0, opts.start ?? Math.min(firstAt, clicks[0] ?? firstAt)));
+  const tail = 0.6; // let the last click ripple finish
+  const naturalEnd = Math.max(lastAt, clicks.length ? Math.max(...clicks) : lastAt) + tail;
+  const duration = round(Math.max(0.2, opts.duration ?? naturalEnd - start));
+
+  const clip: Record<string, unknown> = {
+    id: `cursor-${Date.now()}`,
+    kind: "cursor",
+    start,
+    duration,
+    waypoints: wps.map((w) => ({ x: round(w.x), y: round(w.y), atSec: round(w.atSec) })),
+    clicks,
+    size: opts.size ?? 48,
+    ...(opts.color ? { color: opts.color } : {}),
+  };
+  let track = clone.tracks.find((t) => t.id === "cursor");
+  if (!track) {
+    track = { id: "cursor", kind: "visual", clips: [] };
+    clone.tracks.push(track);
+  }
+  (track.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+export interface TypeTextOpts {
+  text: string;
+  x: number;
+  y: number;
+  atSec?: number;
+  /** Seconds to type the whole string (defaults to a per-character rate). */
+  typeSec?: number;
+  /** Seconds to hold the fully-typed string after it finishes. */
+  holdSec?: number;
+  fontSize?: number;
+  color?: string;
+  align?: "left" | "center" | "right";
+  background?: string;
+  caret?: boolean;
+}
+
+/**
+ * Add a typewriter TextClip on the "demo-text" track: `text` types out at (x, y)
+ * over `typeSec`, then holds for `holdSec`. Uses the schema's "typewriter" anim
+ * style (resolved by core's `typewriterText`), so canvas, Stage, and export
+ * reveal it identically. Pure + re-parsed through the schema.
+ */
+export function typeText(doc: EditDoc, opts: TypeTextOpts): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const h = clone.meta.height;
+  const start = round(Math.max(0, opts.atSec ?? 0));
+  const typeSec = round(Math.max(0.2, opts.typeSec ?? Math.max(0.4, opts.text.length * TYPE_SEC_PER_CHAR)));
+  const holdSec = round(Math.max(0, opts.holdSec ?? 1.6));
+  const clip = {
+    id: `type-${Date.now()}-${Math.round(opts.y)}`,
+    kind: "text" as const,
+    start,
+    duration: round(typeSec + holdSec),
+    text: opts.text,
+    fontSize: opts.fontSize ?? Math.round(h * 0.032),
+    color: opts.color ?? "#ffffff",
+    align: opts.align ?? "left",
+    transform: { x: round(opts.x), y: round(opts.y) },
+    ...(opts.background ? { background: opts.background } : {}),
+    anim: { style: "typewriter" as const, durationSec: typeSec, caret: opts.caret ?? true },
+  };
+  let track = clone.tracks.find((t) => t.id === "demo-text");
+  if (!track) {
+    track = { id: "demo-text", kind: "visual", clips: [] };
+    clone.tracks.push(track);
+  }
+  (track.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+export interface AddCalloutOpts {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label?: string;
+  zoom?: number;
+  dim?: boolean;
+  color?: string;
+  atSec?: number;
+  durationSec?: number;
+}
+
+/**
+ * Add a callout / highlight box (a CalloutClip) on the "callouts" track: a bright
+ * rounded border around {x,y,w,h}, the area outside optionally dimmed, an optional
+ * label, and an optional zoom toward the rect. Pure + re-parsed through the schema.
+ * Faithful: an overlay + optional magnify, no content change.
+ */
+export function addCallout(doc: EditDoc, opts: AddCalloutOpts): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const start = round(Math.max(0, opts.atSec ?? 0));
+  const duration = round(Math.max(0.2, opts.durationSec ?? Math.min(3, docDurationSec(clone) || 3)));
+  const clip: Record<string, unknown> = {
+    id: `callout-${Date.now()}`,
+    kind: "callout",
+    start,
+    duration,
+    x: round(opts.x),
+    y: round(opts.y),
+    w: round(Math.max(1, opts.w)),
+    h: round(Math.max(1, opts.h)),
+    ...(opts.label ? { label: opts.label } : {}),
+    ...(opts.color ? { color: opts.color } : {}),
+    ...(opts.dim !== undefined ? { dim: opts.dim } : {}),
+    ...(opts.zoom !== undefined ? { zoom: clamp(opts.zoom, 1, 4) } : {}),
+  };
+  let track = clone.tracks.find((t) => t.id === "callouts");
+  if (!track) {
+    track = { id: "callouts", kind: "visual", clips: [] };
+    clone.tracks.push(track);
+  }
+  (track.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
 
 /** Add a fade from black at the start and a fade to black at the end. */
 export function addFades(doc: EditDoc, inSec = 0.6, outSec = 0.6): EditDoc {

@@ -23,6 +23,19 @@ import {
   addVoiceover,
   setTrackVolume,
 } from "@/lib/doc";
+import {
+  findClip,
+  isMainSequentialTrack,
+  splitClip,
+  trimClip,
+  reorderClip,
+  moveClip,
+  rippleDeleteClip,
+  deleteClip,
+  duplicateClip,
+  setClipVolume,
+  type TrimEdge,
+} from "@/lib/edit-ops";
 import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
 import { useDocHistory } from "@/lib/history";
@@ -119,6 +132,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const [muted, setMuted] = useState(false);
   // Keyboard-shortcuts help popover.
   const [helpOpen, setHelpOpen] = useState(false);
+  // Directly-editable timeline: the selected clip + timeline markers. Markers
+  // are editor-only (there is no schema field for them) — see the report.
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [markers, setMarkers] = useState<number[]>([]);
   // Resizable side panels (persisted per browser).
   const [railWidth, setRailWidth] = useState(380);
   const [codeWidth, setCodeWidth] = useState(440);
@@ -506,6 +523,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setTranscripts({});
     setPlaying(false);
     setTimeSec(0);
+    setSelectedClipId(null);
+    setMarkers([]);
     reset(emptyDoc());
     say("director", "Cleared the timeline — added media and edits are gone. Add a video or photos to begin again.", "info");
   }
@@ -565,6 +584,79 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     commit(setTrackVolume(doc, trackId, volume), { coalesce: `vol-${trackId}` });
   }
 
+  // ---- Direct timeline editing (all route through commit → undo/redo) -------
+
+  /** The clip a split/delete should act on: the selection, else the active main clip. */
+  function splitTargetId(): string | null {
+    if (selectedClipId && findClip(doc, selectedClipId)) return selectedClipId;
+    // Fall back to the main-track clip under the playhead.
+    for (const track of doc.tracks) {
+      if (!isMainSequentialTrack(track)) continue;
+      for (const c of track.clips) {
+        if ((c.kind === "video" || c.kind === "image") && timeSec >= c.start && timeSec < c.start + c.duration) return c.id;
+      }
+    }
+    return null;
+  }
+
+  /** Drag-trim a clip edge; coalesced so a whole drag is one undo step. */
+  function trimClipEdge(clipId: string, edge: TrimEdge, edgeTime: number, coalesceKey: string) {
+    setPlaying(false);
+    commit(trimClip(doc, clipId, edge, edgeTime), { coalesce: coalesceKey });
+  }
+
+  function splitClipAt(clipId: string, atSec: number) {
+    setPlaying(false);
+    commit(splitClip(doc, clipId, atSec));
+  }
+
+  function reorderClipTo(clipId: string, toSeqIndex: number) {
+    setPlaying(false);
+    commit(reorderClip(doc, clipId, toSeqIndex));
+  }
+
+  function moveClipDir(clipId: string, dir: "earlier" | "later") {
+    setPlaying(false);
+    commit(moveClip(doc, clipId, dir));
+  }
+
+  function duplicateSelectedClip(clipId: string) {
+    setPlaying(false);
+    commit(duplicateClip(doc, clipId));
+  }
+
+  function rippleDeleteSelectedClip(clipId: string) {
+    setPlaying(false);
+    commit(rippleDeleteClip(doc, clipId));
+    if (clipId === selectedClipId) setSelectedClipId(null);
+  }
+
+  function deleteSelectedClip(clipId: string) {
+    setPlaying(false);
+    commit(deleteClip(doc, clipId));
+    if (clipId === selectedClipId) setSelectedClipId(null);
+  }
+
+  /** Set a single clip's volume (or mute = 0); coalesced per clip. */
+  function setSelectedClipVolume(clipId: string, volume: number, coalesceKey: string) {
+    commit(setClipVolume(doc, clipId, volume), { coalesce: coalesceKey });
+  }
+
+  /** Add/remove editor-only markers (jump targets) at the playhead. */
+  function addMarker() {
+    const t = Math.round(timeSec * 1000) / 1000;
+    setMarkers((ms) => (ms.some((m) => Math.abs(m - t) < 0.02) ? ms : [...ms, t].sort((a, b) => a - b)));
+  }
+  function removeMarker(t: number) {
+    setMarkers((ms) => ms.filter((m) => m !== t));
+  }
+
+  // Keep the selection valid: if the selected clip vanishes (ripple-delete, a
+  // Director rewrite, start-over), clear it so the inspector never dangles.
+  useEffect(() => {
+    if (selectedClipId && !findClip(doc, selectedClipId)) setSelectedClipId(null);
+  }, [doc, selectedClipId]);
+
   // Keyboard shortcuts. The ref always holds the latest closures, so we bind the
   // window listener exactly once. Shortcuts are ignored while typing in a field.
   const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
@@ -603,6 +695,18 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (e.key === "ArrowLeft") { e.preventDefault(); seek(timeSec - (e.shiftKey ? 5 : 1)); return; }
     if (e.key === "ArrowRight") { e.preventDefault(); seek(timeSec + (e.shiftKey ? 5 : 1)); return; }
     if (e.key === "Home") { e.preventDefault(); seek(0); return; }
+    // Timeline editing.
+    if (e.key === "s" || e.key === "S") {
+      const id = splitTargetId();
+      if (id) { e.preventDefault(); splitClipAt(id, timeSec); }
+      return;
+    }
+    if ((e.key === "Delete" || e.key === "Backspace") && selectedClipId) {
+      e.preventDefault();
+      rippleDeleteSelectedClip(selectedClipId);
+      return;
+    }
+    if (e.key === "m" || e.key === "M") { e.preventDefault(); addMarker(); return; }
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => keyHandlerRef.current(e);
@@ -699,7 +803,28 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           className="shrink-0 overflow-y-auto md:h-[var(--tl-h)]"
           style={{ "--tl-h": `${timelineHeight}px` } as CSSProperties}
         >
-          <CutsStrip doc={doc} timeSec={timeSec} durationSec={durationSec} onSeek={seek} waveform={waveformSource} />
+          <CutsStrip
+            doc={doc}
+            timeSec={timeSec}
+            durationSec={durationSec}
+            onSeek={seek}
+            waveform={waveformSource}
+            edit={{
+              selectedClipId,
+              onSelectClip: setSelectedClipId,
+              onTrim: trimClipEdge,
+              onReorder: reorderClipTo,
+              onSplitAt: splitClipAt,
+              onDuplicate: duplicateSelectedClip,
+              onRippleDelete: rippleDeleteSelectedClip,
+              onDelete: deleteSelectedClip,
+              onSetClipVolume: setSelectedClipVolume,
+              onMove: moveClipDir,
+              markers,
+              onAddMarker: addMarker,
+              onRemoveMarker: removeMarker,
+            }}
+          />
         </div>
       </main>
       {codeOpen && (

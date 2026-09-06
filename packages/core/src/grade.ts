@@ -5,7 +5,16 @@
  * on export (ffmpeg). Keeping this math in one place is what makes the preview
  * trustworthy.
  */
-import type { ColorGrade, FontWeight, ImageClip, SolidClip, TextClip, VideoClip } from "./schema";
+import type {
+  CalloutClip,
+  ColorGrade,
+  CursorClip,
+  FontWeight,
+  ImageClip,
+  SolidClip,
+  TextClip,
+  VideoClip,
+} from "./schema";
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 
@@ -35,6 +44,15 @@ const easeOutBounce = (p: number): number => {
   if (x < 2 / d1) return n1 * (x -= 1.5 / d1) * x + 0.75;
   if (x < 2.5 / d1) return n1 * (x -= 2.25 / d1) * x + 0.9375;
   return n1 * (x -= 2.625 / d1) * x + 0.984375;
+};
+
+/**
+ * Ease-in-out cubic — gentle acceleration then deceleration. The natural curve
+ * for a mouse pointer gliding between two points. Deterministic; p is 0..1.
+ */
+const easeInOutCubic = (p: number): number => {
+  const x = clamp01(p);
+  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
 };
 
 /**
@@ -130,7 +148,11 @@ export interface KineticState {
  */
 export function textKinetic(clip: TextClip, timeSec: number): KineticState {
   const a = clip.anim;
-  if (a.style === "none" || a.durationSec <= 0) return { dx: 0, dy: 0, scaleMul: 1 };
+  // "typewriter" reveals characters over time (see typewriterText); it never
+  // slides or scales, so it is identity for the kinetic transform.
+  if (a.style === "none" || a.style === "typewriter" || a.durationSec <= 0) {
+    return { dx: 0, dy: 0, scaleMul: 1 };
+  }
   const p = (timeSec - clip.start) / a.durationSec;
   if (a.style === "pop") {
     // Scale overshoots past its resting 1 then settles; offsets follow the same curve.
@@ -222,6 +244,151 @@ export function emphasisScale(clip: VideoClip, timeSec: number): number {
   const p = (timeSec - e.atSec) / e.durationSec;
   const pulse = Math.sin(clamp01(p) * Math.PI); // 0 at edges, 1 at center
   return 1 + (e.zoom - 1) * pulse;
+}
+
+// ---- typewriter text -------------------------------------------------------
+
+export interface TypewriterState {
+  /** The characters visible at this time (a prefix of the full text). */
+  text: string;
+  /** How many characters are revealed (0..text length). */
+  count: number;
+  /** Whether the blinking caret should be drawn this frame. */
+  caretVisible: boolean;
+  /** True once every character has been revealed. */
+  done: boolean;
+}
+
+/**
+ * Visible substring of a "typewriter" text clip at `timeSec`. The text types out
+ * one character at a time over `anim.durationSec` (linear), starting at the
+ * clip's `start`. The caret (when `anim.caret`) blinks at ~1.9 Hz. For any other
+ * style — or a zero duration — the full text is returned immediately, so this is
+ * always safe to call. Pure + deterministic, mirroring the ffmpeg export's
+ * time-gated drawtext slices so the preview and the export reveal identically.
+ */
+export function typewriterText(clip: TextClip, timeSec: number): TypewriterState {
+  const full = clip.text;
+  const len = full.length;
+  const a = clip.anim;
+  if (a.style !== "typewriter" || a.durationSec <= 0 || len === 0) {
+    return { text: full, count: len, caretVisible: false, done: true };
+  }
+  const p = clamp01((timeSec - clip.start) / a.durationSec);
+  // round() so the exact midpoint reveals ~half the string (a partial reveal).
+  const count = Math.max(0, Math.min(len, Math.round(p * len)));
+  const done = count >= len;
+  // Caret blinks continuously; drawn only when requested.
+  const blinkOn = Math.floor(Math.max(0, timeSec - clip.start) / 0.53) % 2 === 0;
+  return { text: full.slice(0, count), count, caretVisible: a.caret && blinkOn, done };
+}
+
+// ---- cursor overlay --------------------------------------------------------
+
+export interface CursorPoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * Pointer position (composition px) at `timeSec`, easing (ease-in-out cubic)
+ * between the clip's waypoints. Before the first waypoint's `atSec` it rests at
+ * the first point; after the last it rests at the last point. Waypoints are read
+ * in `atSec` order. Pure + deterministic — the single mapping the canvas, the
+ * Stage, and the ffmpeg export all share.
+ */
+export function cursorPositionAt(clip: CursorClip, timeSec: number): CursorPoint {
+  const wp = [...clip.waypoints].sort((a, b) => a.atSec - b.atSec);
+  const first = wp[0]!;
+  if (timeSec <= first.atSec) return { x: first.x, y: first.y };
+  const last = wp[wp.length - 1]!;
+  if (timeSec >= last.atSec) return { x: last.x, y: last.y };
+  for (let i = 0; i < wp.length - 1; i++) {
+    const a = wp[i]!;
+    const b = wp[i + 1]!;
+    if (timeSec >= a.atSec && timeSec <= b.atSec) {
+      const span = Math.max(1e-6, b.atSec - a.atSec);
+      const e = easeInOutCubic((timeSec - a.atSec) / span);
+      return { x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e };
+    }
+  }
+  return { x: last.x, y: last.y };
+}
+
+export interface RippleState {
+  /** The click time (seconds) this ripple belongs to. */
+  atSec: number;
+  /** 0..1 progress through the ripple's lifetime. */
+  progress: number;
+  /** Ring radius as a fraction of its max radius (grows with progress). */
+  radiusFrac: number;
+  /** 0..1 opacity (fades out as it expands). */
+  opacity: number;
+}
+
+/**
+ * Click ripples active at `timeSec`. For each click time c with
+ * timeSec ∈ [c, c + rippleSec] the ring expands (radiusFrac 0→1) and fades
+ * (opacity 1→0). Returns every active ripple (usually 0 or 1). Pure +
+ * deterministic; the renderer turns radiusFrac into pixels. The ffmpeg export
+ * approximates the same expansion with concentric rings gated in sequence.
+ */
+export function cursorRipples(clip: CursorClip, timeSec: number): RippleState[] {
+  const out: RippleState[] = [];
+  const dur = Math.max(1e-6, clip.rippleSec);
+  for (const c of clip.clicks) {
+    if (timeSec < c || timeSec > c + dur) continue;
+    const progress = clamp01((timeSec - c) / dur);
+    out.push({ atSec: c, progress, radiusFrac: progress, opacity: 1 - progress });
+  }
+  return out;
+}
+
+// ---- callout / highlight ---------------------------------------------------
+
+export interface CalloutTransform {
+  /** Zoom scale (1 = no zoom). */
+  scale: number;
+  /** Canvas ctx translate applied BEFORE scale, so the rect center holds still. */
+  tx: number;
+  ty: number;
+}
+
+/**
+ * The whole-frame zoom transform for a callout: scale about the rect's CENTER by
+ * `zoom`, so the highlighted region magnifies while its center stays put. Canvas
+ * applies `translate(tx,ty); scale(scale,scale)`; the ffmpeg export derives its
+ * crop offset as (-tx, -ty). Identity when zoom <= 1. Pure + deterministic.
+ */
+export function calloutTransform(clip: CalloutClip): CalloutTransform {
+  const s = Math.max(1, clip.zoom);
+  if (s === 1) return { scale: 1, tx: 0, ty: 0 };
+  const cx = clip.x + clip.w / 2;
+  const cy = clip.y + clip.h / 2;
+  return { scale: s, tx: cx * (1 - s), ty: cy * (1 - s) };
+}
+
+export interface ScreenRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Where the callout's border sits in FINAL output coordinates, accounting for the
+ * zoom (the rect grows by `zoom` about its own center). With no zoom this is just
+ * {x,y,w,h}. Shared by the canvas (drawn in screen space, over the zoomed content)
+ * and the ffmpeg export (drawbox after the scale/crop). Pure + deterministic.
+ */
+export function calloutScreenRect(clip: CalloutClip): ScreenRect {
+  const s = Math.max(1, clip.zoom);
+  if (s === 1) return { x: clip.x, y: clip.y, w: clip.w, h: clip.h };
+  const cx = clip.x + clip.w / 2;
+  const cy = clip.y + clip.h / 2;
+  const w = clip.w * s;
+  const h = clip.h * s;
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
 }
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
