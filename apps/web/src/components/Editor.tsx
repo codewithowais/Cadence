@@ -3,10 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { docDurationSec, parseEditDoc, type EditDoc, type MediaAsset } from "@cadence/core";
 import type { Transcript } from "@cadence/understanding";
-import { RoomsRail } from "./RoomsRail";
+import { RoomsRail, type RoomKey } from "./RoomsRail";
+import { RoomPanel } from "./RoomPanel";
 import { DirectorRail } from "./DirectorRail";
 import { TopBar } from "./TopBar";
 import { QuickActions } from "./QuickActions";
+import { AppliedStatus } from "./AppliedStatus";
 import { Stage } from "./Stage";
 import { CutsStrip } from "./CutsStrip";
 import { CodeDrawer } from "./CodeDrawer";
@@ -80,6 +82,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const [busy, setBusy] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  // Which room's contextual panel is showing (default "edit" = QuickActions).
+  const [room, setRoom] = useState<RoomKey>("edit");
+  // Preview source audio; default UNMUTED so users hear the video's own audio.
+  const [muted, setMuted] = useState(false);
 
   const urlsRef = useRef(urls);
   urlsRef.current = urls;
@@ -323,7 +329,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
 
   return (
     <div className="flex h-dvh w-full overflow-hidden">
-      <RoomsRail />
+      <RoomsRail room={room} onRoomChange={setRoom} />
       <DirectorRail messages={messages} busy={busy} hasMedia={mediaList.length > 0} onSend={handleSend} onFiles={handleFiles} />
       <main className="flex min-w-0 flex-1 flex-col">
         {notice && (
@@ -344,7 +350,23 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onSave={onSave ? handleSave : undefined}
           saveState={saveState}
         />
-        <QuickActions mode={mediaList.length === 0 ? "none" : mode} busy={busy} onAction={handleSend} />
+        <AppliedStatus doc={doc} hasMedia={mediaList.length > 0} />
+        {room === "edit" ? (
+          <QuickActions mode={mediaList.length === 0 ? "none" : mode} busy={busy} onAction={handleSend} />
+        ) : (
+          <RoomPanel
+            room={room}
+            doc={doc}
+            mediaList={mediaList}
+            busy={busy}
+            onAction={handleSend}
+            onFiles={handleFiles}
+            onExport={exportDoc}
+            canExport={mediaList.length > 0 && durationSec > 0}
+            muted={muted}
+            onToggleMute={() => setMuted((m) => !m)}
+          />
+        )}
         <Stage
           urls={urls}
           hasMedia={mediaList.length > 0}
@@ -356,6 +378,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onSeek={seek}
           onNudge={handleNudge}
           canNudge={hasVideoClip}
+          muted={muted}
+          onToggleMute={() => setMuted((m) => !m)}
         />
         <CutsStrip doc={doc} timeSec={timeSec} durationSec={durationSec} onSeek={seek} />
       </main>

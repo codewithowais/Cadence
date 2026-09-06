@@ -5,6 +5,8 @@ export {
   parseWhisperJson,
   detectWhisper,
   templateToArgv,
+  assertLocalMediaPath,
+  mediaBaseDir,
   WHISPER_MISSING_MESSAGE,
 } from "./whisper-transcriber";
 export type { WhisperDetection, WhisperKind } from "./whisper-transcriber";

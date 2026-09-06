@@ -18,13 +18,115 @@
  * mapping is unit-testable without running a model.
  */
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { MediaAsset } from "@cadence/core";
 import type { Transcriber, Transcript, TranscriptSegment, Word } from "./transcript";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
+
+// ---------------------------------------------------------------------------
+// SECURITY — client-supplied media path guard (SSRF / arbitrary-file-read).
+//
+// `WhisperTranscriber` hands `media.src` to ffmpeg as an INPUT path. Without a
+// guard, a crafted src ("/etc/passwd", "http://…", "concat:…", "subfile:…",
+// "-flag") would be an arbitrary-file-read / SSRF / flag-smuggle. This mirrors
+// the export route's `resolveUploadPath` (apps/web/src/lib/uploads.ts): reject
+// protocol/pseudo-path/flag shapes, realpath to collapse symlinks + "..", and
+// require containment inside the uploads dir when one is resolvable.
+// ---------------------------------------------------------------------------
+
+/**
+ * The directory Whisper is allowed to read media from. Matches the web app's
+ * UPLOAD_DIR (`<os.tmpdir()>/cadence-uploads`) so both share one trust root, and
+ * can be overridden via `CADENCE_MEDIA_DIR`.
+ */
+export function mediaBaseDir(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return env.CADENCE_MEDIA_DIR?.trim() || join(tmpdir(), "cadence-uploads");
+}
+
+/**
+ * ffmpeg protocol / pseudo-path input prefixes that must never be treated as a
+ * local file (would enable SSRF, arbitrary read, or protocol smuggling).
+ */
+const FFMPEG_PROTOCOL_PREFIXES: readonly string[] = [
+  "concat:", "subfile:", "file:", "http:", "https:", "pipe:", "data:",
+  "crypto:", "hls:", "tcp:", "udp:", "rtp:", "rtmp:", "rtsp:", "ftp:",
+  "ftps:", "gopher:", "srtp:", "tls:", "unix:", "async:", "cache:", "md5:",
+];
+
+/**
+ * Validate a client-supplied media path and return its provably-safe realpath —
+ * or throw. PURE-ish: no spawning; only fs.realpath/stat (needed to collapse
+ * symlinks/".." and to prove it is a regular file). Exported so it is unit-testable.
+ *
+ * Rules (defense-in-depth):
+ *  1. Reject empty, `-`-leading (flag smuggling), `://`, or any ffmpeg
+ *     protocol/pseudo-path prefix (concat:, subfile:, file:, http:, …).
+ *  2. `realpath` it — reject if it does not resolve / does not exist.
+ *  3. Reject if it is not a regular file.
+ *  4. If a media base dir is resolvable (`CADENCE_MEDIA_DIR` or the OS tmp
+ *     `cadence-uploads` dir), require the realpath to stay inside it. If no base
+ *     is resolvable, the protocol/flag/regular-file checks above still apply.
+ */
+export async function assertLocalMediaPath(
+  src: string,
+  env: Record<string, string | undefined> = process.env,
+): Promise<string> {
+  if (typeof src !== "string" || src.trim() === "") {
+    throw new Error("invalid media path: empty");
+  }
+  if (src.startsWith("-")) {
+    throw new Error("invalid media path: refusing flag-like path");
+  }
+  if (src.includes("://")) {
+    throw new Error("invalid media path: remote URLs are not allowed");
+  }
+  const lower = src.toLowerCase();
+  for (const prefix of FFMPEG_PROTOCOL_PREFIXES) {
+    if (lower.startsWith(prefix)) {
+      throw new Error(`invalid media path: protocol prefix "${prefix}" is not allowed`);
+    }
+  }
+  // Catch any other `scheme:` pseudo-protocol (>=2 char scheme so Windows drive
+  // letters like `C:` are not flagged) that ffmpeg might interpret.
+  if (/^[a-z][a-z0-9+.\-]+:/i.test(src)) {
+    throw new Error("invalid media path: protocol-style prefix is not allowed");
+  }
+
+  let real: string;
+  try {
+    real = await realpath(src);
+  } catch {
+    throw new Error("invalid media path: does not resolve to an existing file");
+  }
+
+  let info;
+  try {
+    info = await stat(real);
+  } catch {
+    throw new Error("invalid media path: does not resolve to an existing file");
+  }
+  if (!info.isFile()) {
+    throw new Error("invalid media path: not a regular file");
+  }
+
+  // Containment: only enforced when a base dir is itself resolvable.
+  let base: string | null = null;
+  try {
+    base = await realpath(mediaBaseDir(env));
+  } catch {
+    base = null; // no configured/existing base → rely on the checks above.
+  }
+  if (base !== null && real !== base && !real.startsWith(base + sep)) {
+    throw new Error("invalid media path: outside the allowed media directory");
+  }
+
+  return real;
+}
 
 // ---------------------------------------------------------------------------
 // PURE parsing — Whisper JSON → Transcript. No I/O; fully unit-testable.
@@ -376,12 +478,24 @@ export class WhisperTranscriber implements Transcriber {
     const ffbin = process.env.FFMPEG_PATH || "ffmpeg";
     if (!(await ffmpegAvailable(ffbin))) throw new Error(WHISPER_MISSING_MESSAGE);
 
+    // SECURITY: media.src is client-supplied. Validate it resolves to a real,
+    // local, regular file inside the allowed media dir BEFORE handing it to
+    // ffmpeg — otherwise a crafted src ("/etc/passwd", "http://…", "concat:…",
+    // "-flag") would be arbitrary-file-read / SSRF / flag-smuggling.
+    const safeSrc = await assertLocalMediaPath(media.src);
+
     const workDir = await mkdtemp(join(tmpdir(), "cadence-whisper-"));
     try {
       // 1) Extract audio to a 16 kHz mono wav (Whisper's expected input).
+      // Constrain ffmpeg to the local file/pipe protocols (blocks http/tcp/…
+      // SSRF) and hand it the VALIDATED absolute realpath. ffmpeg's `-i`
+      // consumes its argument literally (GET_ARG — never re-parsed as an
+      // option), and `safeSrc` is an absolute realpath that can never begin
+      // with "-", so the input can never be interpreted as a flag.
       const wav = join(workDir, "audio.wav");
       await run(ffbin, [
-        "-y", "-i", media.src,
+        "-y", "-protocol_whitelist", "file,pipe",
+        "-i", safeSrc,
         "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
         wav,
       ]);

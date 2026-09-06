@@ -27,6 +27,9 @@ interface StageProps {
   onSeek: (t: number) => void;
   onNudge: (delta: number) => void;
   canNudge: boolean;
+  /** Whether the preview <video> is muted (source audio). */
+  muted: boolean;
+  onToggleMute: () => void;
 }
 
 /** A b-roll PiP <video> that seeks to its source time (own ref, like the main one). */
@@ -58,7 +61,7 @@ function BrollVideo(props: {
 }
 
 export function Stage(props: StageProps) {
-  const { urls, hasMedia, doc, timeSec, durationSec, playing } = props;
+  const { urls, hasMedia, doc, timeSec, durationSec, playing, muted } = props;
   const videoRef = useRef<HTMLVideoElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const [frameH, setFrameH] = useState(0);
@@ -136,7 +139,7 @@ export function Stage(props: StageProps) {
             <video
               ref={videoRef}
               src={urls[videoMediaId]}
-              muted
+              muted={muted}
               playsInline
               preload="auto"
               className="absolute inset-0 h-full w-full object-cover will-change-transform"
@@ -273,6 +276,35 @@ export function Stage(props: StageProps) {
           disabled={!hasMedia}
           aria-label="Scrubber"
         />
+
+        <button
+          type="button"
+          onClick={props.onToggleMute}
+          disabled={!hasMedia}
+          aria-pressed={!muted}
+          aria-label={muted ? "Unmute preview" : "Mute preview"}
+          title={muted ? "Unmute preview audio" : "Mute preview audio"}
+          className={[
+            "grid h-9 w-9 shrink-0 place-items-center rounded-full border transition disabled:opacity-40",
+            muted
+              ? "border-line bg-elevated text-faint hover:text-muted"
+              : "border-amber/40 bg-amber/10 text-amber",
+          ].join(" ")}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            {muted ? (
+              <>
+                <path d="M11 5 6 9H2v6h4l5 4z" />
+                <path d="M23 9l-6 6M17 9l6 6" />
+              </>
+            ) : (
+              <>
+                <path d="M11 5 6 9H2v6h4l5 4z" />
+                <path d="M15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14" />
+              </>
+            )}
+          </svg>
+        </button>
 
         <div className="hidden shrink-0 items-center gap-1 sm:flex" title="Nudge the ending">
           <span className="mr-1 text-[11px] text-faint">nudge end</span>

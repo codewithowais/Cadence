@@ -38,7 +38,11 @@ import {
   WhisperTranscriber,
   parseWhisperJson,
   pickTranscriber,
+  assertLocalMediaPath,
 } from "@cadence/understanding";
+import { mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join as pathJoin } from "node:path";
 import {
   ProjectState,
   StubDirector,
@@ -647,6 +651,32 @@ async function checkAgenticLoop(): Promise<void> {
   );
 }
 
+async function checkSecurityGuard(): Promise<void> {
+  // Create the media base dir so containment is active for the reject cases.
+  const base = pathJoin(tmpdir(), "cadence-uploads");
+  await mkdir(base, { recursive: true });
+
+  for (const bad of ["http://evil/x.mp4", "concat:/etc/passwd", "file:/etc/passwd", "-i", "/etc/passwd"]) {
+    let threw = false;
+    try {
+      await assertLocalMediaPath(bad);
+    } catch {
+      threw = true;
+    }
+    assert(threw, `security guard should reject "${bad}"`);
+  }
+
+  const f = pathJoin(base, "verify-guard.bin");
+  await writeFile(f, "x");
+  const safe = await assertLocalMediaPath(f);
+  assert(safe.length > 0, "security guard should accept a real uploads-dir file");
+  await rm(f, { force: true });
+
+  console.log(
+    `  [32m✔[0m check 18 (security guard): rejects URLs/protocols/flags/outside-uploads; accepts a real uploads file`,
+  );
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -666,6 +696,7 @@ async function main(): Promise<void> {
   await checkWhisperParse();
   await checkTranscriberFactory();
   await checkAgenticLoop();
+  await checkSecurityGuard();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 
