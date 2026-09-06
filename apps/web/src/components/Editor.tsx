@@ -118,6 +118,11 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // server (object URLs alone can't be re-read server-side).
   const [files, setFiles] = useState<Record<string, File>>({});
   const [transcripts, setTranscripts] = useState<Record<string, Transcript>>({});
+  // True when the last transcript came from the offline StubTranscriber (no
+  // Whisper installed) — the Words room shows an "approximate" banner.
+  const [transcriptApproximate, setTranscriptApproximate] = useState(false);
+  // Media ids currently being transcribed on demand (Words room loading state).
+  const [transcribing, setTranscribing] = useState<Record<string, boolean>>({});
   // The doc is the single source of truth; ALL mutations route through the
   // history helper's `commit`/`reset` so undo/redo stays consistent.
   const seedDoc = useMemo(() => initialDoc ?? emptyDoc(), [initialDoc]);
@@ -315,17 +320,21 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         const results = await Promise.all(
           added.map((a) =>
             transcribe(a)
-              .then((tr) => [a.id, tr] as const)
+              .then((r) => [a.id, r.transcript, r.approximate] as const)
               .catch(() => null),
           ),
         );
-        const okResults = results.filter((r): r is readonly [string, Transcript] => r !== null);
+        const okResults = results.filter(
+          (r): r is readonly [string, Transcript, boolean] => r !== null,
+        );
         if (okResults.length > 0) {
           setTranscripts((prev) => {
             const next = { ...prev };
             for (const [id, tr] of okResults) next[id] = tr;
             return next;
           });
+          // Any stubbed transcript in the batch → mark approximate (Whisper absent).
+          if (okResults.some(([, , approx]) => approx)) setTranscriptApproximate(true);
         }
 
         if (added.length === 1) {
@@ -682,6 +691,69 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     commit(setTrackVolume(doc, trackId, volume), { coalesce: `vol-${trackId}` });
   }
 
+  // ---- Words room (transcript) ---------------------------------------------
+
+  /**
+   * Ensure a media has a cached transcript, fetching it via /api/transcribe on
+   * demand (e.g. a project seeded from a saved doc, or a failed auto-transcribe).
+   * Transcription happens server-side — we never import @cadence/understanding
+   * values into the client. No-op when already cached.
+   */
+  async function ensureTranscript(media: MediaAsset) {
+    if (transcripts[media.id] || transcribing[media.id]) return;
+    setTranscribing((t) => ({ ...t, [media.id]: true }));
+    try {
+      const { transcript, approximate } = await transcribe(media);
+      setTranscripts((prev) => ({ ...prev, [media.id]: transcript }));
+      if (approximate) setTranscriptApproximate(true);
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't transcribe that clip.", "error");
+    } finally {
+      setTranscribing((t) => {
+        const next = { ...t };
+        delete next[media.id];
+        return next;
+      });
+    }
+  }
+
+  /**
+   * AI voice-over (money-gated TTS). Routes through the Director's
+   * generate_voiceover tool via /api/director. TTS defaults to provider "none",
+   * so this returns a graceful "no TTS provider configured" message — we surface
+   * it verbatim and only commit when a track was actually added.
+   */
+  async function generateVoiceover(text: string): Promise<string> {
+    const clean = text.trim();
+    if (!clean) return "Type what you want the voice-over to say first.";
+    setBusy(true);
+    setBusyLabel("Generating voice-over…");
+    try {
+      const res = await askDirector({
+        request: `voice this over: "${clean}"`,
+        media: projectMedia,
+        transcripts: Object.values(transcripts),
+        doc,
+      });
+      // A successful TTS run reports a generate_voiceover tool call; the gated
+      // path adds none, so we avoid an empty undo step and just return the note.
+      const added = res.toolCalls.some((c) => c.name === "generate_voiceover");
+      if (added) {
+        commit(parseEditDoc(res.doc));
+        showUndoToast(res.summary);
+      }
+      say("director", res.summary, added ? "edit" : "info");
+      return res.summary;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Couldn't generate a voice-over.";
+      say("director", msg, "error");
+      return msg;
+    } finally {
+      setBusy(false);
+      setBusyLabel("");
+    }
+  }
+
   // ---- Direct timeline editing (all route through commit → undo/redo) -------
 
   /** The clip a split/delete should act on: the selection, else the active main clip. */
@@ -885,6 +957,11 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onRemoveMedia={removeMedia}
             onRecordVoiceover={addVoiceoverFile}
             onSetTrackVolume={setAudioTrackVolume}
+            transcripts={transcripts}
+            transcriptApproximate={transcriptApproximate}
+            transcribing={transcribing}
+            onEnsureTranscript={ensureTranscript}
+            onGenerateVoiceover={generateVoiceover}
           />
         )}
         <Stage

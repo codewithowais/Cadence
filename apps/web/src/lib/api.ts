@@ -8,15 +8,25 @@ export interface DirectorResponse {
   durationSec: number;
 }
 
-export async function transcribe(media: MediaAsset): Promise<Transcript> {
+/**
+ * A transcript plus whether it came from the deterministic offline
+ * StubTranscriber (`approximate: true`, no Whisper installed) rather than real
+ * word-accurate Whisper — the Words room surfaces this honestly.
+ */
+export interface TranscribeResult {
+  transcript: Transcript;
+  approximate: boolean;
+}
+
+export async function transcribe(media: MediaAsset): Promise<TranscribeResult> {
   const res = await fetch("/api/transcribe", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ media }),
   });
   if (!res.ok) throw new Error(`transcribe failed: ${res.status}`);
-  const data = (await res.json()) as { transcript: Transcript };
-  return data.transcript;
+  const data = (await res.json()) as { transcript: Transcript; approximate?: boolean };
+  return { transcript: data.transcript, approximate: data.approximate ?? false };
 }
 
 export async function askDirector(input: {

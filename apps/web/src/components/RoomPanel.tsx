@@ -41,6 +41,8 @@ import { LOOKS, describeDoc } from "@/lib/status";
 import { captionsToSrt, hasCaptions } from "@/lib/srt";
 import { renderFrameBlob } from "@/lib/api";
 import { VoiceOverRecorder } from "./VoiceOverRecorder";
+import { TranscriptRoom } from "./TranscriptRoom";
+import type { Transcript } from "@cadence/understanding";
 import type { RoomKey } from "./RoomsRail";
 
 interface RoomPanelProps {
@@ -78,6 +80,16 @@ interface RoomPanelProps {
   onRecordVoiceover: (file: File, durationSec: number) => void;
   /** Audio room: set the volume of every audio clip on a track (music/voiceover). */
   onSetTrackVolume: (trackId: string, volume: number) => void;
+  /** Words room: cached transcripts by media id (fetched server-side). */
+  transcripts: Record<string, Transcript>;
+  /** Words room: transcripts came from the offline stub (no Whisper installed). */
+  transcriptApproximate: boolean;
+  /** Words room: media ids currently being transcribed on demand. */
+  transcribing: Record<string, boolean>;
+  /** Words room: fetch + cache a transcript for a media (server-side). */
+  onEnsureTranscript: (media: MediaAsset) => void;
+  /** Words room: generate an AI (TTS) voice-over; resolves to a message to surface. */
+  onGenerateVoiceover: (text: string) => Promise<string>;
 }
 
 /** Shared wrapper so every room reads as the same contextual strip. */
@@ -173,6 +185,11 @@ export function RoomPanel(props: RoomPanelProps) {
     onRemoveMedia,
     onRecordVoiceover,
     onSetTrackVolume,
+    transcripts,
+    transcriptApproximate,
+    transcribing,
+    onEnsureTranscript,
+    onGenerateVoiceover,
   } = props;
   const fileRef = useRef<HTMLInputElement>(null);
   const openPicker = () => fileRef.current?.click();
@@ -262,6 +279,23 @@ export function RoomPanel(props: RoomPanelProps) {
       </Shell>
       <TrackPanel doc={doc} busy={busy} onSetTrackVolume={onSetTrackVolume} />
       </>
+    );
+  }
+
+  if (room === "words") {
+    return (
+      <TranscriptRoom
+        doc={doc}
+        mediaList={mediaList}
+        busy={busy}
+        transcripts={transcripts}
+        approximate={transcriptApproximate}
+        transcribing={transcribing}
+        onEnsureTranscript={onEnsureTranscript}
+        onApplyDoc={onApplyDoc}
+        onGenerateVoiceover={onGenerateVoiceover}
+        onRecordVoiceover={onRecordVoiceover}
+      />
     );
   }
 

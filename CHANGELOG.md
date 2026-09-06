@@ -4,6 +4,14 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.12 — Cycle E wave 5 (web): edit-by-transcript + AI-edge UI
+- **Words room** (new `TranscriptRoom`): the transcript renders as clickable sentences/words — click a sentence or drag across words, then **Remove** ("cut this out") or **Keep only this** (`editByTranscript`, word/segment unit). Commits through the undoable path (instant preview + Undo); unmatched phrases never commit (no accidental wipe). Shows time removed.
+- **One-tap cleanups:** Remove filler words (`fillerCut`) and Tighten pauses / remove silences (`removeSilence`, surfaces gaps dropped + seconds saved). Stub transcripts show an honest "approximate — install Whisper" banner but still allow segment edits.
+- **Auto-reframe controls:** 9:16 / 1:1 / 4:5 / 16:9 pills (`autoReframe`, with settle-pan); "Keep subject centered (tracking)" is a visibly **disabled/Upgrade** pill (money-gated, honest tooltip — never faked).
+- **AI voice-over composer:** text → `generate_voiceover` via `/api/director`; TTS is money-gated so it surfaces the graceful "no provider configured" message verbatim, with the free mic recorder cross-linked beside it.
+- `/api/transcribe` now returns `approximate` (stub vs Whisper) so the client can flag it honestly; client imports only TYPES from `@cadence/understanding` (no browser bundle leak).
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify 53/53 + `next build` clean (/editor static).
+
 ### S3.11 — Cycle E wave 5 (engine): AI-native edge
 - **Transcript-based editing** (`edit_by_transcript`): remove/keep spans by matching words or whole segments ("cut the sentence about…", "keep only where they mention…", "delete every 'um'"). Word-accurate; rebuilds surviving source spans back-to-back.
 - **Silence / dead-air removal** (`remove_silence`): keeps every segment, drops inter-segment gaps beyond a threshold (default 0.6s). Distinct from filler_cut; "tighten the pauses" / "remove dead air" route here.

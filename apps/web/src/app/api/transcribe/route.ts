@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { MediaAsset } from "@cadence/core";
-import { pickTranscriber } from "@cadence/understanding";
+import { pickTranscriber, StubTranscriber } from "@cadence/understanding";
 
 export const runtime = "nodejs";
 
@@ -15,7 +15,11 @@ export async function POST(req: NextRequest) {
     const media = MediaAsset.parse(body?.media);
     const transcriber = await pickTranscriber();
     const transcript = await transcriber.transcribe(media);
-    return NextResponse.json({ transcript });
+    // Tell the client whether this is the deterministic StubTranscriber (no
+    // Whisper installed) so the Words room can show an "approximate transcript"
+    // banner and still allow segment-level editing.
+    const approximate = transcriber instanceof StubTranscriber;
+    return NextResponse.json({ transcript, approximate });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "bad request" },
