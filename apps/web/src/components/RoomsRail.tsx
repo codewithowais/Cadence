@@ -23,15 +23,31 @@ const ROOMS: Room[] = [
 interface RoomsRailProps {
   room: RoomKey;
   onRoomChange: (room: RoomKey) => void;
+  /** If set, the brand "C" becomes a link home (e.g. /dashboard). */
+  backHref?: string;
 }
 
-export function RoomsRail({ room, onRoomChange }: RoomsRailProps) {
+export function RoomsRail({ room, onRoomChange, backHref }: RoomsRailProps) {
+  // The single brand mark in the editor (the DirectorRail duplicate was removed).
+  // It doubles as the home affordance when a `backHref` is provided.
+  const brand = backHref ? (
+    <a
+      href={backHref}
+      aria-label="Cadence — back home"
+      title="Cadence — back home"
+      className="mb-3 grid h-9 w-9 place-items-center rounded-xl bg-amber font-bold text-ink transition hover:bg-amber-bright"
+    >
+      C
+    </a>
+  ) : (
+    <div className="mb-3 grid h-9 w-9 place-items-center rounded-xl bg-amber font-bold text-ink">C</div>
+  );
   return (
     <nav
       aria-label="Rooms"
       className="hidden md:flex w-[68px] shrink-0 flex-col items-center gap-1 border-r border-line-soft bg-panel/60 py-4"
     >
-      <div className="mb-3 grid h-9 w-9 place-items-center rounded-xl bg-amber text-ink font-bold">C</div>
+      {brand}
       {ROOMS.map((r) => {
         const active = r.key === room;
         return (

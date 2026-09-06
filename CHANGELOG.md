@@ -4,6 +4,13 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.11 — UX overhaul wave 1: collapsible rails · media grid · drag-drop · brand dedupe
+- **Collapse/hide both rails** — chat and code panels each collapse to a slim re-open stub, with `[` / `]` / `\` (focus mode) shortcuts and persisted state (chat open, code closed by default). Chat stub shows an unread dot when the Director spoke while hidden.
+- **Removed the duplicate "C" brand mark** (was rendering in both the rooms rail and the chat header) + the redundant tagline; one brand mark now (rooms-rail, doubles as home).
+- **Media room → thumbnail grid** — video/image posters, audio glyph, kind + duration/size badges, selected state, per-tile actions; each tile is a drag source. Empty state is a dropzone.
+- **Drag-and-drop onto the timeline** — drag a media tile onto a lane (kind/lock-gated, snapped, magnetic vs free) via `insertMediaClipInDoc`; **OS file drop** onto the editor imports files. Undoable.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **14/14** (no selector changes).
+
 ### S4.10 — fix: transitions now visibly work + are always changeable
 - **Root cause:** the browser **preview ignored `transitionType`** — every type rendered as a plain opacity crossfade, so picking dissolve/slide/wipe/zoom looked like nothing changed. New pure `transitionStyle` helper (`grade.ts`, built on the existing `transitionMotion`/`transitionOpacity`) drives the Stage so the preview now renders each of the 7 types (opacity / translate / clip-path wipe / zoom), aligned with canvas + ffmpeg xfade. Layers expose `data-transition` for tests.
 - **Changeable + discoverable:** a **single/first clip gets a fade-in-from-black** chip and the **last clip a fade-out-to-black** chip (`setFadeOut`/`clearFadeOut`), so there's always a transition to set even with no interior cut; the transition popover now flips above the chip when it would overflow the viewport (was clipping controls off-screen).

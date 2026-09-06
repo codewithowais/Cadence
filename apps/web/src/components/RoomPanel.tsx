@@ -46,6 +46,7 @@ import { TranscriptRoom } from "./TranscriptRoom";
 import { DemoRoom } from "./DemoRoom";
 import type { Transcript } from "@cadence/understanding";
 import type { RoomKey } from "./RoomsRail";
+import { MEDIA_DND_ID, MEDIA_DND_AUDIO, MEDIA_DND_VISUAL } from "./CutsStrip";
 import type { BeginPlacement } from "@/lib/placement";
 
 interface RoomPanelProps {
@@ -79,6 +80,8 @@ interface RoomPanelProps {
   onReorderMedia: (mediaId: string, dir: "up" | "down") => void;
   /** Media room: remove a media and its clips from the project (undoable). */
   onRemoveMedia: (mediaId: string) => void;
+  /** Media room: append a media to the timeline (the keyboard/click parity for DnD). */
+  onAddMediaToTimeline?: (mediaId: string) => void;
   /** Audio room: register a recorded voice-over (blob + measured duration). */
   onRecordVoiceover: (file: File, durationSec: number) => void;
   /** Audio room: set the volume of every audio clip on a track (music/voiceover). */
@@ -196,6 +199,7 @@ export function RoomPanel(props: RoomPanelProps) {
     onToggleMute,
     onReorderMedia,
     onRemoveMedia,
+    onAddMediaToTimeline,
     onRecordVoiceover,
     onSetTrackVolume,
     transcripts,
@@ -232,70 +236,18 @@ export function RoomPanel(props: RoomPanelProps) {
   if (room === "media") {
     return (
       <>
-      <Shell label="media">
-        {mediaList.length === 0 && <span className="shrink-0 text-xs text-faint">No media yet.</span>}
-        {mediaList.map((m, i) => {
-          const detail =
-            m.kind === "audio" || m.kind === "video"
-              ? m.durationSec != null
-                ? fmtTime(m.durationSec)
-                : ""
-              : m.width && m.height
-                ? `${m.width}×${m.height}`
-                : "";
-          return (
-            <span
-              key={m.id}
-              title={m.label ?? m.src}
-              className="flex max-w-[260px] shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated py-1 pl-2 pr-1 text-xs text-muted"
-            >
-              <span className="rounded bg-panel px-1.5 py-0.5 text-[10px] uppercase text-faint">{m.kind}</span>
-              <span className="truncate">{m.label ?? m.src}</span>
-              {detail && <span className="shrink-0 tabular-nums text-faint">{detail}</span>}
-              <span className="ml-0.5 flex shrink-0 items-center">
-                <button
-                  type="button"
-                  onClick={() => onReorderMedia(m.id, "up")}
-                  disabled={busy || i === 0}
-                  aria-label={`Move ${m.label ?? m.src} earlier`}
-                  title="Move earlier"
-                  className="grid h-6 w-6 place-items-center rounded-md text-faint transition hover:bg-line hover:text-text disabled:opacity-30"
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onReorderMedia(m.id, "down")}
-                  disabled={busy || i === mediaList.length - 1}
-                  aria-label={`Move ${m.label ?? m.src} later`}
-                  title="Move later"
-                  className="grid h-6 w-6 place-items-center rounded-md text-faint transition hover:bg-line hover:text-text disabled:opacity-30"
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onRemoveMedia(m.id)}
-                  disabled={busy}
-                  aria-label={`Remove ${m.label ?? m.src}`}
-                  title="Remove"
-                  className="grid h-6 w-6 place-items-center rounded-md text-faint transition hover:bg-red-500/15 hover:text-red-300 disabled:opacity-30"
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
-                </button>
-              </span>
-            </span>
-          );
-        })}
-        <Pill onClick={openPicker} disabled={busy}>
-          + Add media
-        </Pill>
-        {mediaList.length > 1 && (
-          <span className="shrink-0 text-[11px] text-faint">Reorder to change clip order · remove to drop a clip.</span>
-        )}
+        <MediaGrid
+          mediaList={mediaList}
+          urls={urls}
+          busy={busy}
+          onOpenPicker={openPicker}
+          onFiles={onFiles}
+          onReorderMedia={onReorderMedia}
+          onRemoveMedia={onRemoveMedia}
+          onAddToTimeline={onAddMediaToTimeline}
+        />
         {hiddenInput}
-      </Shell>
-      <TrackPanel doc={doc} busy={busy} onSetTrackVolume={onSetTrackVolume} />
+        <TrackPanel doc={doc} busy={busy} onSetTrackVolume={onSetTrackVolume} />
       </>
     );
   }
@@ -1638,6 +1590,275 @@ const trackLabel = (id: string): string =>
  * get a mute toggle that routes through the same commit path as the volume
  * sliders (undoable); visual tracks stay read-only.
  */
+// ---- Media room: browsable thumbnail grid (B3) ------------------------------
+
+/** A video poster: the <video> seeked to a representative early frame. */
+function VideoPoster({ url }: { url: string }) {
+  return (
+    <video
+      src={url}
+      muted
+      playsInline
+      preload="metadata"
+      onLoadedMetadata={(e) => {
+        const v = e.currentTarget;
+        try {
+          v.currentTime = Math.min(1, (v.duration || 2) / 2);
+        } catch {
+          /* seeking not ready — the first frame is fine */
+        }
+      }}
+      className="h-full w-full object-cover"
+    />
+  );
+}
+
+/** The 16:9 poster for a media tile: image → <img>, video → seeked frame,
+ *  audio (or a missing binary) → a kind glyph. */
+function MediaPoster({ media, url }: { media: MediaAsset; url?: string }) {
+  if (url && media.kind === "image") {
+    return <img src={url} alt="" className="h-full w-full object-cover" />;
+  }
+  if (url && media.kind === "video") {
+    return <VideoPoster url={url} />;
+  }
+  const path =
+    media.kind === "audio"
+      ? "M9 18V5l12-2v13 M9 18a3 3 0 11-6 0 3 3 0 016 0z M21 16a3 3 0 11-6 0 3 3 0 016 0z"
+      : media.kind === "image"
+        ? "M4 5h16v14H4z M8 11l2 2 3-4 5 6H5z"
+        : "M4 5h16v14H4z M10 9l5 3-5 3z";
+  return (
+    <div className="grid h-full w-full place-items-center text-faint">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d={path} />
+      </svg>
+    </div>
+  );
+}
+
+function MediaTile({
+  media,
+  url,
+  index,
+  count,
+  busy,
+  selected,
+  onSelect,
+  onReorder,
+  onRemove,
+  onAddToTimeline,
+}: {
+  media: MediaAsset;
+  url?: string;
+  index: number;
+  count: number;
+  busy: boolean;
+  selected: boolean;
+  onSelect: () => void;
+  onReorder: (mediaId: string, dir: "up" | "down") => void;
+  onRemove: (mediaId: string) => void;
+  onAddToTimeline?: (mediaId: string) => void;
+}) {
+  const label = media.label ?? media.src;
+  const family = media.kind === "audio" ? MEDIA_DND_AUDIO : MEDIA_DND_VISUAL;
+  const detail =
+    media.kind === "audio" || media.kind === "video"
+      ? media.durationSec != null
+        ? fmtTime(media.durationSec)
+        : ""
+      : media.width && media.height
+        ? `${media.width}×${media.height}`
+        : "";
+  return (
+    <div
+      draggable={!busy}
+      onDragStart={(e) => {
+        e.dataTransfer.setData(MEDIA_DND_ID, media.id);
+        e.dataTransfer.setData(family, media.id);
+        e.dataTransfer.effectAllowed = "copy";
+      }}
+      onClick={onSelect}
+      aria-label={`${label} — drag onto a timeline lane to add it`}
+      title={`${label} — drag onto a timeline lane`}
+      className={[
+        "group relative flex flex-col overflow-hidden rounded-xl border bg-elevated text-left transition",
+        selected ? "border-teal/50 ring-1 ring-teal/40" : "border-line hover:border-amber/40",
+        busy ? "" : "cursor-grab active:cursor-grabbing",
+      ].join(" ")}
+    >
+      <div className="relative aspect-video w-full overflow-hidden bg-panel">
+        <MediaPoster media={media} url={url} />
+        <span className="pointer-events-none absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-white/85">
+          {media.kind}
+        </span>
+        {detail && (
+          <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] tabular-nums text-white/85">
+            {detail}
+          </span>
+        )}
+        {/* Hover / focus action cluster (keeps reorder + remove + add accessible). */}
+        <div className="absolute right-1 top-1 flex items-center gap-0.5 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onReorder(media.id, "up"); }}
+            disabled={busy || index === 0}
+            aria-label={`Move ${label} earlier`}
+            title="Move earlier"
+            className="grid h-6 w-6 place-items-center rounded-md bg-black/60 text-white/80 transition hover:bg-black/80 disabled:opacity-30"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onReorder(media.id, "down"); }}
+            disabled={busy || index === count - 1}
+            aria-label={`Move ${label} later`}
+            title="Move later"
+            className="grid h-6 w-6 place-items-center rounded-md bg-black/60 text-white/80 transition hover:bg-black/80 disabled:opacity-30"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onRemove(media.id); }}
+            disabled={busy}
+            aria-label={`Remove ${label}`}
+            title="Remove"
+            className="grid h-6 w-6 place-items-center rounded-md bg-black/60 text-white/80 transition hover:bg-red-500/70 disabled:opacity-30"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+        <span className="truncate text-xs text-muted" title={label}>{label}</span>
+        {onAddToTimeline && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onAddToTimeline(media.id); }}
+            disabled={busy}
+            aria-label={`Add ${label} to timeline`}
+            title="Add to timeline"
+            className="grid h-5 w-5 shrink-0 place-items-center rounded-md text-faint transition hover:bg-line hover:text-text disabled:opacity-30"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MediaGrid({
+  mediaList,
+  urls,
+  busy,
+  onOpenPicker,
+  onFiles,
+  onReorderMedia,
+  onRemoveMedia,
+  onAddToTimeline,
+}: {
+  mediaList: MediaAsset[];
+  urls: Record<string, string>;
+  busy: boolean;
+  onOpenPicker: () => void;
+  onFiles: (files: File[]) => void;
+  onReorderMedia: (mediaId: string, dir: "up" | "down") => void;
+  onRemoveMedia: (mediaId: string) => void;
+  onAddToTimeline?: (mediaId: string) => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [dropHot, setDropHot] = useState(false);
+
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
+  const onDropFiles = (e: React.DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    setDropHot(false);
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (files.length) onFiles(files);
+  };
+
+  if (mediaList.length === 0) {
+    return (
+      <div className="border-b border-line-soft bg-panel/30 px-4 py-3">
+        <div
+          onDragOver={(e) => { if (hasFiles(e)) { e.preventDefault(); setDropHot(true); } }}
+          onDragLeave={() => setDropHot(false)}
+          onDrop={onDropFiles}
+          className={[
+            "flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed px-4 py-7 text-center transition",
+            dropHot ? "border-amber/60 bg-amber/10" : "border-line bg-elevated/30",
+          ].join(" ")}
+        >
+          <div className="grid h-10 w-10 place-items-center rounded-lg bg-amber/10 text-amber">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M8 8l4-4 4 4M4 20h16" /></svg>
+          </div>
+          <p className="text-sm text-text">Drop video, photos or audio here</p>
+          <button
+            type="button"
+            onClick={onOpenPicker}
+            disabled={busy}
+            className="mt-1 rounded-lg bg-amber px-4 py-2 text-sm font-semibold text-ink transition hover:bg-amber-bright disabled:opacity-50"
+          >
+            + Add media
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="border-b border-line-soft bg-panel/30 px-4 py-2.5"
+      onDragOver={(e) => { if (hasFiles(e)) { e.preventDefault(); setDropHot(true); } }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target) setDropHot(false); }}
+      onDrop={onDropFiles}
+    >
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[11px] uppercase tracking-wider text-faint">media</span>
+        <span className="flex items-center gap-2">
+          {mediaList.length > 1 && (
+            <span className="hidden text-[11px] text-faint sm:inline">Drag a tile onto a lane · reorder or remove on hover</span>
+          )}
+          <button
+            type="button"
+            onClick={onOpenPicker}
+            disabled={busy}
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:opacity-50"
+          >
+            + Add media
+          </button>
+        </span>
+      </div>
+      <div
+        className={[
+          "grid max-h-[42vh] grid-cols-[repeat(auto-fill,minmax(128px,1fr))] gap-2 overflow-y-auto rounded-lg pr-0.5 transition",
+          dropHot ? "outline-dashed outline-2 outline-offset-2 outline-amber/50" : "",
+        ].join(" ")}
+      >
+        {mediaList.map((m, i) => (
+          <MediaTile
+            key={m.id}
+            media={m}
+            url={urls[m.id]}
+            index={i}
+            count={mediaList.length}
+            busy={busy}
+            selected={selectedId === m.id}
+            onSelect={() => setSelectedId(m.id)}
+            onReorder={onReorderMedia}
+            onRemove={onRemoveMedia}
+            onAddToTimeline={onAddToTimeline}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TrackPanel({
   doc,
   busy,

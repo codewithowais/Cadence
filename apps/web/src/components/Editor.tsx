@@ -50,6 +50,7 @@ import {
   addVoiceover,
   addMusic,
   setTrackVolume,
+  insertMediaClipInDoc,
 } from "@/lib/doc";
 import { UndoToast } from "./UndoToast";
 import {
@@ -176,6 +177,15 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const exportAbort = useRef<AbortController | null>(null);
   const [exporting, setExporting] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
+  // Chat rail collapse (B1): default OPEN so existing flows/e2e are unchanged.
+  const [railOpen, setRailOpen] = useState(true);
+  // An amber dot on the collapsed stub when the Director spoke while hidden.
+  const [railUnread, setRailUnread] = useState(false);
+  // Focus mode remembers the panel layout so `\` can restore it.
+  const focusSnapshot = useRef<{ rail: boolean; code: boolean } | null>(null);
+  // True while an OS file drag hovers the editor → shows the "Drop to add" overlay.
+  const [osDragging, setOsDragging] = useState(false);
+  const osDragDepth = useRef(0);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   // Which room's contextual panel is showing (default "edit" = QuickActions).
   const [room, setRoom] = useState<RoomKey>("edit");
@@ -320,10 +330,28 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       if (c) setCodeWidth(clampPx(Number(c), CODE_MIN, CODE_MAX));
       const t = localStorage.getItem("cadence:tlH");
       if (t) setTimelineHeight(clampPx(Number(t), TL_MIN, TL_MAX));
+      // Panel collapse state (B1). Chat defaults OPEN, code defaults CLOSED.
+      const ro = localStorage.getItem("cadence:railOpen");
+      if (ro === "0") setRailOpen(false);
+      const co = localStorage.getItem("cadence:codeOpen");
+      if (co === "1") setCodeOpen(true);
     } catch {
       /* storage unavailable — keep defaults */
     }
   }, []);
+  useEffect(() => {
+    try { localStorage.setItem("cadence:railOpen", railOpen ? "1" : "0"); } catch { /* noop */ }
+  }, [railOpen]);
+  useEffect(() => {
+    try { localStorage.setItem("cadence:codeOpen", codeOpen ? "1" : "0"); } catch { /* noop */ }
+  }, [codeOpen]);
+  // Surface an unread dot when the Director speaks while the rail is collapsed.
+  useEffect(() => {
+    if (!railOpen && messages.length > 0) setRailUnread(true);
+  }, [messages, railOpen]);
+  useEffect(() => {
+    if (railOpen) setRailUnread(false);
+  }, [railOpen]);
   useEffect(() => {
     try { localStorage.setItem("cadence:railW", String(railWidth)); } catch { /* noop */ }
   }, [railWidth]);
@@ -733,6 +761,64 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     commit(removeMediaFromDoc(doc, mediaId));
     setMediaList((list) => list.filter((m) => m.id !== mediaId));
     setTimeSec(0);
+  }
+
+  // ---- Panel collapse / focus mode (B1) -------------------------------------
+
+  const toggleRail = () => setRailOpen((o) => !o);
+  const toggleCode = () => setCodeOpen((o) => !o);
+  /** `\` — hide BOTH panels for maximal canvas; press again to restore. */
+  function toggleFocus() {
+    if (railOpen || codeOpen) {
+      focusSnapshot.current = { rail: railOpen, code: codeOpen };
+      setRailOpen(false);
+      setCodeOpen(false);
+    } else {
+      const snap = focusSnapshot.current;
+      focusSnapshot.current = null;
+      setRailOpen(snap ? snap.rail : true);
+      setCodeOpen(snap ? snap.code : false);
+    }
+  }
+
+  // ---- Drag-and-drop of media onto the timeline (B4) ------------------------
+
+  /** Drop a Media tile onto a lane → insert that media as a clip (undoable). */
+  function dropMediaToTrack(mediaId: string, trackId: string, startSec: number) {
+    const media = projectMedia.find((m) => m.id === mediaId);
+    if (!media) return;
+    setPlaying(false);
+    const next = insertMediaClipInDoc(doc, media, trackId, startSec);
+    if (next !== doc) commit(next);
+  }
+
+  /**
+   * Click/keyboard parity for the tile drag: append the media to a sensible
+   * lane (its media family's main track, else the first fitting track) so DnD is
+   * never the only path. Undoable.
+   */
+  function addMediaToTimeline(mediaId: string) {
+    const media = projectMedia.find((m) => m.id === mediaId);
+    if (!media) return;
+    const wantAudio = media.kind === "audio";
+    // Prefer the canonical main track for the family, else the first fitting one.
+    const preferredId = wantAudio ? "music" : "video";
+    let track =
+      doc.tracks.find((t) => t.id === preferredId && (wantAudio ? t.kind === "audio" : t.kind === "visual") && !t.locked) ??
+      doc.tracks.find((t) => (wantAudio ? t.kind === "audio" : t.kind === "visual") && !t.locked);
+    // No fitting track yet: audio → attach as music; video → seed a video track.
+    if (!track) {
+      setPlaying(false);
+      if (wantAudio) commit(addMusic(doc, media));
+      else if (media.kind === "video") commit(appendVideos(doc, [media]));
+      return;
+    }
+    // Append at the end of the chosen track's clips.
+    let end = 0;
+    for (const c of track.clips) end = Math.max(end, c.start + c.duration);
+    setPlaying(false);
+    const next = insertMediaClipInDoc(doc, media, track.id, end);
+    if (next !== doc) commit(next);
   }
 
   // ---- Audio room -----------------------------------------------------------
@@ -1208,6 +1294,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (typing || mod || e.altKey) return;
 
     if (e.key === "?") { e.preventDefault(); setHelpOpen((h) => !h); return; }
+    // Panel collapse (B1) — always available, even with no media loaded.
+    if (e.key === "[") { e.preventDefault(); toggleRail(); return; }
+    if (e.key === "]") { e.preventDefault(); toggleCode(); return; }
+    if (e.key === "\\") { e.preventDefault(); toggleFocus(); return; }
     if (!hasMedia) return;
     if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); togglePlay(); return; }
     if (e.key === "ArrowLeft") { e.preventDefault(); seek(timeSec - (e.shiftKey ? 5 : 1)); return; }
@@ -1232,28 +1322,82 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // OS file drop onto the editor imports the file(s) via the existing intake.
+  const isFileDrag = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
+  const onRootDragEnter = (e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    osDragDepth.current += 1;
+    setOsDragging(true);
+  };
+  const onRootDragOver = (e: React.DragEvent) => {
+    if (isFileDrag(e)) e.preventDefault(); // allow the drop
+  };
+  const onRootDragLeave = (e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    osDragDepth.current = Math.max(0, osDragDepth.current - 1);
+    if (osDragDepth.current === 0) setOsDragging(false);
+  };
+  const onRootDrop = (e: React.DragEvent) => {
+    osDragDepth.current = 0;
+    setOsDragging(false);
+    if (!isFileDrag(e)) return; // a Media-tile drop is handled by the lane, not here
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (files.length) void handleFiles(files);
+  };
+
   return (
-    <div className="flex h-dvh w-full overflow-hidden">
-      <RoomsRail room={room} onRoomChange={setRoom} />
-      <div
-        className="h-full w-full shrink-0 md:w-[var(--rail-w)]"
-        style={{ "--rail-w": `${railWidth}px` } as CSSProperties}
-      >
-        <DirectorRail
-          messages={messages}
-          busy={busy}
-          busyLabel={busyLabel}
-          hasMedia={hasMedia}
-          onSend={handleSend}
-          onFiles={handleFiles}
-          onCancel={exporting ? cancelExport : undefined}
-        />
-      </div>
-      <ResizeHandle
-        className="hidden md:block"
-        ariaLabel="Resize the chat panel"
-        onDelta={(dx) => setRailWidth((w) => clampPx(w + dx, RAIL_MIN, RAIL_MAX))}
-      />
+    <div
+      className="relative flex h-dvh w-full overflow-hidden"
+      onDragEnter={onRootDragEnter}
+      onDragOver={onRootDragOver}
+      onDragLeave={onRootDragLeave}
+      onDrop={onRootDrop}
+    >
+      <RoomsRail room={room} onRoomChange={setRoom} backHref={backHref} />
+      {railOpen ? (
+        <>
+          <div
+            className="h-full w-full shrink-0 md:w-[var(--rail-w)]"
+            style={{ "--rail-w": `${railWidth}px` } as CSSProperties}
+          >
+            <DirectorRail
+              messages={messages}
+              busy={busy}
+              busyLabel={busyLabel}
+              hasMedia={hasMedia}
+              onSend={handleSend}
+              onFiles={handleFiles}
+              onCancel={exporting ? cancelExport : undefined}
+              onCollapse={toggleRail}
+            />
+          </div>
+          <ResizeHandle
+            className="hidden md:block"
+            ariaLabel="Resize the chat panel"
+            onDelta={(dx) => setRailWidth((w) => clampPx(w + dx, RAIL_MIN, RAIL_MAX))}
+          />
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={toggleRail}
+          aria-label="Open the chat panel"
+          title="Open chat ( [ )"
+          className="group relative flex h-full w-11 shrink-0 flex-col items-center gap-3 border-r border-line-soft bg-panel/40 py-4 text-muted transition hover:bg-panel/70 hover:text-text"
+        >
+          <span className="relative grid h-7 w-7 place-items-center rounded-lg text-amber">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+            {railUnread && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber" />}
+          </span>
+          <span
+            className="text-[11px] font-medium uppercase tracking-wider text-faint group-hover:text-muted"
+            style={{ writingMode: "vertical-rl" }}
+          >
+            Director
+          </span>
+        </button>
+      )}
       <main className="flex min-w-0 flex-1 flex-col">
         {notice && (
           <div className="border-b border-amber/25 bg-amber/10 px-4 py-2 text-xs text-amber-bright">
@@ -1303,6 +1447,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onToggleMute={() => setMuted((m) => !m)}
             onReorderMedia={reorderMedia}
             onRemoveMedia={removeMedia}
+            onAddMediaToTimeline={addMediaToTimeline}
             onRecordVoiceover={addVoiceoverFile}
             onSetTrackVolume={setAudioTrackVolume}
             transcripts={transcripts}
@@ -1380,6 +1525,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onRoll: rollClipBy,
               onSlip: slipClipBy,
               onSlide: slideClipBy,
+              onDropMedia: dropMediaToTrack,
             }}
           />
         </div>
@@ -1398,6 +1544,17 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             <CodeDrawer doc={doc} onClose={() => setCodeOpen(false)} />
           </div>
         </>
+      )}
+      {osDragging && (
+        <div className="pointer-events-none absolute inset-0 z-40 grid place-items-center bg-ink/70 p-6 backdrop-blur-sm">
+          <div className="rounded-2xl border-2 border-dashed border-amber/60 bg-panel/80 px-10 py-8 text-center">
+            <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-xl bg-amber/15 text-amber">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M8 8l4-4 4 4M4 20h16" /></svg>
+            </div>
+            <p className="text-sm font-semibold text-text">Drop to add media</p>
+            <p className="mt-1 text-xs text-muted">Video, photos or audio — I&apos;ll load them into your project.</p>
+          </div>
+        </div>
       )}
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <UndoToast toast={toast} onUndo={undo} onDismiss={() => setToast(null)} />

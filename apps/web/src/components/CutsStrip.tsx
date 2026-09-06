@@ -105,7 +105,18 @@ export interface TimelineEdit {
   onSlip: (clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) => void;
   /** Slide the clip along the timeline; its neighbours absorb the move. */
   onSlide: (clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) => void;
+  // ---- Drag-and-drop from the Media grid (B4) ------------------------------
+  /**
+   * Drop a Media-grid tile onto a lane: insert that media as a clip on `trackId`
+   * at the snapped `startSec`. Routed through the editor's undoable commit path.
+   */
+  onDropMedia: (mediaId: string, trackId: string, startSec: number) => void;
 }
+
+/** MIME types the Media grid sets on a tile drag; used to gate lane drops by family. */
+export const MEDIA_DND_ID = "application/x-cadence-media";
+export const MEDIA_DND_AUDIO = "application/x-cadence-audio";
+export const MEDIA_DND_VISUAL = "application/x-cadence-visual";
 
 interface CutsStripProps {
   doc: EditDoc;
@@ -130,6 +141,13 @@ const ZOOM_MAX = 24;
 const SNAP_PX = 8;
 /** Width of the sticky track-header gutter (px). */
 const GUTTER_PX = 152;
+
+/** Read a Media-grid drag off a DataTransfer, or null if it isn't one. */
+function readMediaDrag(dt: DataTransfer): { visual: boolean; audio: boolean } | null {
+  const types = Array.from(dt.types);
+  if (!types.includes(MEDIA_DND_ID)) return null;
+  return { visual: types.includes(MEDIA_DND_VISUAL), audio: types.includes(MEDIA_DND_AUDIO) };
+}
 
 function clipLabel(clip: Clip): string {
   if (clip.kind === "text") return `“${clip.text.slice(0, 18)}”`;
@@ -567,6 +585,53 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
     return lanesRef.current?.getBoundingClientRect().left ?? 0;
   }, []);
 
+  // ---- HTML5 drag-and-drop from the Media grid (B4) -------------------------
+  // A tile drag carries the media id + a family marker (audio/visual). We gate
+  // the drop by lane kind + lock, reuse the same insert-line indicator that
+  // clip-moves draw, and route the insert through the undoable commit path.
+  const dropFitsLane = (info: { visual: boolean; audio: boolean }, track: Track | null): boolean =>
+    !!track && !track.locked && (track.kind === "audio" ? info.audio : info.visual);
+
+  const handleMediaDragOver = useCallback(
+    (e: React.DragEvent) => {
+      const info = readMediaDrag(e.dataTransfer);
+      if (!info) return; // not a Media-grid drag (e.g. an OS file drop bubbles up)
+      const track = trackAtY(e.clientY);
+      if (!dropFitsLane(info, track)) {
+        setDropIndicator(null);
+        e.dataTransfer.dropEffect = "none";
+        return;
+      }
+      e.preventDefault(); // allow the drop
+      e.dataTransfer.dropEffect = "copy";
+      const x = e.clientX - laneRectX() + (scrollRef.current?.scrollLeft ?? 0);
+      const start = Math.max(0, snap(pxToSec(x)));
+      setDropIndicator({ trackId: track!.id, x: secToPx(start) });
+    },
+    [trackAtY, laneRectX, snap, pxToSec, secToPx],
+  );
+
+  const handleMediaDrop = useCallback(
+    (e: React.DragEvent) => {
+      const info = readMediaDrag(e.dataTransfer);
+      setDropIndicator(null);
+      if (!info) return;
+      const track = trackAtY(e.clientY);
+      if (!dropFitsLane(info, track)) return;
+      e.preventDefault();
+      const mediaId = e.dataTransfer.getData(MEDIA_DND_ID);
+      if (!mediaId) return;
+      const x = e.clientX - laneRectX() + (scrollRef.current?.scrollLeft ?? 0);
+      const start = Math.max(0, snap(pxToSec(x)));
+      edit.onDropMedia(mediaId, track!.id, start);
+    },
+    [trackAtY, laneRectX, snap, pxToSec, edit],
+  );
+
+  const handleMediaDragLeave = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget === e.target) setDropIndicator(null);
+  }, []);
+
   const handlePointerMove = useCallback(
     (e: PointerEvent) => {
       // ---- track-reorder drag (header handle) ------------------------------
@@ -948,7 +1013,14 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
 
         {/* Scrollable lanes */}
         <div ref={scrollRef} className="relative min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
-          <div ref={lanesRef} className="relative select-none" style={{ width: contentWidth || "100%" }}>
+          <div
+            ref={lanesRef}
+            className="relative select-none"
+            style={{ width: contentWidth || "100%" }}
+            onDragOver={handleMediaDragOver}
+            onDrop={handleMediaDrop}
+            onDragLeave={handleMediaDragLeave}
+          >
             {/* Ruler */}
             <div
               className="relative mb-1 h-5 cursor-text border-b border-line-soft/60"

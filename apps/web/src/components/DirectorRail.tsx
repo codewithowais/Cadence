@@ -13,6 +13,8 @@ interface DirectorRailProps {
   onFiles: (files: File[]) => void;
   /** When an export is running, a handler to cancel it (shows a Cancel button). */
   onCancel?: () => void;
+  /** Collapse the chat rail to its slim re-open stub (shortcut: `[`). */
+  onCollapse?: () => void;
 }
 
 const SUGGESTIONS = [
@@ -21,7 +23,7 @@ const SUGGESTIONS = [
   "Give it a cinematic look",
 ];
 
-export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFiles, onCancel }: DirectorRailProps) {
+export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFiles, onCancel, onCollapse }: DirectorRailProps) {
   const [text, setText] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -41,13 +43,20 @@ export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFi
 
   return (
     <aside className="flex h-full w-full flex-col border-r border-line-soft bg-panel/40">
-      {/* Brand */}
-      <div className="flex items-center gap-2.5 px-5 pb-3 pt-5">
-        <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-ink">C</div>
-        <div className="leading-tight">
-          <div className="text-sm font-semibold tracking-tight">Cadence</div>
-          <div className="text-[11px] text-faint">Describe the edit. I&apos;ll make it.</div>
-        </div>
+      {/* Slim, functional header (brand mark lives once in the rooms rail). */}
+      <div className="flex items-center justify-between px-4 pb-2 pt-4">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-faint">Director</div>
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            aria-label="Collapse the chat panel"
+            title="Collapse chat ( [ )"
+            className="grid h-7 w-7 place-items-center rounded-lg text-muted transition hover:bg-line hover:text-text"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 6l-6 6 6 6M18 6l-6 6 6 6" /></svg>
+          </button>
+        )}
       </div>
 
       {/* Conversation */}

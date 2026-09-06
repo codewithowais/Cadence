@@ -283,6 +283,81 @@ export function addMusic(
   return parseEditDoc(clone);
 }
 
+/**
+ * Insert one media asset as a NEW clip on a specific track at (or near)
+ * `startSec` — the engine behind drag-and-drop from the Media grid onto a
+ * timeline lane. On a MAIN sequential visual track the clip is inserted in time
+ * order and the track re-laid back-to-back (gap-close, overlays re-anchored);
+ * on an overlay/audio lane it is free-positioned at the (snapped) drop time.
+ * Type-mismatched drops (audio onto a visual lane, or vice-versa) and unknown
+ * tracks are no-ops (returns the same doc reference). Registers the asset in
+ * doc.media so preview + export can find it.
+ */
+export function insertMediaClipInDoc(
+  doc: EditDoc,
+  media: MediaAsset,
+  trackId: string,
+  startSec: number,
+): EditDoc {
+  const track = doc.tracks.find((t) => t.id === trackId);
+  if (!track) return doc;
+  // Enforce media-family compatibility (mirrors CutsStrip's clipFitsTrack).
+  if (track.kind === "audio" ? media.kind !== "audio" : media.kind === "audio") return doc;
+
+  const clone: EditDoc = structuredClone(doc);
+  if (!clone.media.some((m) => m.id === media.id)) clone.media.push(media);
+  const target = clone.tracks.find((t) => t.id === trackId)!;
+  const start = Math.max(0, round(startSec));
+  const id = `clip-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+
+  if (target.kind === "audio") {
+    const dur = round(media.durationSec ?? 5);
+    (target.clips as unknown as Record<string, unknown>[]).push({
+      id,
+      kind: "audio",
+      start,
+      duration: dur,
+      mediaId: media.id,
+      sourceIn: 0,
+      volume: 1,
+    });
+    return parseEditDoc(clone);
+  }
+
+  // Visual clip (video/image).
+  const width = clone.meta.width;
+  const height = clone.meta.height;
+  const dur = round(media.durationSec ?? (media.kind === "image" ? 4 : 5));
+  const newClip: Record<string, unknown> = {
+    id,
+    kind: media.kind === "image" ? "image" : "video",
+    start,
+    duration: dur,
+    mediaId: media.id,
+    sourceIn: 0,
+    // Explicit hard cut so reflowSequential's overlap math never reads undefined.
+    transitionInSec: 0,
+    transform: { x: width / 2, y: height / 2 },
+  };
+
+  if (isMainVisualTrack(target.id)) {
+    // Magnetic main lane: insert in time order, then gap-close + ripple overlays.
+    const before = captureMainSpans(clone);
+    const clips = target.clips as unknown as Record<string, unknown>[];
+    let at = clips.length;
+    for (let i = 0; i < clips.length; i++) {
+      if (Number(clips[i]!.start) > start) { at = i; break; }
+    }
+    clips.splice(at, 0, newClip);
+    reflowSequential(target);
+    reanchorOverlays(clone, before);
+  } else {
+    // Overlay lane (b-roll / titles): free-position at the drop time.
+    (target.clips as unknown as Record<string, unknown>[]).push(newClip);
+  }
+  return parseEditDoc(clone);
+}
+
 /** Set the volume (0..1) of every audio clip on a track (e.g. "music", "voiceover"). */
 export function setTrackVolume(doc: EditDoc, trackId: string, volume: number): EditDoc {
   const v = clamp(round(volume), 0, 1);
