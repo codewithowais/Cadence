@@ -35,7 +35,8 @@
  *      (transitionStyle) grouped by family; TRANSITION_TYPES/TRANSITION_GROUPS
  *      cover every type; no-transition fast path emits no xfade
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -150,6 +151,7 @@ import {
   detectFfmpeg,
   ffBlendMode,
   keyframeTransformExpr,
+  resolveFfmpegBin,
   runExport,
   xfadeTransition,
   FfmpegNotFoundError,
@@ -2946,6 +2948,199 @@ async function checkTransformKeyframes(): Promise<void> {
   console.log(`  \x1b[32m✔\x1b[0m check 63 (transform keyframes): animated PiP exports x/y → overlay=x/y(t), rotation → rotate=a(t) rad (alpha-safe c=none), opacity → geq alpha(T); real frame (${n}b); no-keyframe overlay byte-identical (fast path); emitted expr matches valueAt at t=start/mid/end`);
 }
 
+/**
+ * REAL ENCODE — the only check that actually SPAWNS ffmpeg on the export plan for a
+ * battery of complex docs and asserts a real, non-empty .mp4 comes out (exit 0).
+ * Every OTHER export check asserts on the filter_complex STRING, so a graph that
+ * reads plausibly but is rejected by ffmpeg's parser (unbalanced/`\\,`-double-escaped
+ * expressions, wrong function names, an illegally-fused filter) slips through them —
+ * exactly the class of bug that made complex exports fail at runtime with
+ * "Error parsing global options: Invalid argument".
+ *
+ * Inputs are synthesized here with lavfi (testsrc + sine → a short mp4 WITH audio,
+ * plus two still PNGs) so the check is fully self-contained. If ffmpeg is
+ * unavailable the check SKIPS gracefully (logs + passes). `ffmpeg-static` ships
+ * without libfreetype, so `drawtext` (captions/titles) may be absent in this build;
+ * when it is, the caption clips are omitted from the encoded docs (and it is logged)
+ * while the rest of each complex graph — the part that actually broke — still
+ * encodes for real.
+ */
+async function checkRealEncode(): Promise<void> {
+  const info = await detectFfmpeg();
+  if (!info.available) {
+    console.log(
+      `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg unavailable — skipped gracefully (install ffmpeg to exercise real .mp4 encode of complex docs)`,
+    );
+    return;
+  }
+  const bin = resolveFfmpegBin();
+
+  // Which optional filters does this build carry? (drawtext needs libfreetype.)
+  const filtersOut = spawnSync(bin, ["-hide_banner", "-filters"], { encoding: "utf8" }).stdout ?? "";
+  const hasDrawtext = /\bdrawtext\b/.test(filtersOut);
+
+  const encDir = resolve(OUT_DIR, "encode");
+  mkdirSync(encDir, { recursive: true });
+  const srcMp4 = resolve(encDir, "src.mp4");
+  const pngA = resolve(encDir, "photo-0.png");
+  const pngB = resolve(encDir, "photo-1.png");
+  const synth = (args: string[], what: string): void => {
+    const r = spawnSync(bin, ["-hide_banner", "-y", ...args], { encoding: "utf8" });
+    assert(r.status === 0, `real encode: could not synthesize ${what} (${(r.stderr || "").slice(-300)})`);
+  };
+  // A short source clip WITH an audio stream (so concat=…:a=1 has a stream to map).
+  synth(
+    ["-f", "lavfi", "-i", "testsrc=size=640x480:rate=30:duration=6", "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", srcMp4],
+    "source mp4",
+  );
+  synth(["-f", "lavfi", "-i", "testsrc=size=1280x720:duration=1", "-frames:v", "1", pngA], "photo-0");
+  synth(["-f", "lavfi", "-i", "rgbtestsrc=size=1280x720:duration=1", "-frames:v", "1", pngB], "photo-1");
+
+  const resolveMedia = (id: string): string => (id.startsWith("photo") ? (id === "photo-0" ? pngA : pngB) : srcMp4);
+
+  // A cinematic look + a caption track (dropped when the build lacks drawtext).
+  const look = { brightness: 1.06, contrast: 1.12, saturation: 1.15, warmth: 0.35 };
+  const captions = (y: number): unknown[] =>
+    hasDrawtext
+      ? [{ id: "captions", kind: "visual", clips: [{ id: "cap0", kind: "text", start: 0.2, duration: 1.2, text: "Big news, folks: 100% real!", background: "#0a0d12cc", transform: { x: 540, y } }] }]
+      : [];
+  // Fade-from-black / fade-to-black solids spanning a `total`-second doc.
+  const fades = (total: number): unknown => ({
+    id: "fades", kind: "visual", clips: [
+      { id: "f0", kind: "solid", start: 0, duration: 0.4, color: "#000000", transitionOutSec: 0.4 },
+      { id: "f1", kind: "solid", start: total - 0.4, duration: 0.4, color: "#000000", transitionInSec: 0.4 },
+    ],
+  });
+
+  let encoded = 0;
+  const encode = (label: string, rawDoc: unknown): void => {
+    const doc = parseEditDoc(rawDoc);
+    const out = resolve(encDir, `enc-${label}.mp4`);
+    const plan = buildExportPlan(doc, resolveMedia, out);
+    // Guard the exact class of the fixed bug: a `\,` that got escaped twice.
+    assert(!plan.filterComplex.includes("\\\\,"), `real encode [${label}]: double-escaped comma (\\\\,) in filtergraph — ffmpeg's eval will reject it`);
+    const r = spawnSync(bin, plan.args, { encoding: "utf8" });
+    assert(
+      r.status === 0,
+      `real encode [${label}]: ffmpeg exited ${r.status} — malformed filtergraph.\n  FC: ${plan.filterComplex.slice(0, 900)}\n  ERR: ${(r.stderr || "").split("\n").filter((l) => /error|invalid|no such|missing|unknown|parse/i.test(l)).slice(-4).join("\n       ")}`,
+    );
+    const size = statSync(out).size;
+    assert(size > 0, `real encode [${label}]: ffmpeg exited 0 but produced an empty file`);
+    encoded++;
+  };
+
+  // (a) THE reported failing combo: highlight cut + 9:16 reframe (1080x1920) + 4K
+  //     quality (1216x2160) + cinematic look + burn-in captions + fade in/out +
+  //     punch-in emphasis (the sine-pulse zoompan) — every ingredient at once.
+  encode("a_failing_combo", {
+    version: 1, meta: { title: "a", width: 1080, height: 1920, fps: 30, background: "#000000" },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    quality: { preset: "ultra", targetWidth: 1216, targetHeight: 2160, sharpen: 0.5, denoise: 0.3, aiUpscale: false, faithful: true },
+    tracks: [
+      { id: "video", kind: "visual", clips: [
+        { id: "c0", kind: "video", start: 0, duration: 1.5, mediaId: "clip-001", sourceIn: 1, transform: { x: 540, y: 960 }, look, emphasis: { atSec: 0.6, durationSec: 0.6, zoom: 1.25 } },
+        { id: "c1", kind: "video", start: 1.5, duration: 1.5, mediaId: "clip-001", sourceIn: 3, transform: { x: 540, y: 960 }, look, emphasis: { atSec: 2.0, durationSec: 0.6, zoom: 1.3 } },
+      ] },
+      ...captions(1600),
+      fades(3),
+    ],
+  });
+
+  // (b) reframe + 4K + look + captions + fades + emphasis on a single long clip,
+  //     with a richer grade (hue + tone curve) to exercise the whole look chain.
+  encode("b_reframe_4k", {
+    version: 1, meta: { title: "b", width: 1080, height: 1920, fps: 30, background: "#000000" },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    quality: { preset: "high", targetWidth: 1216, targetHeight: 2160, sharpen: 0.4, denoise: 0.2, aiUpscale: false, faithful: true },
+    tracks: [
+      { id: "video", kind: "visual", clips: [
+        { id: "c0", kind: "video", start: 0, duration: 3, mediaId: "clip-001", sourceIn: 0.5, transform: { x: 540, y: 960 },
+          look: { ...look, hueShift: 8, curves: { master: [[0, 0], [0.5, 0.58], [1, 1]] } },
+          emphasis: { atSec: 1.2, durationSec: 0.8, zoom: 1.35 } },
+      ] },
+      ...captions(1650),
+      fades(3),
+    ],
+  });
+
+  // (c) multi-clip highlight with real A→B transitions (xfade video + acrossfade audio).
+  encode("c_xfade_transitions", {
+    version: 1, meta: { title: "c", width: 1080, height: 1920, fps: 30 },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    tracks: [{ id: "video", kind: "visual", clips: [
+      { id: "c0", kind: "video", start: 0, duration: 1.6, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } },
+      { id: "c1", kind: "video", start: 1.2, duration: 1.6, mediaId: "clip-001", sourceIn: 2, transform: { x: 540, y: 960 }, transitionInSec: 0.4, transitionType: "dip-to-black" },
+      { id: "c2", kind: "video", start: 2.4, duration: 1.6, mediaId: "clip-001", sourceIn: 4, transform: { x: 540, y: 960 }, transitionInSec: 0.4, transitionType: "wipe" },
+    ] }],
+  });
+
+  // (d) keyframed transform on an overlay/PiP (x + y + rotation + opacity → overlay
+  //     x/y expr, rotate=a(t), geq alpha(T)) composited over a base clip.
+  encode("d_kf_overlay", {
+    version: 1, meta: { title: "d", width: 1080, height: 1920, fps: 30 },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 3, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } }] },
+      { id: "broll", kind: "visual", clips: [{ id: "p0", kind: "video", start: 0, duration: 3, mediaId: "clip-001", sourceIn: 2, transform: { x: 300, y: 500, scale: 0.4 },
+        keyframes: [
+          { prop: "x", t: 0, value: 300, easing: "ease-in-out" }, { prop: "x", t: 1, value: 780, easing: "ease-out" },
+          { prop: "y", t: 0, value: 500, easing: "linear" }, { prop: "y", t: 1, value: 1400, easing: "ease-in" },
+          { prop: "rotation", t: 0, value: 0, easing: "linear" }, { prop: "rotation", t: 1, value: 40, easing: "ease-out" },
+          { prop: "opacity", t: 0, value: 0.25, easing: "linear" }, { prop: "opacity", t: 1, value: 1, easing: "ease-in" },
+        ] }] },
+    ],
+  });
+
+  // (e) adjustment layer + LUT-less grade (eq/curves/colorbalance/hue + grain/vignette,
+  //     time-gated) over the whole composite.
+  encode("e_adjustment_grade", {
+    version: 1, meta: { title: "e", width: 1080, height: 1920, fps: 30 },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 3, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } }] },
+      { id: "adj", kind: "visual", clips: [{ id: "a0", kind: "adjustment", start: 0.5, duration: 2,
+        grade: { brightness: 1.1, contrast: 1.2, saturation: 0.9, warmth: 0.4, hueShift: 10, curves: { master: [[0, 0], [0.5, 0.62], [1, 1]] } },
+        vfx: { grain: 0.3, vignette: 0.5 } }] },
+    ],
+  });
+
+  // (f) slideshow with crossfades (looped stills + Ken Burns zoompan + xfade). Small
+  //     composition keeps the per-pixel zoompan cheap for the gate.
+  encode("f_slideshow_xfade", {
+    version: 1, meta: { title: "f", width: 540, height: 960, fps: 30 },
+    media: [{ id: "photo-0", kind: "image", src: pngA, width: 1280, height: 720 }, { id: "photo-1", kind: "image", src: pngB, width: 1280, height: 720 }],
+    tracks: [{ id: "video", kind: "visual", clips: [
+      { id: "i0", kind: "image", start: 0, duration: 1.6, mediaId: "photo-0", transform: { x: 270, y: 480 }, motion: { zoom: 1.2, panX: 0.05, panY: 0.02 } },
+      { id: "i1", kind: "image", start: 1.2, duration: 1.6, mediaId: "photo-1", transform: { x: 270, y: 480 }, transitionInSec: 0.4, transitionType: "crossfade", motion: { zoom: 1.1, panX: -0.05, panY: 0 } },
+    ] }],
+  });
+
+  // (g) shaped-reveal / green-screen overlay: chroma key + geq alpha mask over a base
+  //     clip — the exact geq path the escaping bug (\\, ) and the alpha(x,y) fix live in.
+  encode("g_chroma_mask", {
+    version: 1, meta: { title: "g", width: 1080, height: 1920, fps: 30 },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 2.5, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } }] },
+      { id: "broll", kind: "visual", clips: [{ id: "p0", kind: "video", start: 0, duration: 2.5, mediaId: "clip-001", sourceIn: 2, transform: { x: 540, y: 960 },
+        chroma: { color: "#00ff00", similarity: 0.3, blend: 0.1, spill: 0.2 },
+        mask: { shape: "ellipse", x: 200, y: 500, w: 600, h: 800, feather: 40, invert: false } }] },
+    ],
+  });
+
+  // (4) regression guard: a plain, simple single-clip export must still encode.
+  encode("plain_simple", {
+    version: 1, meta: { title: "plain", width: 1080, height: 1920, fps: 30 },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 2, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } }] }],
+  });
+
+  const capNote = hasDrawtext ? "captions burned in" : "captions omitted (build lacks freetype/drawtext)";
+  console.log(
+    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, plain; ${capNote}`,
+  );
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -3011,6 +3206,7 @@ async function main(): Promise<void> {
   await checkLutImport();
   await checkAdjustmentLayer();
   await checkTransformKeyframes();
+  await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

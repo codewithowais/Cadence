@@ -4,6 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.23 — fix: malformed export filtergraph (geq escaping) + real-encode test
+- **Root cause of export failures:** `geq` alpha expressions (masks / chroma-key) double-escaped commas (`\,`→`\\,`), which ffmpeg's evaluator rejects → the whole filtergraph failed to parse (`Error parsing global options: Invalid argument`, exit 234). Fixed with a single-pass `escExpr()` (build with plain commas, escape once); also corrected the chroma+mask alpha accessor `a(X,Y)`→`alpha(X,Y)` and hardened the emphasis zoompan escaping (byte-identical output).
+- **New real-encode verify check (64):** actually spawns ffmpeg on 8 complex docs (the exact failing combo, xfade multi-clip, keyframed PiP, adjustment+grade, slideshow, chroma+mask) and asserts exit 0 + non-empty `.mp4` — catches malformed graphs that string checks missed.
+- *verified:* typecheck + test:unit 49 + verify **64/64** + evals 5/5.
+
 ### S4.22 — cool accent (emerald/teal) + "easy but pro" polish
 - **New accent:** deep **emerald/teal** (`#0d7a6b`, hover `#0a6b5c`, deep `#0a5648`, near-white mint `--color-onaccent`) replacing coral — AA both as text and as buttons; secondary **steel blue** (`#2f6690`); base harmonized warm→**neutral-slightly-cool** off-white (ink `#f3f4f4`, still not pure white); glow/shadows/Stage backdrop shifted cool. Cohesive, calm, "editing-tool" — no orange, no AI-purple.
 - **Polish:** new `--color-danger` token (`#b42318`, AA) — migrated ~12 files off the near-invisible `text-red-*` dark leftovers so destructive states are legible; richer Stage empty state; hierarchy/consistency tidy-ups. Kept video-content colors untouched.

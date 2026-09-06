@@ -60,6 +60,20 @@ export type ResolveMediaPath = (mediaId: string) => string;
 const r3 = (n: number): number => Math.round(n * 1000) / 1000;
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 
+/**
+ * Escape an ffmpeg EXPRESSION for use inside a single-quoted filter option value:
+ * every comma becomes `\,` EXACTLY ONCE. Inside single quotes ffmpeg treats `\,`
+ * as a literal comma (the expression evaluator's argument separator), so a comma
+ * MUST be built plain and escaped a single time here — never pre-escaped in the
+ * fragments AND re-escaped, which yields `\\,` and makes ffmpeg's eval reject the
+ * whole graph ("Missing ')' or too many args" → "Error parsing global options:
+ * Invalid argument", export fails at runtime). Build the expression with PLAIN
+ * commas, then call this once at the point it is embedded.
+ */
+function escExpr(expr: string): string {
+  return expr.replace(/,/g, "\\,");
+}
+
 /** CRF (quality) per preset — lower = higher quality/bitrate. */
 const CRF: Record<string, number> = { standard: 23, high: 20, ultra: 18 };
 
@@ -225,8 +239,8 @@ export function ffBlendMode(mode: BlendMode): string {
  * A `geq` alpha expression (0..255) for a mask shape over a FULL-frame clip. The
  * shape is a rect or ellipse in composition px; `feather` softens the edge; `invert`
  * reveals the outside. When `withChroma`, the mask MULTIPLIES the existing alpha
- * (a(X,Y), from a prior chromakey) so the two combine. All commas are escaped for
- * the filtergraph. (Ellipse/feather via geq is the documented approach; the canvas
+ * (alpha(X,Y), from a prior chromakey) so the two combine. All commas are escaped
+ * for the filtergraph. (Ellipse/feather via geq is the documented approach; the canvas
  * previews the same shape with a clip path + feather.)
  */
 function maskAlphaExpr(mask: Mask, withChroma: boolean): string {
@@ -235,8 +249,11 @@ function maskAlphaExpr(mask: Mask, withChroma: boolean): string {
   const w = r3(Math.max(1, mask.w));
   const h = r3(Math.max(1, mask.h));
   const f = Math.max(0, mask.feather);
-  const esc = (e: string): string => e.replace(/,/g, "\\,");
-  // A 0..1 "inside" fraction for the shape (feathered).
+  // Build the WHOLE expression with PLAIN commas and escape it ONCE at the end
+  // (escExpr). The previous version escaped each fragment as it was built, so the
+  // commas already written as `\,` inside `d`/`dist` were escaped a second time
+  // into `\\,` — which ffmpeg's expression evaluator rejects, breaking export for
+  // any doc with a shape mask (green-screen / shaped reveal).
   let frac: string;
   if (mask.shape === "ellipse") {
     const cx = r3(mask.x + mask.w / 2);
@@ -244,25 +261,28 @@ function maskAlphaExpr(mask: Mask, withChroma: boolean): string {
     const rx = r3(Math.max(1, mask.w / 2));
     const ry = r3(Math.max(1, mask.h / 2));
     // Normalized radial distance d (=1 at the edge); inside when d<=1.
-    const d = `sqrt(pow((X-${cx})/${rx}\\,2)+pow((Y-${cy})/${ry}\\,2))`;
+    const d = `sqrt(pow((X-${cx})/${rx},2)+pow((Y-${cy})/${ry},2))`;
     if (f > 0) {
       // Feather band as a fraction of the radius: ramp 1→0 across [1-fb, 1].
       const fb = r3(Math.min(0.9, f / Math.max(1, mask.w / 2)));
-      frac = esc(`clip((1-${d})/${r3(fb)},0,1)`);
+      frac = `clip((1-${d})/${r3(fb)},0,1)`;
     } else {
-      frac = esc(`if(lte(${d},1),1,0)`);
+      frac = `if(lte(${d},1),1,0)`;
     }
   } else {
     // Rect: distance to the nearest edge (px); inside when all four are >= 0.
-    const dist = `min(min(X-${x}\\,${x}+${w}-X)\\,min(Y-${y}\\,${y}+${h}-Y))`;
+    const dist = `min(min(X-${x},${x}+${w}-X),min(Y-${y},${y}+${h}-Y))`;
     if (f > 0) {
-      frac = esc(`clip(${dist}/${r3(f)},0,1)`);
+      frac = `clip(${dist}/${r3(f)},0,1)`;
     } else {
-      frac = esc(`if(gte(${dist},0),1,0)`);
+      frac = `if(gte(${dist},0),1,0)`;
     }
   }
   if (mask.invert) frac = `(1-(${frac}))`;
-  return withChroma ? `a(X\\,Y)*(${frac})` : `255*(${frac})`;
+  // Read the incoming alpha via geq's `alpha(x,y)` accessor (NOT `a(x,y)` — `a` is
+  // only the OUTPUT plane name, so `a(X,Y)` is an unknown function and breaks the
+  // graph). Multiplying by the shape fraction combines the chroma key with the mask.
+  return escExpr(withChroma ? `alpha(X,Y)*(${frac})` : `255*(${frac})`);
 }
 
 /** The `geq` filter that applies a shape mask's alpha, preserving RGB. */
@@ -1015,8 +1035,14 @@ function emphasisZoompan(clip: VideoClip, w: number, h: number, fps: number): st
   const ef = Math.round((e.atSec + e.durationSec - clip.start) * fps);
   const span = ef - sf;
   if (span <= 0) return null;
-  // Commas inside fn-calls are escaped for the filtergraph.
-  const zExpr = `if(between(on\\,${sf}\\,${ef})\\,1+(${r3(e.zoom - 1)})*sin((on-${sf})/${span}*PI)\\,1)`;
+  // Sine pulse 1 → zoom → 1 across [sf, ef] frames, identity elsewhere. Built with
+  // PLAIN commas and escaped ONCE (escExpr) so the graph is valid: balanced parens,
+  // single-`\,` commas, and `z`/`x`/`y` each single-quoted. `d=1` (one output frame
+  // per input frame) with an explicit `s`/`fps` places the zoompan validly AFTER the
+  // scale/crop reframe (it re-emits at WxH), never fused into scale's options.
+  const zExpr = escExpr(
+    `if(between(on,${sf},${ef}),1+(${r3(e.zoom - 1)})*sin((on-${sf})/${span}*PI),1)`,
+  );
   return `zoompan=z='${zExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${w}x${h}:fps=${fps}`;
 }
 
