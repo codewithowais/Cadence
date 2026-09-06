@@ -8,13 +8,13 @@ import { z } from "zod";
 import {
   docDurationSec,
   EditDoc,
+  TransitionType,
   type BlendMode,
   type CurvePoint,
   type EditDoc as EditDocT,
   type KeyframeEasing,
   type KeyframeProp,
   type MediaAsset,
-  type TransitionType,
 } from "@cadence/core";
 // NOTE: only the TYPE is imported statically. The TTS provider values
 // (selectTtsProvider/ttsConfigFromEnv/estimateSpeechSec) are lazy-imported inside
@@ -616,9 +616,9 @@ export const transitionTool: DirectorTool<{
 }> = {
   name: "set_transition",
   description:
-    "Set the transition style: crossfade, dip-to-black, slide, wipe, dissolve, zoom, or smooth. By default it applies to EVERY cut/photo. Pass `clipId` (or `atSec`) to set only ONE cut's incoming boundary (a per-cut transition), leaving the others as they are.",
+    "Set the transition style — 50+ types grouped as Fades (crossfade, dip-to-black, dissolve, fadewhite, fadegrays…), Wipes (wipe, wiperight, wipeup, wipedown, wipetl…), Slides (slide, slideright, slideup…), Smooth, Covers, Reveals, Opens & Closes (circleopen, horzopen…), Shapes (circlecrop, rectcrop), Diagonals, Slices, Zoom (zoom, zoomin), and Effects (pixelize, radial, hblur, squeezeh, squeezev). By default it applies to EVERY cut/photo. Pass `clipId` (or `atSec`) to set only ONE cut's incoming boundary (a per-cut transition), leaving the others as they are.",
   inputSchema: z.object({
-    type: z.enum(["crossfade", "dip-to-black", "slide", "wipe", "dissolve", "zoom", "smooth"]),
+    type: TransitionType,
     clipId: z.string().optional(),
     atSec: z.number().nonnegative().optional(),
   }),
@@ -655,7 +655,7 @@ export const buildDemoTool: DirectorTool<{ perScreenSec?: number; transition?: T
     "Turn the project's screenshots (image media, in order = screens) into an animated product walkthrough: each screenshot becomes a full-frame screen, sequenced with a transition. When `login` is set, screen 1 gets a demo interaction — a typed email + password (typewriter) and a cursor that moves to a button and clicks. Field/button positions are sensible defaults (no vision) the user can nudge with add_cursor / type_text / add_callout.",
   inputSchema: z.object({
     perScreenSec: z.number().positive().optional(),
-    transition: z.enum(["crossfade", "dip-to-black", "slide", "wipe", "dissolve", "zoom", "smooth"]).optional(),
+    transition: TransitionType.optional(),
     login: z.boolean().optional(),
   }),
   async execute(input, ctx) {

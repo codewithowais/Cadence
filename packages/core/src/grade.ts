@@ -298,6 +298,151 @@ export interface TransitionMotion {
   scaleMul: number;
 }
 
+/**
+ * How a transition ANIMATES, distilled into a family + direction so ONE pure map
+ * drives every surface (canvas primitives, Stage clip-path, and — implicitly — the
+ * xfade name chosen on export). The original 7 types resolve to exactly the family
+ * they always used, so their behavior is byte-identical; every NEW xfade name is
+ * classified into the nearest CSS-expressible family, and anything unrecognized
+ * falls back to a clean opacity crossfade (the safety net the preview relies on).
+ *
+ *  - kind        : "opacity" (fades/dissolve/pixelize) · "translate" (slides /
+ *                  smooths / covers / reveals / squeeze) · "wipe" (clip-path inset)
+ *                  · "circle" (clip-path circle) · "scale" (zoom).
+ *  - axis / sign : translate direction (x/y, +1 enters from the right/below).
+ *  - squeeze     : translate that also scales in (squeezeh/squeezev).
+ *  - edge        : which side/corner a wipe reveals from.
+ *  - circleClose : a circle that shrinks (close) rather than grows (open).
+ */
+export type TransitionKind = "opacity" | "translate" | "wipe" | "circle" | "scale";
+export type WipeEdge =
+  | "left"
+  | "right"
+  | "top"
+  | "bottom"
+  | "tl"
+  | "tr"
+  | "bl"
+  | "br"
+  | "center-h"
+  | "center-v"
+  | "rect";
+export interface TransitionSpec {
+  kind: TransitionKind;
+  axis: "x" | "y";
+  sign: 1 | -1;
+  squeeze: boolean;
+  edge: WipeEdge;
+  circleClose: boolean;
+}
+
+/**
+ * Classify a TransitionType into its animation family. PURE + deterministic; the
+ * single source of truth shared by transitionMotion (canvas/Stage primitives) and
+ * transitionStyle (browser clip-path). The `default` branch is the fallback:
+ * anything not explicitly handled becomes a clean opacity crossfade.
+ */
+export function transitionSpec(type: TransitionType): TransitionSpec {
+  const base: TransitionSpec = {
+    kind: "opacity",
+    axis: "x",
+    sign: 1,
+    squeeze: false,
+    edge: "left",
+    circleClose: false,
+  };
+  switch (type) {
+    // fades / dissolves / pixel effects → opacity crossfade
+    case "crossfade":
+    case "dip-to-black":
+    case "dissolve":
+    case "fadewhite":
+    case "fadegrays":
+    case "fadefast":
+    case "fadeslow":
+    case "pixelize":
+    case "hblur":
+    case "distance":
+      return { ...base, kind: "opacity" };
+    // zoom → scale-in
+    case "zoom":
+    case "zoomin":
+      return { ...base, kind: "scale" };
+    // horizontal slides (enter from the right)
+    case "slide":
+    case "smooth":
+    case "coverleft":
+    case "revealleft":
+      return { ...base, kind: "translate", axis: "x", sign: 1 };
+    // horizontal slides (enter from the left)
+    case "slideright":
+    case "smoothright":
+    case "coverright":
+    case "revealright":
+      return { ...base, kind: "translate", axis: "x", sign: -1 };
+    // vertical slides (enter from below)
+    case "slideup":
+    case "smoothup":
+    case "coverup":
+    case "revealup":
+      return { ...base, kind: "translate", axis: "y", sign: 1 };
+    // vertical slides (enter from above)
+    case "slidedown":
+    case "smoothdown":
+    case "coverdown":
+    case "revealdown":
+      return { ...base, kind: "translate", axis: "y", sign: -1 };
+    // squeeze = translate + scale
+    case "squeezeh":
+      return { ...base, kind: "translate", axis: "x", sign: 1, squeeze: true };
+    case "squeezev":
+      return { ...base, kind: "translate", axis: "y", sign: 1, squeeze: true };
+    // wipes / slices / diagonals → clip-path inset
+    case "wipe":
+    case "hlslice":
+      return { ...base, kind: "wipe", edge: "left" };
+    case "wiperight":
+    case "hrslice":
+      return { ...base, kind: "wipe", edge: "right" };
+    case "wipeup":
+    case "vuslice":
+      return { ...base, kind: "wipe", edge: "top" };
+    case "wipedown":
+    case "vdslice":
+      return { ...base, kind: "wipe", edge: "bottom" };
+    case "wipetl":
+    case "diagtl":
+      return { ...base, kind: "wipe", edge: "tl" };
+    case "wipetr":
+    case "diagtr":
+      return { ...base, kind: "wipe", edge: "tr" };
+    case "wipebl":
+    case "diagbl":
+      return { ...base, kind: "wipe", edge: "bl" };
+    case "wipebr":
+    case "diagbr":
+      return { ...base, kind: "wipe", edge: "br" };
+    case "horzopen":
+    case "horzclose":
+      return { ...base, kind: "wipe", edge: "center-h" };
+    case "vertopen":
+    case "vertclose":
+      return { ...base, kind: "wipe", edge: "center-v" };
+    case "rectcrop":
+      return { ...base, kind: "wipe", edge: "rect" };
+    // circles / radial → clip-path circle
+    case "circleopen":
+    case "circlecrop":
+    case "radial":
+      return { ...base, kind: "circle" };
+    case "circleclose":
+      return { ...base, kind: "circle", circleClose: true };
+    default:
+      // Safety net: any unknown/future value previews as a clean opacity crossfade.
+      return base;
+  }
+}
+
 export function transitionMotion(
   clip: VideoClip | ImageClip | TextClip | SolidClip,
   timeSec: number,
@@ -308,29 +453,85 @@ export function transitionMotion(
   const inP = clip.transitionInSec > 0 ? clamp01((timeSec - clip.start) / clip.transitionInSec) : 1;
   const end = clip.start + clip.duration;
   const outP = clip.transitionOutSec > 0 ? clamp01((end - timeSec) / clip.transitionOutSec) : 1;
-  // crossfade / dip-to-black / dissolve are all opacity ramps in the preview
-  // (they differ only in the xfade name used on export).
-  if (type === "crossfade" || type === "dip-to-black" || type === "dissolve") {
+  const spec = transitionSpec(type);
+  // Fades / dissolve / pixelize etc. are opacity ramps in the preview (they differ
+  // only in the xfade name used on export). This is the fallback family too.
+  if (spec.kind === "opacity") {
     return { dx: 0, dy: 0, wipeFrac: 1, fadeOpacity: true, scaleMul: 1 };
   }
-  if (type === "slide" || type === "smooth") {
-    // Enter from the right (in-ramp), exit to the left (out-ramp), eased. "smooth"
-    // shares the slide motion in the preview (feathered on export via smoothleft).
-    let dx = 0;
-    if (inP < 1) dx = (1 - easeOutCubic(inP)) * frameW;
-    else if (outP < 1) dx = -(1 - easeOutCubic(outP)) * frameW;
-    void frameH;
-    return { dx, dy: 0, wipeFrac: 1, fadeOpacity: false, scaleMul: 1 };
-  }
-  if (type === "zoom") {
+  if (spec.kind === "scale") {
     // Incoming frame scales in from slightly larger while it fades (a punchy reveal).
     let scaleMul = 1;
     if (inP < 1) scaleMul = 1 + (1 - easeOutCubic(inP)) * 0.18;
     else if (outP < 1) scaleMul = 1 + (1 - easeOutCubic(outP)) * 0.18;
     return { dx: 0, dy: 0, wipeFrac: 1, fadeOpacity: true, scaleMul };
   }
-  // wipe: reveal from the left; hardest edge is the smaller of the two ramps.
+  if (spec.kind === "translate") {
+    // Enter from one edge (in-ramp), exit to the opposite edge (out-ramp), eased.
+    // sign +1 enters from the right/below; the axis picks dx vs dy. "smooth" shares
+    // the slide motion in the preview (feathered on export via the smooth* names).
+    const dist = spec.axis === "x" ? frameW : frameH;
+    let off = 0;
+    if (inP < 1) off = (1 - easeOutCubic(inP)) * dist * spec.sign;
+    else if (outP < 1) off = -(1 - easeOutCubic(outP)) * dist * spec.sign;
+    // Squeeze also scales the frame in from slightly compressed toward 1.
+    let scaleMul = 1;
+    if (spec.squeeze) {
+      if (inP < 1) scaleMul = 0.82 + 0.18 * easeOutCubic(inP);
+      else if (outP < 1) scaleMul = 0.82 + 0.18 * easeOutCubic(outP);
+    }
+    return spec.axis === "x"
+      ? { dx: off, dy: 0, wipeFrac: 1, fadeOpacity: false, scaleMul }
+      : { dx: 0, dy: off, wipeFrac: 1, fadeOpacity: false, scaleMul };
+  }
+  // wipe / circle: reveal fraction (0..1); hardest edge is the smaller of the two
+  // ramps. Direction/shape is applied by transitionStyle's clip-path (canvas
+  // approximates every wipe as a left→right reveal from wipeFrac).
   return { dx: 0, dy: 0, wipeFrac: Math.min(inP, outP), fadeOpacity: false, scaleMul: 1 };
+}
+
+/**
+ * The CSS `clip-path` for a wipe/circle transition at reveal fraction `f` (0..1),
+ * derived from the family spec so the browser preview reveals in the right
+ * direction / shape. Returns "none" for non-clip families or once fully revealed.
+ * Pure + deterministic; mirrors the export's directional xfade names.
+ */
+export function transitionClipPath(spec: TransitionSpec, f: number): string {
+  if (f >= 1) return "none";
+  if (spec.kind === "circle") {
+    // Grows 0→~full (open); circleClose shrinks ~full→0.
+    const rad = spec.circleClose ? round((1 - f) * 75) : round(f * 75);
+    return `circle(${rad}% at 50% 50%)`;
+  }
+  if (spec.kind !== "wipe") return "none";
+  const h = round((1 - f) * 100); // percent hidden along the reveal
+  const hc = round(((1 - f) * 100) / 2); // half, for center/rect reveals
+  switch (spec.edge) {
+    case "left":
+      return `inset(0 ${h}% 0 0)`;
+    case "right":
+      return `inset(0 0 0 ${h}%)`;
+    case "top":
+      return `inset(0 0 ${h}% 0)`;
+    case "bottom":
+      return `inset(${h}% 0 0 0)`;
+    case "tl":
+      return `inset(0 ${h}% ${h}% 0)`;
+    case "tr":
+      return `inset(0 0 ${h}% ${h}%)`;
+    case "bl":
+      return `inset(${h}% ${h}% 0 0)`;
+    case "br":
+      return `inset(${h}% 0 0 ${h}%)`;
+    case "center-h":
+      return `inset(0 ${hc}% 0 ${hc}%)`;
+    case "center-v":
+      return `inset(${hc}% 0 ${hc}% 0)`;
+    case "rect":
+      return `inset(${hc}% ${hc}% ${hc}% ${hc}%)`;
+    default:
+      return `inset(0 ${h}% 0 0)`;
+  }
 }
 
 /**
@@ -375,6 +576,7 @@ export function transitionStyle(
 ): TransitionCss {
   const type = clip.transitionType ?? "crossfade";
   const tm = transitionMotion(clip, timeSec, frameW, frameH);
+  const spec = transitionSpec(type);
   // Opacity ramps only for the fade-style types (matches drawMedia); slide/wipe
   // keep the clip's base opacity so they slide/reveal rather than dissolve.
   const opacity = tm.fadeOpacity ? transitionOpacity(clip, timeSec) : clip.transform.opacity;
@@ -387,7 +589,9 @@ export function transitionStyle(
     translateXPct: frameW > 0 ? round((tm.dx / frameW) * 100) : 0,
     translateYPct: frameH > 0 ? round((tm.dy / frameH) * 100) : 0,
     scaleMul: tm.scaleMul,
-    clipPath: tm.wipeFrac < 1 ? `inset(0 ${round((1 - tm.wipeFrac) * 100)}% 0 0)` : "none",
+    // Direction/shape-aware clip-path (wipes → inset in the right direction,
+    // circles → circle()); "none" for the fade/slide/scale families.
+    clipPath: transitionClipPath(spec, tm.wipeFrac),
     active: inWin || outWin,
   };
 }

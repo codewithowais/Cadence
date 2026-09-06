@@ -214,33 +214,182 @@ const transitionInSec = z.number().nonnegative().default(0);
 const transitionOutSec = z.number().nonnegative().default(0);
 
 /**
- * How a visual clip transitions in/out over its in/out ramp. All faithful — no
- * content change, only how the existing frames reveal/leave:
- *  - "crossfade"    — opacity ramp (the default; how every clip behaved before).
- *  - "dip-to-black" — fade out then in THROUGH black (opacity ramp against the
- *                     black composition background), i.e. a dip.
- *  - "slide"        — the frame slides in from the right / out to the left.
- *  - "wipe"         — the frame is revealed left-to-right (a hard-edged wipe).
- *  - "dissolve"     — a soft grain dissolve; opacity-based like crossfade in the
- *                     preview, its own xfade look on export.
- *  - "zoom"         — the frame scales in while it fades (a punchy reveal).
- *  - "smooth"       — a soft, feathered horizontal slide/reveal.
- * Resolved by PURE helpers in grade.ts (transitionMotion) so canvas, Stage and
- * the ffmpeg xfade map (crossfade→fade, dip-to-black→fadeblack, slide→slideleft,
- * wipe→wipeleft, dissolve→dissolve, zoom→zoomin, smooth→smoothleft — every name
- * verified against the ffmpeg xfade transition enum) all agree.
+ * How a visual clip transitions in/out over its in/out ramp — a SUPERSET of the
+ * original 7 styles plus the full useful ffmpeg `xfade` transition set (50+ total).
+ * All faithful: no content change, only how the existing frames reveal / leave.
+ *
+ * BACKWARD COMPATIBILITY: the original 7 values (crossfade, dip-to-black, slide,
+ * wipe, dissolve, zoom, smooth) are KEPT verbatim and behave EXACTLY as before —
+ * existing docs parse and render identically. Every NEW value is a literal ffmpeg
+ * xfade `transition` name, so the export maps it to itself (see `xfadeTransition`
+ * in render-ffmpeg/plan.ts); the original 7 keep their historical aliases
+ * (crossfade→fade, dip-to-black→fadeblack, slide→slideleft, wipe→wipeleft,
+ * dissolve→dissolve, zoom→zoomin, smooth→smoothleft).
+ *
+ * Resolved for preview by PURE helpers in grade.ts (transitionMotion /
+ * transitionStyle) so the browser Stage and the server canvas approximate every
+ * type — fades/dissolve/pixelize → opacity; slides/smooths/covers/reveals/squeeze
+ * → translate; wipes/opens/closes/crops → clip-path inset; circles/radial →
+ * clip-path circle; zoom → scale — and any unhandled value falls back to a clean
+ * opacity crossfade so the preview never breaks. Grouped names below feed the
+ * UI helpers `TRANSITION_TYPES` (ordered list) and `TRANSITION_GROUPS`
+ * (name → { label, group }) so a gallery can render them grouped + labeled.
+ * Every name here is a documented ffmpeg xfade transition.
  */
-export const TransitionType = z.enum([
-  "crossfade",
-  "dip-to-black",
-  "slide",
-  "wipe",
-  "dissolve",
-  "zoom",
-  "smooth",
-]);
+export const TRANSITION_TYPES = [
+  // --- fades / dissolves (opacity-family) ---
+  "crossfade", // legacy → xfade fade
+  "dip-to-black", // legacy → xfade fadeblack
+  "dissolve", // legacy → xfade dissolve
+  "fadewhite",
+  "fadegrays",
+  "fadefast",
+  "fadeslow",
+  // --- wipes (hard-edged directional reveal) ---
+  "wipe", // legacy → xfade wipeleft
+  "wiperight",
+  "wipeup",
+  "wipedown",
+  "wipetl",
+  "wipetr",
+  "wipebl",
+  "wipebr",
+  // --- slides (frame slides in) ---
+  "slide", // legacy → xfade slideleft
+  "slideright",
+  "slideup",
+  "slidedown",
+  // --- smooths (soft/feathered directional slide) ---
+  "smooth", // legacy → xfade smoothleft
+  "smoothright",
+  "smoothup",
+  "smoothdown",
+  // --- covers (incoming frame slides over) ---
+  "coverleft",
+  "coverright",
+  "coverup",
+  "coverdown",
+  // --- reveals (outgoing frame slides away) ---
+  "revealleft",
+  "revealright",
+  "revealup",
+  "revealdown",
+  // --- opens / closes (reveal from / to center) ---
+  "circleopen",
+  "circleclose",
+  "horzopen",
+  "horzclose",
+  "vertopen",
+  "vertclose",
+  // --- crops / shapes ---
+  "circlecrop",
+  "rectcrop",
+  // --- diagonals ---
+  "diagtl",
+  "diagtr",
+  "diagbl",
+  "diagbr",
+  // --- slices ---
+  "hlslice",
+  "hrslice",
+  "vuslice",
+  "vdslice",
+  // --- zoom ---
+  "zoom", // legacy → xfade zoomin
+  "zoomin",
+  // --- effects ---
+  "pixelize",
+  "hblur",
+  "distance",
+  "radial",
+  "squeezeh",
+  "squeezev",
+] as const;
+
+export const TransitionType = z.enum(TRANSITION_TYPES);
 export type TransitionType = z.infer<typeof TransitionType>;
 const transitionType = TransitionType.default("crossfade");
+
+/** UI metadata for one transition: a short human label + the group it belongs to. */
+export interface TransitionMeta {
+  label: string;
+  group: string;
+}
+
+/**
+ * name → { label, group } for EVERY TransitionType, so the web gallery can render
+ * all 50+ transitions grouped and labeled without hardcoding the list. Groups are
+ * ordered as in `TRANSITION_TYPES`. Additive/metadata only — never affects parsing.
+ */
+export const TRANSITION_GROUPS: Record<TransitionType, TransitionMeta> = {
+  // Fades
+  crossfade: { label: "Crossfade", group: "Fades" },
+  "dip-to-black": { label: "Dip to Black", group: "Fades" },
+  dissolve: { label: "Dissolve", group: "Fades" },
+  fadewhite: { label: "Fade to White", group: "Fades" },
+  fadegrays: { label: "Fade to Grays", group: "Fades" },
+  fadefast: { label: "Fade Fast", group: "Fades" },
+  fadeslow: { label: "Fade Slow", group: "Fades" },
+  // Wipes
+  wipe: { label: "Wipe Left", group: "Wipes" },
+  wiperight: { label: "Wipe Right", group: "Wipes" },
+  wipeup: { label: "Wipe Up", group: "Wipes" },
+  wipedown: { label: "Wipe Down", group: "Wipes" },
+  wipetl: { label: "Wipe Top-Left", group: "Wipes" },
+  wipetr: { label: "Wipe Top-Right", group: "Wipes" },
+  wipebl: { label: "Wipe Bottom-Left", group: "Wipes" },
+  wipebr: { label: "Wipe Bottom-Right", group: "Wipes" },
+  // Slides
+  slide: { label: "Slide Left", group: "Slides" },
+  slideright: { label: "Slide Right", group: "Slides" },
+  slideup: { label: "Slide Up", group: "Slides" },
+  slidedown: { label: "Slide Down", group: "Slides" },
+  // Smooths
+  smooth: { label: "Smooth Left", group: "Smooth" },
+  smoothright: { label: "Smooth Right", group: "Smooth" },
+  smoothup: { label: "Smooth Up", group: "Smooth" },
+  smoothdown: { label: "Smooth Down", group: "Smooth" },
+  // Covers
+  coverleft: { label: "Cover Left", group: "Covers" },
+  coverright: { label: "Cover Right", group: "Covers" },
+  coverup: { label: "Cover Up", group: "Covers" },
+  coverdown: { label: "Cover Down", group: "Covers" },
+  // Reveals
+  revealleft: { label: "Reveal Left", group: "Reveals" },
+  revealright: { label: "Reveal Right", group: "Reveals" },
+  revealup: { label: "Reveal Up", group: "Reveals" },
+  revealdown: { label: "Reveal Down", group: "Reveals" },
+  // Opens & Closes
+  circleopen: { label: "Circle Open", group: "Opens & Closes" },
+  circleclose: { label: "Circle Close", group: "Opens & Closes" },
+  horzopen: { label: "Horizontal Open", group: "Opens & Closes" },
+  horzclose: { label: "Horizontal Close", group: "Opens & Closes" },
+  vertopen: { label: "Vertical Open", group: "Opens & Closes" },
+  vertclose: { label: "Vertical Close", group: "Opens & Closes" },
+  // Shapes
+  circlecrop: { label: "Circle Crop", group: "Shapes" },
+  rectcrop: { label: "Rectangle Crop", group: "Shapes" },
+  // Diagonals
+  diagtl: { label: "Diagonal Top-Left", group: "Diagonals" },
+  diagtr: { label: "Diagonal Top-Right", group: "Diagonals" },
+  diagbl: { label: "Diagonal Bottom-Left", group: "Diagonals" },
+  diagbr: { label: "Diagonal Bottom-Right", group: "Diagonals" },
+  // Slices
+  hlslice: { label: "Slice Left", group: "Slices" },
+  hrslice: { label: "Slice Right", group: "Slices" },
+  vuslice: { label: "Slice Up", group: "Slices" },
+  vdslice: { label: "Slice Down", group: "Slices" },
+  // Zoom
+  zoom: { label: "Zoom", group: "Zoom" },
+  zoomin: { label: "Zoom In", group: "Zoom" },
+  // Effects
+  pixelize: { label: "Pixelize", group: "Effects" },
+  hblur: { label: "Blur", group: "Effects" },
+  distance: { label: "Distance", group: "Effects" },
+  radial: { label: "Radial", group: "Effects" },
+  squeezeh: { label: "Squeeze Horizontal", group: "Effects" },
+  squeezev: { label: "Squeeze Vertical", group: "Effects" },
+};
 
 /**
  * Chroma key (green/blue screen) on a visual clip: the `color` is made

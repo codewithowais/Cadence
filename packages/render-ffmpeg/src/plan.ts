@@ -336,13 +336,21 @@ function staticZoomFilters(
 // --- transition library (xfade names) ---------------------------------------
 
 /**
- * Map an EditDoc transitionType to the ffmpeg xfade `transition` name. Every
- * name verified against the ffmpeg xfade transition enum (vf_xfade.c, doxygen
- * 7.0): fade, fadeblack, slideleft, wipeleft, dissolve, zoomin, smoothleft are
- * all valid transitions. Faithful: xfade blends existing frames.
+ * Map an EditDoc transitionType to the ffmpeg xfade `transition` name. The
+ * original 7 values keep their historical aliases; every NEW value in the expanded
+ * transition library IS a literal ffmpeg xfade name, so it maps to itself. Every
+ * name is a documented ffmpeg xfade transition (vf_xfade.c): fade, fadeblack,
+ * fadewhite, fadegrays, dissolve, pixelize, distance, radial, hblur, wipe{left,
+ * right,up,down,tl,tr,bl,br}, slide/smooth/cover/reveal {left,right,up,down},
+ * circle{open,close,crop}, {horz,vert}{open,close}, diag{tl,tr,bl,br},
+ * {hl,hr,vu,vd}slice, squeeze{h,v}, zoomin, fade{fast,slow}. Faithful: xfade
+ * blends existing frames. Backward-compatible: the legacy aliases are preserved.
  */
 export function xfadeTransition(type: TransitionType): string {
   switch (type) {
+    // --- legacy aliases (preserved byte-for-byte) ---
+    case "crossfade":
+      return "fade";
     case "dip-to-black":
       return "fadeblack";
     case "slide":
@@ -355,9 +363,9 @@ export function xfadeTransition(type: TransitionType): string {
       return "zoomin";
     case "smooth":
       return "smoothleft";
-    case "crossfade":
+    // --- new values ARE xfade names → map to themselves ---
     default:
-      return "fade";
+      return type;
   }
 }
 

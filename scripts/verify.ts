@@ -30,6 +30,10 @@
  *      (renders + xfade on that boundary, others unchanged); clearTransition → hard cut
  *   56 manual keyframes: setKeyframe upsert · moveKeyframe re-sort · removeKeyframe
  *      delete · valueAt reflects each · keyframed proof frame
+ *   60 transition library: TransitionType is a 50+ SUPERSET (legacy 7 unchanged);
+ *      every value maps to its xfade name on export + a distinct/valid preview
+ *      (transitionStyle) grouped by family; TRANSITION_TYPES/TRANSITION_GROUPS
+ *      cover every type; no-transition fast path emits no xfade
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -49,6 +53,8 @@ import {
   calloutTransform,
   blendCompositeOperation,
   transitionStyle,
+  TRANSITION_TYPES,
+  TRANSITION_GROUPS,
   valueAt,
   toSrt,
   toVtt,
@@ -2575,6 +2581,145 @@ async function checkRollSlipSlide(): Promise<void> {
   console.log(`  [32m✔[0m check 57 (roll/slip/slide): roll moves only the shared boundary (neighbours' outer edges + 13s total fixed, ±delta durations, incoming head 80→81, ${nRoll}b); slip keeps start+duration, only sourceIn 40→42 (clamped to source, ${nSlip}b); slide moves the clip's start with neighbours absorbing + total fixed (${nSlide}b); every clamp holds (no clip < MIN_CLIP_SEC, no source overrun); no-neighbour ⇒ no-op`);
 }
 
+async function checkTransitionLibrary(): Promise<void> {
+  // Wave: the transition library is now a SUPERSET of the original 7 styles plus
+  // the full useful ffmpeg xfade set (50+ total), backward-compatible end-to-end
+  // (schema enum + export xfade map + preview transitionStyle + UI helpers).
+  const resolve = (id: string) => `/media/${id}.mp4`;
+
+  // (0) The enum has grown to 50+ values, and every value carries UI metadata.
+  assert(TRANSITION_TYPES.length >= 50, `expected >=50 transition types, got ${TRANSITION_TYPES.length}`);
+  const groups = new Set<string>();
+  for (const t of TRANSITION_TYPES) {
+    const meta = TRANSITION_GROUPS[t];
+    assert(!!meta && !!meta.label && !!meta.group, `TRANSITION_GROUPS missing label/group for "${t}"`);
+    groups.add(meta.group);
+  }
+  // Every metadata key is a real type (no orphans).
+  assert(
+    Object.keys(TRANSITION_GROUPS).length === TRANSITION_TYPES.length,
+    "TRANSITION_GROUPS must have exactly one entry per transition type",
+  );
+
+  // (1) The original 7 legacy values still PARSE and map to the SAME xfade name
+  // as before (byte-for-byte backward compatibility).
+  const legacy: Record<string, string> = {
+    crossfade: "fade",
+    "dip-to-black": "fadeblack",
+    slide: "slideleft",
+    wipe: "wipeleft",
+    dissolve: "dissolve",
+    zoom: "zoomin",
+    smooth: "smoothleft",
+  };
+  for (const [type, xf] of Object.entries(legacy)) {
+    assert(TRANSITION_TYPES.includes(type as never), `legacy value "${type}" must remain a valid transition`);
+    const doc = parseEditDoc({
+      version: 1,
+      media: [{ id: "m", kind: "image", src: "a.jpg" }],
+      tracks: [{ id: "video", kind: "visual", clips: [{ id: "i", kind: "image", start: 0, duration: 3, mediaId: "m", transitionType: type }] }],
+    });
+    assert(doc.tracks[0]!.clips[0]!.kind === "image", `legacy "${type}" doc should parse`);
+    assert(xfadeTransition(type as never) === xf, `legacy mapping changed: ${type} should map to ${xf}, got ${xfadeTransition(type as never)}`);
+  }
+
+  // (2) A sampling of NEW types each (a) produce the correct xfade name on export
+  // and (b) return a distinct/valid preview style from the right family.
+  const FW = 1920;
+  const FH = 1080;
+  // Build a 2-image slideshow whose SECOND photo carries the transition, so the
+  // slideshow xfade branch emits xfade=transition=<name> for that type.
+  const exportName = (type: string): string => {
+    const doc = parseEditDoc({
+      version: 1,
+      meta: { width: FW, height: FH, fps: 30 },
+      media: [
+        { id: "p0", kind: "image", src: "/media/p0.jpg", width: FW, height: FH },
+        { id: "p1", kind: "image", src: "/media/p1.jpg", width: FW, height: FH },
+      ],
+      tracks: [
+        {
+          id: "photos",
+          kind: "visual",
+          clips: [
+            { id: "c0", kind: "image", start: 0, duration: 3, mediaId: "p0" },
+            { id: "c1", kind: "image", start: 2.5, duration: 3, mediaId: "p1", transitionInSec: 0.5, transitionType: type },
+          ],
+        },
+      ],
+    });
+    return buildExportPlan(doc, resolve, "/out/t.mp4").filterComplex;
+  };
+  const previewStyle = (type: string) => {
+    const clip = parseEditDoc({
+      version: 1,
+      media: [{ id: "m", kind: "image", src: "a.jpg" }],
+      tracks: [{ id: "video", kind: "visual", clips: [{ id: "i", kind: "image", start: 0, duration: 4, mediaId: "m", transitionInSec: 1, transitionType: type }] }],
+    }).tracks[0]!.clips[0]!;
+    return transitionStyle(clip as never, 0.5, FW, FH);
+  };
+
+  // wipeup → xfade wipeup + a VERTICAL clip-path inset (no fade, no translate).
+  assert(exportName("wipeup").includes("xfade=transition=wipeup:"), "wipeup should export xfade=transition=wipeup");
+  const up = previewStyle("wipeup");
+  assert(up.clipPath === "inset(0 0 50% 0)" && up.opacity === 1 && up.translateXPct === 0, `wipeup preview should be a vertical clip-path reveal, got ${JSON.stringify(up)}`);
+
+  // slideright → xfade slideright + a NEGATIVE horizontal translate (enters from left), no clip.
+  assert(exportName("slideright").includes("xfade=transition=slideright:"), "slideright should export xfade=transition=slideright");
+  const sr = previewStyle("slideright");
+  assert(sr.opacity === 1 && sr.translateXPct < 0 && sr.clipPath === "none", `slideright preview should translate in from the left, got ${JSON.stringify(sr)}`);
+
+  // circleopen → xfade circleopen + a circle() clip-path.
+  assert(exportName("circleopen").includes("xfade=transition=circleopen:"), "circleopen should export xfade=transition=circleopen");
+  const co = previewStyle("circleopen");
+  assert(co.clipPath.startsWith("circle(") && co.opacity === 1, `circleopen preview should use a circle clip-path, got ${JSON.stringify(co)}`);
+
+  // pixelize → xfade pixelize + an OPACITY crossfade (no translate, no clip).
+  assert(exportName("pixelize").includes("xfade=transition=pixelize:"), "pixelize should export xfade=transition=pixelize");
+  const px = previewStyle("pixelize");
+  assert(Math.abs(px.opacity - 0.5) < 1e-6 && px.translateXPct === 0 && px.clipPath === "none", `pixelize preview should be an opacity crossfade, got ${JSON.stringify(px)}`);
+
+  // zoomin → xfade zoomin + a SCALE-in (>1).
+  assert(exportName("zoomin").includes("xfade=transition=zoomin:"), "zoomin should export xfade=transition=zoomin");
+  const zi = transitionStyle(
+    parseEditDoc({
+      version: 1,
+      media: [{ id: "m", kind: "image", src: "a.jpg" }],
+      tracks: [{ id: "video", kind: "visual", clips: [{ id: "i", kind: "image", start: 0, duration: 4, mediaId: "m", transitionInSec: 1, transitionType: "zoomin" }] }],
+    }).tracks[0]!.clips[0]! as never,
+    0,
+    FW,
+    FH,
+  );
+  assert(zi.scaleMul > 1 && zi.clipPath === "none", `zoomin preview should scale in, got ${JSON.stringify(zi)}`);
+
+  // (3) EVERY type returns a valid, finite preview style (the fallback never breaks).
+  for (const t of TRANSITION_TYPES) {
+    const s = previewStyle(t);
+    assert(
+      Number.isFinite(s.opacity) && Number.isFinite(s.translateXPct) && Number.isFinite(s.translateYPct) && Number.isFinite(s.scaleMul) && typeof s.clipPath === "string" && s.type === t,
+      `transitionStyle("${t}") returned an invalid style: ${JSON.stringify(s)}`,
+    );
+    // And every type maps to a non-empty xfade name on export.
+    assert(xfadeTransition(t as never).length > 0, `xfadeTransition("${t}") should return a name`);
+  }
+
+  // (4) The no-transition FAST PATH is unchanged: a single clip with no transition
+  // emits NO xfade (concat/single-clip path is byte-identical to before).
+  const fast = parseEditDoc({
+    version: 1,
+    meta: { width: FW, height: FH, fps: 30 },
+    media: [{ id: "v", kind: "video", src: "/media/v.mp4" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 4, mediaId: "v", transform: { x: 960, y: 540 } }] }],
+  });
+  const fastFc = buildExportPlan(fast, resolve, "/out/fast.mp4").filterComplex;
+  assert(!fastFc.includes("xfade"), "no-transition single-clip export must not emit any xfade (fast path unchanged)");
+
+  console.log(
+    `  [32m✔[0m check 60 (transition library): ${TRANSITION_TYPES.length} types in ${groups.size} groups; legacy 7 map unchanged (crossfade→fade…smooth→smoothleft); new types wipeup/slideright/circleopen/pixelize/zoomin → correct xfade + distinct preview (clip-path/translate/circle/opacity/scale); every type has a valid style; no-transition fast path emits no xfade`,
+  );
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -2636,6 +2781,7 @@ async function main(): Promise<void> {
   await checkManualKeyframes();
   await checkRollSlipSlide();
   await checkSpeedRampCurve();
+  await checkTransitionLibrary();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 
