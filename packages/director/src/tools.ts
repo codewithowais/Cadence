@@ -70,6 +70,7 @@ import {
   setPlatform,
   setQuality,
   setSpeed,
+  setSpeedRamp,
   setTransition,
   setZoom,
   styleCaptions,
@@ -80,6 +81,7 @@ import {
   type LookKey,
   type PlatformKey,
   type QualityKey,
+  type SpeedRampPreset,
   type SpeedTarget,
   type TitleAnimStyle,
   type TitleStyle,
@@ -545,6 +547,45 @@ export const speedTool: DirectorTool<{ speed?: number; target?: SpeedTarget; atS
     const speed = applied && applied.kind === "video" ? applied.speed : (input.speed ?? 1);
     const label = speed < 1 ? "slow-motion" : speed > 1 ? "sped up" : "normal speed";
     return commit(ctx.project, doc, `Set speed to ${speed}× (${label}).`);
+  },
+};
+
+// ---- set_speed_ramp (time remap / speed curve) -----------------------------
+
+const SPEED_RAMP_PRESET_ENUM = [
+  "bullet-time",
+  "hero",
+  "ease-in-out",
+  "ramp-up",
+  "ramp-down",
+] as const satisfies readonly SpeedRampPreset[];
+
+export const speedRampTool: DirectorTool<{
+  points?: [number, number][];
+  preset?: SpeedRampPreset;
+  atSec?: number;
+}> = {
+  name: "set_speed_ramp",
+  description:
+    "Speed ramp / time-remap curve (CapCut 'Curve'): vary playback speed across the clip. Pass `points` — control points [clipProgress 0..1, speedMultiplier 0.1..10] — for a custom curve, or a named `preset` (bullet-time, hero, ease-in-out, ramp-up, ramp-down). Optional `atSec` targets a single clip. The clip keeps its timeline length; only how fast it plays through the source varies.",
+  inputSchema: z
+    .object({
+      points: z
+        .array(z.tuple([z.number().min(0).max(1), z.number().min(0.1).max(10)]))
+        .min(2)
+        .optional(),
+      preset: z.enum(SPEED_RAMP_PRESET_ENUM).optional(),
+      atSec: z.number().nonnegative().optional(),
+    })
+    .refine((v) => v.points !== undefined || v.preset !== undefined, {
+      message: "provide points or a preset",
+    }),
+  async execute(input, ctx) {
+    const doc = setSpeedRamp(ctx.project.doc, input);
+    const label = input.preset
+      ? `Applied a "${input.preset}" speed ramp.`
+      : `Applied a custom speed ramp (${input.points!.length} points).`;
+    return commit(ctx.project, doc, label);
   },
 };
 
@@ -1371,6 +1412,7 @@ export const DIRECTOR_TOOLS = {
   add_kinetic_title: kineticTitleTool,
   add_emphasis: emphasisTool,
   set_speed: speedTool,
+  set_speed_ramp: speedRampTool,
   zoom: zoomTool,
   set_transition: transitionTool,
   clear_transition: clearTransitionTool,

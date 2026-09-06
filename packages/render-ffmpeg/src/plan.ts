@@ -19,6 +19,7 @@ import {
   cursorPositionAt,
   docDurationSec,
   sourceSpanSec,
+  speedRampIntegral,
   type BlendMode,
   type CalloutClip,
   type ChromaKey,
@@ -270,6 +271,15 @@ function regionFxGraph(rf: RegionFx, inLabel: string, outLabel: string): string[
 function speedSetpts(speed: number): string {
   return speed === 1 ? "setpts=PTS-STARTPTS" : `setpts=(PTS-STARTPTS)/${r3(speed)}`;
 }
+
+/**
+ * How many pieces a speed-RAMP clip is segmented into on export. Each segment
+ * reads its own source window and applies a constant `setpts`/`atempo` at that
+ * segment's AVERAGE rate — a piecewise-constant approximation of the continuous
+ * ramp (the same segmenting strategy the docs describe for time-varying values).
+ * More segments ⇒ closer to the curve; 8 is a good, cheap default.
+ */
+const RAMP_SEGMENTS = 8;
 
 /**
  * atempo chain matching a speed factor. ffmpeg's atempo accepts [0.5, 100.0]; a
@@ -948,6 +958,84 @@ export function buildExportPlan(
     ];
   };
 
+  /**
+   * Emit a SPEED-RAMP video clip as `[v{i}]` (+ `[a{i}]` when `includeAudio`) by
+   * SEGMENTING it into `RAMP_SEGMENTS` pieces, each reading its own source window
+   * with its own `setpts` (and matching `atempo` for audio) at that segment's
+   * average rate, then concatenating them. This approximates CapCut's speed curve
+   * with the same segmenting strategy the doc describes; it mirrors the shared
+   * pure `speedRampIntegral` so preview and export agree. `reversed` is honored by
+   * reading the mirrored source window per segment and adding `reverse`/`areverse`.
+   * (emphasis / keyframe-zoom are not applied on a ramped clip — documented limit.)
+   */
+  const emitRampedClip = (c: VideoClip, i: number, includeAudio: boolean): void => {
+    const ramp = c.speedRamp!;
+    const dur = Math.max(1e-6, c.duration);
+    const totalSpan = dur * speedRampIntegral(ramp, 1); // total source seconds consumed
+    const asset = doc.media.find((m) => m.id === c.mediaId);
+    const hasAudio = includeAudio && asset?.hasAudio !== false;
+    const pan = panFilter(c.pan);
+    const vSeg: string[] = [];
+    const aSeg: string[] = [];
+    for (let s = 0; s < RAMP_SEGMENTS; s++) {
+      const p0 = s / RAMP_SEGMENTS;
+      const p1 = (s + 1) / RAMP_SEGMENTS;
+      const i0 = speedRampIntegral(ramp, p0);
+      const i1 = speedRampIntegral(ramp, p1);
+      const segTimeline = dur * (p1 - p0); // this segment's timeline seconds
+      const segSource = dur * (i1 - i0); // source seconds it consumes
+      const rate = segSource / Math.max(1e-6, segTimeline); // segment's average speed
+      // Forward reads sourceIn+dur*i0; reversed reads the mirrored window then flips.
+      const srcStart = c.reversed ? c.sourceIn + totalSpan - dur * i1 : c.sourceIn + dur * i0;
+      const idx = addInput(
+        ["-ss", String(r3(srcStart)), "-t", String(r3(segSource))],
+        resolveMediaPath(c.mediaId),
+      );
+      const vChain = [
+        ...(c.reversed ? ["reverse"] : []),
+        `setpts=(PTS-STARTPTS)/${r3(rate)}`,
+        `scale=${W}:${H}:force_original_aspect_ratio=increase`,
+        `crop=${W}:${H}`,
+        ...staticZoomFilters(c, W, H),
+        ...lookFilters(c.look),
+        "format=yuv420p",
+        `fps=${fps}`,
+      ];
+      const vlab = `vr${i}_${s}`;
+      pushVideoChain(filters, `${idx}:v`, vChain, undefined, vlab);
+      vSeg.push(`[${vlab}]`);
+      if (hasAudio) {
+        const alab = `ar${i}_${s}`;
+        const aChain = [
+          "asetpts=PTS-STARTPTS",
+          ...(c.reversed ? ["areverse"] : []),
+          ...(pan ? [pan] : []),
+          ...atempoChain(rate),
+          AUDIO_FORMAT,
+        ];
+        filters.push(`[${idx}:a]${aChain.join(",")}[${alab}]`);
+        aSeg.push(`[${alab}]`);
+      }
+    }
+    filters.push(`${vSeg.join("")}concat=n=${RAMP_SEGMENTS}:v=1:a=0[v${i}]`);
+    if (includeAudio) {
+      if (hasAudio) {
+        filters.push(`${aSeg.join("")}concat=n=${RAMP_SEGMENTS}:v=0:a=1[a${i}]`);
+      } else {
+        // No source audio ⇒ synthesize matching silence (mirrors audioSegmentFilter).
+        const silIdx = addInput(
+          ["-f", "lavfi", "-t", String(r3(c.duration))],
+          `anullsrc=channel_layout=stereo:sample_rate=44100`,
+          false,
+        );
+        filters.push(`[${silIdx}:a]asetpts=PTS-STARTPTS,${AUDIO_FORMAT}[a${i}]`);
+      }
+    }
+  };
+  /** True when a video clip must take the segmented speed-ramp export path. */
+  const isRamped = (c: VideoClip): boolean =>
+    !!c.speedRamp && c.speedRamp.length > 0 && c.freezeAtSec === undefined;
+
   let videoLabel = "";
   let audioLabel: string | null = null;
 
@@ -965,6 +1053,11 @@ export function buildExportPlan(
       // Speed retime, reverse, freeze, static zoom, emphasis, and scale keyframes
       // are all resolved by the shared helpers (used by the generic path too).
       // xfade needs both inputs on the same timebase/framerate to blend cleanly.
+      // Speed-ramp clips take the segmented path (own inputs + concat → v{i}/a{i}).
+      if (isRamped(c)) {
+        emitRampedClip(c, i, true);
+        return;
+      }
       const idx = videoClipInput(c);
       const vChain = videoClipVChain(c, useXfade);
       pushVideoChain(filters, `${idx}:v`, vChain, c.regionFx, `v${i}`);
@@ -1044,6 +1137,13 @@ export function buildExportPlan(
     base.forEach((clip, i) => {
       const c = clip;
       if (c.kind === "video") {
+        // Speed-ramp clips take the segmented path (video-only here; audio comes
+        // from the audio-track pass, matching the non-ramped generic behavior).
+        if (isRamped(c)) {
+          emitRampedClip(c, i, false);
+          segLabels.push(`[v${i}]`);
+          return;
+        }
         // Video: reuse the shared helpers (reverse/freeze/speed/zoom/keyframes).
         const idx = videoClipInput(c);
         pushVideoChain(filters, `${idx}:v`, videoClipVChain(c, true), c.regionFx, `v${i}`);

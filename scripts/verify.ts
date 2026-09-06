@@ -40,6 +40,7 @@ import {
   docDurationSec,
   emphasisScale,
   sourceTimeAt,
+  speedRampIntegral,
   textKinetic,
   typewriterText,
   cursorPositionAt,
@@ -81,6 +82,7 @@ import { join as pathJoin } from "node:path";
 import {
   ProjectState,
   StubDirector,
+  DIRECTOR_TOOLS,
   runDirectorLoop,
   adjustColor,
   adjustCurves,
@@ -114,6 +116,8 @@ import {
   setPlatform,
   setQuality,
   setSpeed,
+  setSpeedRamp,
+  SPEED_RAMP_PRESETS,
   setTransition,
   buildDemo,
   addCursor,
@@ -634,6 +638,75 @@ async function checkSpeedRamp(): Promise<void> {
   assert(JSON.stringify(atempoChain(0.25)) === JSON.stringify(["atempo=0.5", "atempo=0.5"]), "speed: 0.25× should chain two atempo=0.5");
   assert(JSON.stringify(atempoChain(4)) === JSON.stringify(["atempo=2", "atempo=2"]), "speed: 4× should chain two atempo=2");
   console.log(`  [32m✔[0m check 19 (speed ramp): 0.5× slow-mo — sourceTimeAt mapping + frame (${n}b) + setpts/atempo on export; out-of-range atempo chained`);
+}
+
+async function checkSpeedRampCurve(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+
+  const plain = project.doc;
+  const baseClip = plain.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(baseClip && baseClip.speedRamp === undefined, "baseline clip should have no ramp");
+
+  // Tool registered for the AI side.
+  assert("set_speed_ramp" in DIRECTOR_TOOLS, "set_speed_ramp must be in DIRECTOR_TOOLS");
+
+  // Apply the "bullet-time" preset via the pure op (fast→slow→fast).
+  const ramped = setSpeedRamp(plain, { preset: "bullet-time" });
+  const rc = ramped.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video")!;
+  assert(rc.speedRamp && rc.speedRamp.length >= 2, "speed ramp should be set on the clip");
+  assert(
+    JSON.stringify(rc.speedRamp) === JSON.stringify(SPEED_RAMP_PRESETS["bullet-time"]),
+    "preset points should be stored verbatim",
+  );
+
+  // (a) The shared helper maps source time NON-LINEARLY vs the constant-speed baseline.
+  const dur = rc.duration;
+  const span = speedRampIntegral(rc.speedRamp!, 1) * dur; // total source consumed
+  // End maps to the full integral; a constant-speed clip of the same avg would too.
+  // Sample at p=0.3 (inside bullet-time's fast opening): a constant speed lands at
+  // sourceIn+span*0.3, but the fast start has consumed MORE source, so the ramp is
+  // strictly ahead — proving the mapping is non-linear (the midpoint of a symmetric
+  // ramp coincides with the constant baseline, so 0.3 is the discriminating sample).
+  const pTest = 0.3;
+  const stMid = sourceTimeAt(rc, rc.start + dur * pTest);
+  const constMid = rc.sourceIn + span * pTest; // where a constant-speed clip would be
+  assert(stMid > constMid + 1e-3, `ramp must be non-linear (ramp ${stMid} > const ${constMid} at p=${pTest})`);
+  // A slower sample near the (slow) middle vs a faster one near the (fast) start:
+  // over equal timeline steps the fast region advances MORE source than the slow region.
+  const dStart = sourceTimeAt(rc, rc.start + dur * 0.1) - sourceTimeAt(rc, rc.start);
+  const dMiddle = sourceTimeAt(rc, rc.start + dur * 0.55) - sourceTimeAt(rc, rc.start + dur * 0.45);
+  assert(dStart > dMiddle + 1e-3, `fast region should consume more source than the slow middle (${dStart} vs ${dMiddle})`);
+  // Monotonic forward (playback never rewinds).
+  let prev = -Infinity;
+  for (let k = 0; k <= 8; k++) {
+    const s = sourceTimeAt(rc, rc.start + (dur * k) / 8);
+    assert(s >= prev - 1e-9, "ramped source-time mapping must be monotonic");
+    prev = s;
+  }
+  // End of clip consumes exactly the integrated span.
+  assert(Math.abs(sourceTimeAt(rc, rc.start + dur) - (rc.sourceIn + span)) < 1e-4, "ramp end should equal integral(1)*dur");
+
+  // (b) Renders a real frame at the ramped midpoint.
+  const n = await renderAndAssert(ramped, rc.start + dur / 2, "verify-speed-ramp.png");
+
+  // (c) The export SEGMENTS the ramp into multiple setpts pieces + concats them.
+  const plan = buildExportPlan(ramped, (id) => `/media/${id}.mp4`, "/out/ramp.mp4");
+  const setptsSegments = (plan.filterComplex.match(/setpts=\(PTS-STARTPTS\)\//g) || []).length;
+  assert(setptsSegments >= 2, `ramp export must segment into multiple setpts (got ${setptsSegments})`);
+  assert(/\bconcat=n=\d+:v=1:a=0\[v0\]/.test(plan.filterComplex), "ramp export must concat the video segments into [v0]");
+  assert(plan.filterComplex.includes("[vr0_0]"), "ramp export should emit per-segment labels (vr0_0)");
+  assert(plan.filterComplex.includes("atempo="), "ramp export should retime segment audio (atempo)");
+
+  // A non-ramped clip stays single-speed: no ramp segments, historical fast path.
+  const planPlain = buildExportPlan(plain, (id) => `/media/${id}.mp4`, "/out/plain.mp4");
+  assert(!planPlain.filterComplex.includes("vr0_"), "non-ramped clip must NOT emit ramp segments");
+  assert(!/setpts=\(PTS-STARTPTS\)\//.test(planPlain.filterComplex), "non-ramped 1× clip stays setpts=PTS-STARTPTS (byte-identical fast path)");
+
+  console.log(
+    `  [32m✔[0m check 58 (speed ramp curve): bullet-time preset → non-linear sourceTimeAt (mid ${stMid.toFixed(2)} vs const ${constMid.toFixed(2)}, fast/slow ${dStart.toFixed(2)}>${dMiddle.toFixed(2)}), monotonic, frame (${n}b), export segmented into ${setptsSegments} setpts + concat; non-ramped clip byte-identical single-speed`,
+  );
 }
 
 async function checkZoom(): Promise<void> {
@@ -2504,6 +2577,7 @@ async function main(): Promise<void> {
   await checkPerCutTransition();
   await checkManualKeyframes();
   await checkRollSlipSlide();
+  await checkSpeedRampCurve();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

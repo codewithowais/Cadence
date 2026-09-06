@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.9 — speed ramps (time remap / CapCut "Curve")
+- Additive `VideoClip.speedRamp` (`[clipProgress, multiplier]` control points; absent ⇒ scalar `speed`, unchanged). One shared pure helper `speedRampIntegral` integrates the ramp so `sourceTimeAt`/`sourceSpanSec` map non-linearly across canvas + Stage + export identically. ffmpeg export segments the clip (per-piece `setpts`/`atempo`) — single-speed fast path byte-identical. Tool `set_speed_ramp` + presets (bullet-time/hero/ease-in-out/ramp-up/ramp-down). Engine only; UI next.
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify **58/58** + evals 5/5.
+
 ### S4.8 — Cycle F wave E (web): roll / slip / slide trim modes
 - Timeline **Normal · Roll · Slip · Slide** mode selector (plain-language tooltips) — in a non-Normal mode, dragging an eligible main-track clip performs that trim (cumulative delta vs. the pre-drag doc, coalesced undo; affordances per mode). Normal-mode move/trim/cross-track/reorder untouched.
 - Discoverable **Roll/Slip/Slide ±0.1s** nudges in the clip inspector (disabled with a reason when inapplicable). Wired through the undoable commit path.

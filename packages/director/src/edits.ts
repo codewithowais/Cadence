@@ -696,6 +696,84 @@ export function setSpeed(
   return parseEditDoc(clone);
 }
 
+// ---- Speed ramp (time remap / CapCut "Curve") ------------------------------
+
+/**
+ * Named speed-ramp presets → `[clipProgress, speedMultiplier]` control points.
+ * Exported for the web UI's speed-curve editor and the Director tool.
+ *  - bullet-time : fast → freeze-ish slow middle → fast (the classic hit).
+ *  - hero        : normal → dramatic slow build → snap back up.
+ *  - ease-in-out : slow, swell to fast at the middle, ease back to slow.
+ *  - ramp-up     : accelerate steadily across the clip.
+ *  - ramp-down   : decelerate steadily across the clip.
+ */
+export const SPEED_RAMP_PRESETS = {
+  "bullet-time": [
+    [0, 2],
+    [0.4, 0.2],
+    [0.6, 0.2],
+    [1, 2],
+  ],
+  hero: [
+    [0, 1],
+    [0.25, 0.35],
+    [0.6, 0.35],
+    [1, 1.6],
+  ],
+  "ease-in-out": [
+    [0, 0.5],
+    [0.5, 1.6],
+    [1, 0.5],
+  ],
+  "ramp-up": [
+    [0, 0.4],
+    [1, 2.5],
+  ],
+  "ramp-down": [
+    [0, 2.5],
+    [1, 0.4],
+  ],
+} as const satisfies Record<string, [number, number][]>;
+
+export type SpeedRampPreset = keyof typeof SPEED_RAMP_PRESETS;
+
+/**
+ * Apply a SPEED RAMP (time-remap curve) to the main video clip(s). Pass explicit
+ * `points` (`[clipProgress 0..1, speedMultiplier 0.1..10]`) or a named `preset`.
+ * The ramp overrides the scalar `speed`; the clip keeps its TIMELINE duration and
+ * the source-time mapping integrates the curve (see sourceTimeAt/speedRampIntegral
+ * in core), so preview and export agree. If `atSec` is given only the clip active
+ * there is ramped; otherwise every main video clip is. Faithful: retime only.
+ */
+export function setSpeedRamp(
+  doc: EditDoc,
+  opts: { points?: [number, number][]; preset?: SpeedRampPreset; atSec?: number } = {},
+): EditDoc {
+  const raw = opts.points ?? (opts.preset ? SPEED_RAMP_PRESETS[opts.preset] : undefined);
+  if (!raw || raw.length < 2) {
+    throw new Error("Provide at least two ramp control points or a preset.");
+  }
+  // Clamp into range and sort by progress so the curve is well-formed + monotonic-safe.
+  const ramp: [number, number][] = raw
+    .map(([p, m]) => [round(clamp(p, 0, 1)), round(clamp(m, 0.1, 10))] as [number, number])
+    .sort((a, b) => a[0] - b[0]);
+  const clone: EditDoc = structuredClone(doc);
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video") continue;
+      if (opts.atSec !== undefined && !(opts.atSec >= clip.start && opts.atSec < clip.start + clip.duration)) {
+        continue;
+      }
+      clip.speedRamp = ramp.map(([p, m]) => [p, m] as [number, number]);
+      changed++;
+    }
+  }
+  if (changed === 0) throw new Error("Add a video first — a speed ramp needs footage.");
+  return parseEditDoc(clone);
+}
+
 // ---- Zoom / crop (manual static reframe) -----------------------------------
 
 /**

@@ -313,6 +313,17 @@ export const Mask = z.object({
 });
 export type Mask = z.infer<typeof Mask>;
 
+/**
+ * A speed ramp (time-remap curve): ordered control points
+ * `[clipProgress 0..1, speedMultiplier 0.1..10]`. The multiplier is the playback
+ * rate at that point in the clip (1 = real time, <1 slow-mo, >1 fast); the
+ * source-time mapping integrates it piecewise (see `speedRampIntegral`). Every
+ * multiplier is > 0, so the mapping is strictly monotonic (playback always moves
+ * forward). Faithful — retimes, never generates frames.
+ */
+export const SpeedRamp = z.array(z.tuple([z.number().min(0).max(1), z.number().min(0.1).max(10)]));
+export type SpeedRamp = z.infer<typeof SpeedRamp>;
+
 /** A clip that plays a slice of a video asset. */
 export const VideoClip = z.object({
   ...clipBase,
@@ -327,6 +338,16 @@ export const VideoClip = z.object({
    * seconds (see sourceTimeAt in engine.ts). Faithful — retimes, no new frames.
    */
   speed: z.number().min(0.25).max(4).default(1),
+  /**
+   * Optional SPEED RAMP (time remap / CapCut "Curve"): control points
+   * `[clipProgress 0..1, speedMultiplier 0.1..10]`. When present it OVERRIDES the
+   * scalar `speed` — the source-time mapping integrates the piecewise-linear ramp
+   * (see `speedRampIntegral` / `sourceTimeAt` in engine.ts), so a clip can slow
+   * down then speed up within its timeline slot. Absent ⇒ the scalar `speed` is
+   * used exactly as before (no behavior change). Additive + optional so existing
+   * docs stay valid. Faithful: retimes existing frames, never synthesizes new ones.
+   */
+  speedRamp: SpeedRamp.optional(),
   transform: Transform.prefault({}),
   volume: z.number().min(0).max(1).default(1),
   look: ColorGrade.prefault({}),
