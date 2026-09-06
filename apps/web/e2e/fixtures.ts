@@ -11,6 +11,8 @@ export const FIXTURE_DIR = resolve(ARTIFACT_DIR, "fixtures");
 export interface Fixtures {
   videoPath: string;
   photoPaths: string[];
+  /** A short WebM audio track (oscillator → MediaRecorder) for the Audio room. */
+  audioPath: string;
 }
 
 /**
@@ -101,5 +103,47 @@ export async function generateFixtures(page: Page): Promise<Fixtures> {
     return p;
   });
 
-  return { videoPath, photoPaths };
+  // ---- audio ----
+  // A ~2s WebM audio clip: an oscillator (gentle A4) → MediaStreamDestination →
+  // MediaRecorder. Gives the Audio room a real music source to attach/duck.
+  const audio = await page.evaluate(async () => {
+    const Ctx: typeof AudioContext =
+      window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ac = new Ctx();
+    const dest = ac.createMediaStreamDestination();
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 440;
+    gain.gain.value = 0.2; // keep it quiet
+    osc.connect(gain).connect(dest);
+
+    const types = ["audio/webm;codecs=opus", "audio/webm"];
+    const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) ?? "audio/webm";
+    const rec = new MediaRecorder(dest.stream, { mimeType: mime });
+    const chunks: Blob[] = [];
+    rec.ondataavailable = (e) => {
+      if (e.data.size) chunks.push(e.data);
+    };
+    const stopped = new Promise<void>((r) => (rec.onstop = () => r()));
+    rec.start();
+    osc.start();
+    await new Promise((r) => setTimeout(r, 2000));
+    osc.stop();
+    rec.stop();
+    await stopped;
+    await ac.close();
+
+    const blob = new Blob(chunks, { type: "audio/webm" });
+    const buf = await blob.arrayBuffer();
+    let binary = "";
+    const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+    return { base64: btoa(binary) };
+  });
+
+  const audioPath = resolve(FIXTURE_DIR, "music.webm");
+  writeFileSync(audioPath, Buffer.from(audio.base64, "base64"));
+
+  return { videoPath, photoPaths, audioPath };
 }

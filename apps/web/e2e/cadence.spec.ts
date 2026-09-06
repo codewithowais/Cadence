@@ -147,8 +147,13 @@ test("video flow: upload → edits → rooms → mute → applied-status → exp
   await shot(page, "09-muted");
 
   // ---- export: ffmpeg absent → graceful message + JSON edit-doc download ----
-  const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
+  // The top-bar "Export" button opens the ExportMenu popover; the actual export
+  // is the "Export .mp4" button inside it.
   await page.getByRole("button", { name: "Export", exact: true }).click();
+  const exportDialog = page.getByRole("dialog", { name: "Export options" });
+  await expect(exportDialog).toBeVisible();
+  const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
+  await exportDialog.getByRole("button", { name: "Export .mp4" }).click();
   // The graceful message names both the missing ffmpeg AND the JSON fallback.
   const ffmpegMsg = page.getByText(/ffmpeg not found/i);
   await expect(ffmpegMsg).toBeVisible({ timeout: 60_000 });

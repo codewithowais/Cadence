@@ -20,10 +20,20 @@ export default defineConfig({
   timeout: 120_000,
   expect: { timeout: 20_000 },
   reporter: [["list"]],
+  // Per-test artifacts (videos, traces) land under the (gitignored) test-artifacts
+  // dir so a QA run leaves everything collectable in one place. Playwright writes
+  // each test's recording to <outputDir>/<test-title-slug>/video.webm.
+  outputDir: "../../test-artifacts/pw-output",
+  // Keep artifacts for passing runs too — this suite exists to SHOW the app, so
+  // every run's video is worth keeping, not just failures.
+  preserveOutput: "always",
   use: {
     baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
+    // Record a .webm of every test (docs: TestOptions.video "on" = record + keep
+    // for every run). Videos are finalized when the page/context closes.
+    video: { mode: "on", size: { width: 1280, height: 800 } },
     // MediaRecorder + canvas.captureStream need no special flags in Chromium,
     // but fake media avoids any device-permission prompt.
     launchOptions: {
