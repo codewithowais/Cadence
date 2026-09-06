@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.28 — custom subtitles UI (Words room)
+- New **Caption style** section with a **live preview chip**: font, size, color, **Bold/Italic/UPPERCASE**, **L/C/R** alignment, letter-spacing; **outline + shadow**; **background None/Pill/Box** (color/opacity/radius/padding); **position Top/Center/Bottom + offset** and **Place on preview** (drag the caption where you want); **6 one-tap presets** (Clean, Bold Pop, YouTube, TikTok, Minimal, Boxed). Styles all captions or "this caption only" when a caption clip is selected. All undoable; renders identically in preview + export.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **18/18**.
+
 ### S4.27 — custom subtitles: styles + position (engine)
 - Additive `TextClip` fields: `italic`, `letterSpacing`, `uppercase`, `lineHeight`, `maxWidth` (word-wrap), `shadow` (color/blur/offset), `box` (none/pill/box + color/opacity/radius/padding), `position` (top/center/bottom/free) + `positionOffset`; existing font/size/weight/color/align/outline/background/transform kept. Shared pure `captionAnchorY` (safe-margin anchors).
 - Canvas `drawText` rewritten to honor all of them (wrap, multi-line, shadow, box vs pill, letter-spacing, uppercase, alignment) — default look byte-identical when unset; export inherits it via the PNG-overlay path (preview↔export parity).

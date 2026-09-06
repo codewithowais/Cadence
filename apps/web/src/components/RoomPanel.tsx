@@ -123,6 +123,8 @@ interface RoomPanelProps {
   canDetectBeats?: boolean;
   /** Audio room: number of markers currently on the timeline. */
   markerCount?: number;
+  /** Words room: the clip selected on the timeline (enables "this caption only"). */
+  selectedClipId?: string | null;
 }
 
 /** Shared wrapper so every room reads as the same contextual strip. */
@@ -229,6 +231,7 @@ export function RoomPanel(props: RoomPanelProps) {
     onSplitAtBeats,
     canDetectBeats,
     markerCount,
+    selectedClipId,
   } = props;
   const fileRef = useRef<HTMLInputElement>(null);
   const openPicker = () => fileRef.current?.click();
@@ -282,6 +285,8 @@ export function RoomPanel(props: RoomPanelProps) {
         onApplyDoc={onApplyDoc}
         onGenerateVoiceover={onGenerateVoiceover}
         onRecordVoiceover={onRecordVoiceover}
+        onBeginPlacement={onBeginPlacement}
+        selectedClipId={selectedClipId}
       />
     );
   }

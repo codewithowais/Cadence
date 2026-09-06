@@ -1555,6 +1555,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onSplitAtBeats={splitAtBeats}
             canDetectBeats={!!beatSource}
             markerCount={markers.length}
+            selectedClipId={selectedClipId}
           />
           </div>
         )}

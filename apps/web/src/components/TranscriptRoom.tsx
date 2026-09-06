@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import type { EditDoc, MediaAsset } from "@cadence/core";
 import type { Transcript, TranscriptSegment } from "@cadence/understanding";
 import {
+  addCaptions,
   editByTranscript,
   removeSilence,
   fillerCut,
@@ -15,6 +16,8 @@ import {
 import { describeDoc } from "@/lib/status";
 import { fmtTime } from "@/lib/format";
 import { VoiceOverRecorder } from "./VoiceOverRecorder";
+import { CaptionStyleSection } from "./CaptionStyle";
+import type { BeginPlacement } from "@/lib/placement";
 
 // ---- small shared controls (match RoomPanel's tokens) ----------------------
 
@@ -85,6 +88,10 @@ interface TranscriptRoomProps {
   onGenerateVoiceover: (text: string) => Promise<string>;
   /** Record a manual mic voice-over (the free path). */
   onRecordVoiceover: (file: File, durationSec: number) => void;
+  /** Arm an on-preview placement gesture (used by the caption free-placement). */
+  onBeginPlacement?: BeginPlacement;
+  /** The clip selected on the timeline — enables "this caption only" styling. */
+  selectedClipId?: string | null;
 }
 
 type Selection =
@@ -103,6 +110,8 @@ export function TranscriptRoom({
   onApplyDoc,
   onGenerateVoiceover,
   onRecordVoiceover,
+  onBeginPlacement,
+  selectedClipId,
 }: TranscriptRoomProps) {
   // Transcript editing acts on the primary (first) video clip — the talking-head
   // source. Its edits rebuild the timeline from that clip (like the Director's
@@ -201,6 +210,12 @@ export function TranscriptRoom({
   const reframeTo = (aspect: AspectKey) => {
     onApplyDoc(autoReframe(doc, { aspect, pan: true }));
     setStatus({ tone: "ok", text: `Reframed to ${aspect} and centered the frame (free). Undo any time.` });
+  };
+
+  const addCaptionsNow = () => {
+    if (!transcript) return;
+    onApplyDoc(addCaptions(doc, transcript));
+    setStatus({ tone: "ok", text: "Captions added from the transcript — style them below. Undo any time." });
   };
 
   // --- empty / loading states ----------------------------------------------
@@ -331,6 +346,17 @@ export function TranscriptRoom({
         </Pill>
         <span className="text-[11px] text-faint">Free reframe centers the frame with a gentle settle-pan.</span>
       </Row>
+
+      {/* Caption styling + position (custom subtitle look) */}
+      <CaptionStyleSection
+        doc={doc}
+        busy={busy}
+        onApplyDoc={onApplyDoc}
+        onBeginPlacement={onBeginPlacement}
+        selectedClipId={selectedClipId}
+        canAddCaptions={!!transcript}
+        onAddCaptions={addCaptionsNow}
+      />
 
       {/* AI voice-over (money-gated) + free mic path */}
       <VoiceOverComposer
