@@ -19,10 +19,10 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **S1.3 Features wired into the UI.** Video-or-photos upload, generic live preview (Ken Burns/crossfade/looks/captions), one-tap QuickActions bar. — *verified: next build clean, in-browser layout.*
 - ✅ **S1.4 Real media export (ffmpeg).** `@cadence/render-ffmpeg`: PURE `buildExportPlan` (edit-doc → ffmpeg filtergraph: cut+concat, looks, burn-in captions, slideshow xfade/Ken Burns, fades, lanczos upscale + unsharp + denoise) · `detectFfmpeg` · `runExport` (free/local path; faithful `@cadence/enhance` pass when `aiUpscale` on, off by default). Web `/api/upload` + `/api/export` (streams mp4; 501 + install hint when ffmpeg absent); Export button wired with JSON fallback. — *verified: typecheck + verify (checks 7–8, no ffmpeg needed) + next build all green.* **Note: producing an actual .mp4 requires `brew install ffmpeg` (not installed here).**
 - ⬜ **S1.5 Real local Whisper** transcriber (drop-in for StubTranscriber).
-- ⬜ **S1.6 Enterprise bones:** multi-tenant Postgres (orgs→users→projects→media→edit-docs, versioned) + dev auth + docker-compose.
-- ⬜ docker-compose: web · api · worker · db(Postgres). *(Docker not installed locally yet — free install; see README.)*
-- ⬜ Multi-tenant data model (orgs → users → projects → media → edit-docs, versioned).
-- ⬜ Local dev auth (Auth.js credentials) behind an auth interface.
+- ✅ **S1.6 Enterprise bones:** multi-tenant Postgres + dev auth + docker-compose. `@cadence/db` (pg 8.23.0 pinned): migrations (orgs→users→memberships→projects→media→edit_docs + append-only edit_doc_versions; org_id tenant column everywhere, FKs, indexes, timestamps), idempotent `migrate.ts` (`_migrations` table), pooled client, and typed **tenant-scoped, parameterized** repositories (docs validated by `parseEditDoc` before write). `apps/web/src/lib/auth.ts`: `AuthProvider` interface + signed-cookie `DevAuthProvider` (SESSION_SECRET; SSO-swappable). Root `docker-compose.yml` (db + web, commented api/worker) + multi-stage `apps/web/Dockerfile`. `/api/health` → `{ status, db }`. — *verified: typecheck + verify 10/10 (pure DB builder + migration checks) + next build all green. Docker not installed here → not run live.*
+- ✅ docker-compose: web · db(Postgres); api + worker as commented split-later placeholders. *(Docker not installed locally yet — free install; run `docker compose up`.)*
+- ✅ Multi-tenant data model (orgs → users → projects → media → edit-docs, versioned, row-scoped by org_id).
+- ✅ Local dev auth behind an auth interface (`DevAuthProvider`, signed HTTP-only cookie). *(Real SSO left as a documented swap; Auth.js/OIDC not wired.)*
 - ⬜ Director tools: filler cut · reframe 9:16 · burn-in captions · one warm look · basic auto-mix.
 - ✅ Export renders a real file (ffmpeg; free, needs ffmpeg installed — see S1.4).
 - ⬜ Agentic loop hardening (plan→act→verify→correct) + 5 eval prompts.
@@ -32,5 +32,5 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 
 ## Environment notes
 - Node 25.1.0 present (odd/current). **Recommend Node 22 LTS** — vitest 5 flags Node 25 as unsupported.
-- Docker: **not installed** (free). Needed for `docker compose up`; core dev + verify gate do NOT require it.
+- Docker: **not installed** (free). Needed for `docker compose up` (Postgres + web) and running migrations live; core dev + verify gate do NOT require it. Live bring-up: `cp .env.example .env` (set SESSION_SECRET) → `docker compose up` → `npm -w @cadence/db run migrate`. Health at `GET /api/health`.
 - ffmpeg: **not installed** (free). Needed only for video export, not for the canvas verify/preview path.

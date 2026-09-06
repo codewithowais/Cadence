@@ -1,0 +1,220 @@
+/**
+ * Typed, tenant-scoped repositories over the Cadence schema.
+ *
+ * INVARIANTS (see queries.ts for the SQL):
+ *  - Every tenant-data function takes a tenant scope (`orgId`, and `projectId`
+ *    where relevant) and passes it into a builder that pins it in the WHERE/VALUES
+ *    clause. No function can read or write another tenant's rows.
+ *  - All values are bound as parameters ($1…$N) — never interpolated.
+ *  - `edit_doc_versions` is append-only; docs are validated by @cadence/core's
+ *    `parseEditDoc` BEFORE they touch the database.
+ *
+ * (`createOrg`/`createUser` are the identity roots — an org IS a tenant and a
+ * user is a global identity — so they take no parent scope by design.)
+ */
+import { parseEditDoc, type EditDoc } from "@cadence/core";
+import type { PoolClient } from "pg";
+import { getPool, run } from "./client";
+import {
+  addMembershipQuery,
+  bumpEditDocPointerQuery,
+  createMediaQuery,
+  createOrgQuery,
+  createProjectQuery,
+  createUserQuery,
+  getEditDocVersionQuery,
+  getLatestEditDocQuery,
+  getMembershipQuery,
+  getProjectQuery,
+  insertEditDocVersionQuery,
+  listEditDocVersionsQuery,
+  listMediaQuery,
+  listProjectsQuery,
+  type MediaInput,
+  type MembershipRole,
+} from "./queries";
+
+// --- Row shapes (as returned by the RETURNING / SELECT lists) ---------------
+
+export interface OrgRow {
+  id: string;
+  name: string;
+  created_at: Date;
+  updated_at: Date;
+}
+export interface UserRow {
+  id: string;
+  email: string;
+  name: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+export interface MembershipRow {
+  id: string;
+  user_id: string;
+  org_id: string;
+  role: MembershipRole;
+  created_at: Date;
+  updated_at: Date;
+}
+export interface ProjectRow {
+  id: string;
+  org_id: string;
+  name: string;
+  created_at: Date;
+  updated_at: Date;
+}
+export interface MediaRow {
+  id: string;
+  org_id: string;
+  project_id: string;
+  kind: "video" | "audio" | "image";
+  src: string;
+  duration_sec: number | null;
+  width: number | null;
+  height: number | null;
+  label: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+export interface EditDocVersionRow {
+  id: string;
+  org_id: string;
+  project_id: string;
+  version: number;
+  doc: unknown;
+  created_at: Date;
+  created_by: string | null;
+}
+
+/** A validated edit-doc plus its version metadata. */
+export interface EditDocVersion {
+  version: number;
+  doc: EditDoc;
+  createdAt: Date;
+  createdBy: string | null;
+}
+
+export interface TenantScope {
+  readonly orgId: string;
+}
+export interface ProjectScope extends TenantScope {
+  readonly projectId: string;
+}
+
+// --- Identity roots ---------------------------------------------------------
+
+export async function createOrg(name: string): Promise<OrgRow> {
+  const res = await run<OrgRow>(createOrgQuery(name));
+  return res.rows[0]!;
+}
+
+export async function createUser(email: string, name: string | null = null): Promise<UserRow> {
+  const res = await run<UserRow>(createUserQuery(email, name));
+  return res.rows[0]!;
+}
+
+export async function addMembership(
+  userId: string,
+  orgId: string,
+  role: MembershipRole = "member",
+): Promise<MembershipRow> {
+  const res = await run<MembershipRow>(addMembershipQuery(userId, orgId, role));
+  return res.rows[0]!;
+}
+
+/** Authorization primitive: the membership row (with role) or null. */
+export async function getMembership(userId: string, orgId: string): Promise<MembershipRow | null> {
+  const res = await run<MembershipRow>(getMembershipQuery(userId, orgId));
+  return res.rows[0] ?? null;
+}
+
+// --- Projects (tenant-scoped) -----------------------------------------------
+
+export async function createProject(orgId: string, name: string): Promise<ProjectRow> {
+  const res = await run<ProjectRow>(createProjectQuery(orgId, name));
+  return res.rows[0]!;
+}
+
+export async function listProjects(orgId: string): Promise<ProjectRow[]> {
+  const res = await run<ProjectRow>(listProjectsQuery(orgId));
+  return res.rows;
+}
+
+export async function getProject(scope: ProjectScope): Promise<ProjectRow | null> {
+  const res = await run<ProjectRow>(getProjectQuery(scope.orgId, scope.projectId));
+  return res.rows[0] ?? null;
+}
+
+// --- Media (tenant-scoped) --------------------------------------------------
+
+export async function addMedia(scope: ProjectScope, media: MediaInput): Promise<MediaRow> {
+  const res = await run<MediaRow>(createMediaQuery(scope.orgId, scope.projectId, media));
+  return res.rows[0]!;
+}
+
+export async function listMedia(scope: ProjectScope): Promise<MediaRow[]> {
+  const res = await run<MediaRow>(listMediaQuery(scope.orgId, scope.projectId));
+  return res.rows;
+}
+
+// --- Edit-docs (tenant-scoped; versioned, append-only) ----------------------
+
+/**
+ * Validate `doc` (via @cadence/core), then in ONE transaction bump the project's
+ * current-version pointer and append the new immutable version row. Returns the
+ * stored version. Tenant-scoped by (orgId, projectId) throughout.
+ */
+export async function saveEditDocVersion(
+  scope: ProjectScope,
+  doc: unknown,
+  userId: string | null,
+): Promise<EditDocVersion> {
+  // Validate BEFORE any write — invalid docs never reach the DB.
+  const valid = parseEditDoc(doc);
+
+  const client: PoolClient = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const pointer = await run<{ current_version: number }>(
+      bumpEditDocPointerQuery(scope.orgId, scope.projectId),
+      client,
+    );
+    const version = pointer.rows[0]!.current_version;
+    const inserted = await run<EditDocVersionRow>(
+      insertEditDocVersionQuery(scope.orgId, scope.projectId, version, valid, userId),
+      client,
+    );
+    await client.query("COMMIT");
+    const row = inserted.rows[0]!;
+    return { version: row.version, doc: valid, createdAt: row.created_at, createdBy: row.created_by };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getLatestEditDoc(scope: ProjectScope): Promise<EditDocVersion | null> {
+  const res = await run<EditDocVersionRow>(getLatestEditDocQuery(scope.orgId, scope.projectId));
+  const row = res.rows[0];
+  if (!row) return null;
+  return { version: row.version, doc: parseEditDoc(row.doc), createdAt: row.created_at, createdBy: row.created_by };
+}
+
+export async function getEditDocVersion(scope: ProjectScope, version: number): Promise<EditDocVersion | null> {
+  const res = await run<EditDocVersionRow>(getEditDocVersionQuery(scope.orgId, scope.projectId, version));
+  const row = res.rows[0];
+  if (!row) return null;
+  return { version: row.version, doc: parseEditDoc(row.doc), createdAt: row.created_at, createdBy: row.created_by };
+}
+
+export async function listEditDocVersions(
+  scope: ProjectScope,
+): Promise<Array<{ version: number; createdAt: Date; createdBy: string | null }>> {
+  const res = await run<{ version: number; created_at: Date; created_by: string | null }>(
+    listEditDocVersionsQuery(scope.orgId, scope.projectId),
+  );
+  return res.rows.map((r) => ({ version: r.version, createdAt: r.created_at, createdBy: r.created_by }));
+}

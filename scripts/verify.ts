@@ -24,6 +24,16 @@ import {
   FfmpegNotFoundError,
   FFMPEG_MISSING_MESSAGE,
 } from "@cadence/render-ffmpeg";
+import {
+  addMembershipQuery,
+  createProjectQuery,
+  getEditDocVersionQuery,
+  insertEditDocVersionQuery,
+  listProjectsQuery,
+  createMediaQuery,
+  type SqlQuery,
+} from "@cadence/db/queries";
+import { orderMigrations, listMigrations } from "@cadence/db";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = resolve(__dirname, "..", ".cadence");
@@ -273,6 +283,84 @@ async function checkFfmpegGraceful(): Promise<void> {
   }
 }
 
+/**
+ * Count positional placeholders and assert a query is fully parameterized:
+ * every value has a matching $N ($1..$N present), value count == placeholder
+ * count, and NONE of the values appears as a literal inside the SQL text.
+ */
+function assertParameterized(label: string, q: SqlQuery): void {
+  const n = q.values.length;
+  for (let i = 1; i <= n; i++) {
+    assert(q.text.includes(`$${i}`), `${label}: missing placeholder $${i}`);
+  }
+  assert(!q.text.includes(`$${n + 1}`), `${label}: more placeholders than values`);
+  // No raw value may be interpolated into the SQL string (injection guard).
+  for (const v of q.values) {
+    if (typeof v === "string" && v.length >= 3) {
+      assert(!q.text.includes(v), `${label}: value "${v}" leaked into SQL text (must be a $N bind)`);
+    }
+  }
+}
+
+async function checkDbQueries(): Promise<void> {
+  // Tenant scoping: reads/writes always pin org_id (and project_id where relevant).
+  const projects = listProjectsQuery("org-ABC");
+  assert(projects.text.includes("WHERE org_id = $1"), "listProjects must scope by org_id");
+  assert(JSON.stringify(projects.values) === JSON.stringify(["org-ABC"]), "listProjects values");
+  assertParameterized("listProjectsQuery", projects);
+
+  const create = createProjectQuery("org-1", "My Project");
+  assert(JSON.stringify(create.values) === JSON.stringify(["org-1", "My Project"]), "createProject values order");
+  assertParameterized("createProjectQuery", create);
+
+  const membership = addMembershipQuery("user-1", "org-1", "admin");
+  assert(membership.text.includes("ON CONFLICT (user_id, org_id)"), "addMembership should upsert");
+  assertParameterized("addMembershipQuery", membership);
+
+  // Cross-tenant reads impossible: version fetch pins org_id AND project_id AND version.
+  const ver = getEditDocVersionQuery("org-9", "proj-9", 3);
+  assert(
+    ver.text.includes("org_id = $1 AND project_id = $2 AND version = $3"),
+    "getEditDocVersion must scope by org + project + version",
+  );
+  assert(JSON.stringify(ver.values) === JSON.stringify(["org-9", "proj-9", 3]), "getEditDocVersion values");
+  assertParameterized("getEditDocVersionQuery", ver);
+
+  // jsonb doc is bound as a serialized string, never interpolated.
+  const doc = { version: 1 as const, meta: { title: "x" } };
+  const ins = insertEditDocVersionQuery("org-1", "proj-1", 2, doc, "user-1");
+  assert(ins.text.includes("$4::jsonb"), "insertEditDocVersion should cast $4 to jsonb");
+  assert(ins.values[3] === JSON.stringify(doc), "insertEditDocVersion should bind serialized doc");
+  assertParameterized("insertEditDocVersionQuery", ins);
+
+  // Injection guard: a malicious value stays in values[], out of the SQL text.
+  const evil = createMediaQuery("org-1", "proj-1", { kind: "video", src: "'; DROP TABLE media;--" });
+  assert(!evil.text.includes("DROP TABLE media"), "createMedia must not interpolate src into SQL");
+  assert(evil.values.includes("'; DROP TABLE media;--"), "createMedia must bind src as a value");
+  assertParameterized("createMediaQuery", evil);
+
+  console.log(`  [32m✔[0m check 9 (db query builders): tenant-scoped + fully parameterized (no interpolation)`);
+}
+
+function checkMigrations(): void {
+  const migrations = listMigrations();
+  assert(migrations.length >= 3, `expected >=3 migrations, got ${migrations.length}`);
+  // Strictly increasing, contiguous 1,2,3… indices.
+  migrations.forEach((m, i) => {
+    assert(m.index === i + 1, `migration ${m.filename} out of order (expected index ${i + 1}, got ${m.index})`);
+  });
+  // orderMigrations rejects duplicate indices.
+  let threw = false;
+  try {
+    orderMigrations(["001_a.sql", "001_b.sql"]);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "orderMigrations must reject duplicate indices");
+  const names = migrations.map((m) => m.name).join(", ");
+  console.log(`  [32m✔[0m check 10 (migrations): ${migrations.length} ordered — ${names}`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -283,6 +371,8 @@ async function main(): Promise<void> {
   await checkEnhance();
   await checkExportPlan();
   await checkFfmpegGraceful();
+  await checkDbQueries();
+  checkMigrations();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

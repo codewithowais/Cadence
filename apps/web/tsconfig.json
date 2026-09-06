@@ -17,7 +17,9 @@
       "@cadence/understanding": ["../../packages/understanding/src/index.ts"],
       "@cadence/render-node": ["../../packages/render-node/src/index.ts"],
       "@cadence/enhance": ["../../packages/enhance/src/index.ts"],
-      "@cadence/render-ffmpeg": ["../../packages/render-ffmpeg/src/index.ts"]
+      "@cadence/render-ffmpeg": ["../../packages/render-ffmpeg/src/index.ts"],
+      "@cadence/db": ["../../packages/db/src/index.ts"],
+      "@cadence/db/queries": ["../../packages/db/src/queries.ts"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],

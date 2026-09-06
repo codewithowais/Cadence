@@ -1,0 +1,71 @@
+# Cadence — local, free, multi-tenant stack. `docker compose up` brings up:
+#   db  — Postgres 16 (named volume, seeded from .env)
+#   web — the Next.js app (built from apps/web/Dockerfile, wired to db)
+#
+# Variable substitution (${VAR:-default}) reads the repo-root .env automatically
+# (copy .env.example -> .env first). Splittable later: commented api + worker
+# placeholders below (AGENTS.md §7 — separable services in one compose file).
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cadence}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadence}
+      POSTGRES_DB: ${POSTGRES_DB:-cadence}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - cadence-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cadence} -d ${POSTGRES_DB:-cadence}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      # Inside the compose network the DB host is the service name `db` (not localhost).
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cadence}:${POSTGRES_PASSWORD:-cadence}@db:5432/${POSTGRES_DB:-cadence}
+      # Required — no default; set SESSION_SECRET in .env.
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env (see .env.example)}
+      DIRECTOR_MODE: ${DIRECTOR_MODE:-stub}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "3000:3000"
+
+  # --- Split later (AGENTS.md §7): a dedicated API service --------------------
+  # api:
+  #   build:
+  #     context: .
+  #     dockerfile: apps/api/Dockerfile
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql://${POSTGRES_USER:-cadence}:${POSTGRES_PASSWORD:-cadence}@db:5432/${POSTGRES_DB:-cadence}
+  #   ports:
+  #     - "4000:4000"
+
+  # --- Split later (AGENTS.md §7): a background render / understanding worker --
+  # worker:
+  #   build:
+  #     context: .
+  #     dockerfile: apps/worker/Dockerfile
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql://${POSTGRES_USER:-cadence}:${POSTGRES_PASSWORD:-cadence}@db:5432/${POSTGRES_DB:-cadence}
+
+volumes:
+  cadence-db-data:
