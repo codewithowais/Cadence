@@ -4,6 +4,9 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S2.5 — Resizable side panels
+- Draggable `ResizeHandle` dividers let you adjust the width of the **chat rail** (chat ↔ editor) and the **`{ } code` drawer** (editor ↔ code). Pointer-drag or focus + arrow keys (accessible `role="separator"`); widths clamped (rail 300–620, code 320–760) and **persisted per browser** (localStorage, storage-guarded). Below `md` the panels go full-width and the handles hide. — *verified in-browser: width var applies (380px), keyboard nudge 380→540 persists; typecheck + build green.*
+
 ### QA1 — End-to-end browser test (Playwright) driving the real app with real media
 - **New E2E suite** (`apps/web/e2e/`, `@playwright/test`) — drives the running app at `localhost:3000` in headless Chromium. `test:e2e` script at repo root (`npm run test:e2e`) and in `@cadence/web`; `test:e2e:install` installs the Chromium browser for CI. Playwright config reuses an already-running dev server locally and boots one in CI (`reuseExistingServer: !CI`). Screenshots of every step → `test-artifacts/` (gitignored); generated fixtures → `test-artifacts/fixtures/`.
 - **Real media, generated in-browser** (`e2e/fixtures.ts`) — a ~2.5s `.webm` is authored by drawing an animated `<canvas>`, capturing `captureStream(30)` into a `MediaRecorder`, and writing the Blob to disk (this Mac has no ffmpeg to author a clip); four `.png` photos via `canvas.toDataURL`. Uploaded through the app's real `<input type=file>` via `setInputFiles`.

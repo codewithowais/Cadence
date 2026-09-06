@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { docDurationSec, parseEditDoc, type EditDoc, type MediaAsset } from "@cadence/core";
 import type { Transcript } from "@cadence/understanding";
 import { RoomsRail, type RoomKey } from "./RoomsRail";
 import { RoomPanel } from "./RoomPanel";
 import { DirectorRail } from "./DirectorRail";
+import { ResizeHandle } from "./ResizeHandle";
 import { TopBar } from "./TopBar";
 import { QuickActions } from "./QuickActions";
 import { AppliedStatus } from "./AppliedStatus";
@@ -19,6 +20,14 @@ import type { Message } from "@/lib/types";
 
 let msgSeq = 0;
 const nextId = () => `m${++msgSeq}`;
+
+// Side-panel width bounds (px).
+const RAIL_MIN = 300;
+const RAIL_MAX = 620;
+const CODE_MIN = 320;
+const CODE_MAX = 760;
+const clampPx = (n: number, lo: number, hi: number): number =>
+  Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : lo;
 
 function probeVideo(url: string): Promise<{ duration: number; width: number; height: number }> {
   return new Promise((resolve, reject) => {
@@ -86,6 +95,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const [room, setRoom] = useState<RoomKey>("edit");
   // Preview source audio; default UNMUTED so users hear the video's own audio.
   const [muted, setMuted] = useState(false);
+  // Resizable side panels (persisted per browser).
+  const [railWidth, setRailWidth] = useState(380);
+  const [codeWidth, setCodeWidth] = useState(440);
 
   const urlsRef = useRef(urls);
   urlsRef.current = urls;
@@ -130,6 +142,24 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   }, [playing, durationSec]);
 
   useEffect(() => () => { for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u); }, []);
+
+  // Restore persisted panel widths once (client only; guard against blocked storage).
+  useEffect(() => {
+    try {
+      const r = localStorage.getItem("cadence:railW");
+      if (r) setRailWidth(clampPx(Number(r), RAIL_MIN, RAIL_MAX));
+      const c = localStorage.getItem("cadence:codeW");
+      if (c) setCodeWidth(clampPx(Number(c), CODE_MIN, CODE_MAX));
+    } catch {
+      /* storage unavailable — keep defaults */
+    }
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem("cadence:railW", String(railWidth)); } catch { /* noop */ }
+  }, [railWidth]);
+  useEffect(() => {
+    try { localStorage.setItem("cadence:codeW", String(codeWidth)); } catch { /* noop */ }
+  }, [codeWidth]);
 
   async function handleFiles(files: File[]) {
     const videos = files.filter((f) => f.type.startsWith("video"));
@@ -330,7 +360,17 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   return (
     <div className="flex h-dvh w-full overflow-hidden">
       <RoomsRail room={room} onRoomChange={setRoom} />
-      <DirectorRail messages={messages} busy={busy} hasMedia={mediaList.length > 0} onSend={handleSend} onFiles={handleFiles} />
+      <div
+        className="h-full w-full shrink-0 md:w-[var(--rail-w)]"
+        style={{ "--rail-w": `${railWidth}px` } as CSSProperties}
+      >
+        <DirectorRail messages={messages} busy={busy} hasMedia={mediaList.length > 0} onSend={handleSend} onFiles={handleFiles} />
+      </div>
+      <ResizeHandle
+        className="hidden md:block"
+        ariaLabel="Resize the chat panel"
+        onDelta={(dx) => setRailWidth((w) => clampPx(w + dx, RAIL_MIN, RAIL_MAX))}
+      />
       <main className="flex min-w-0 flex-1 flex-col">
         {notice && (
           <div className="border-b border-amber/25 bg-amber/10 px-4 py-2 text-xs text-amber-bright">
@@ -383,7 +423,21 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         />
         <CutsStrip doc={doc} timeSec={timeSec} durationSec={durationSec} onSeek={seek} />
       </main>
-      {codeOpen && <CodeDrawer doc={doc} onClose={() => setCodeOpen(false)} />}
+      {codeOpen && (
+        <>
+          <ResizeHandle
+            className="hidden md:block"
+            ariaLabel="Resize the code panel"
+            onDelta={(dx) => setCodeWidth((w) => clampPx(w - dx, CODE_MIN, CODE_MAX))}
+          />
+          <div
+            className="h-full w-full shrink-0 md:w-[var(--code-w)]"
+            style={{ "--code-w": `${codeWidth}px` } as CSSProperties}
+          >
+            <CodeDrawer doc={doc} onClose={() => setCodeOpen(false)} />
+          </div>
+        </>
+      )}
     </div>
   );
 }

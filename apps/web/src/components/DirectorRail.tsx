@@ -34,7 +34,7 @@ export function DirectorRail({ messages, busy, hasMedia, onSend, onFiles }: Dire
   }
 
   return (
-    <aside className="flex w-full max-w-[400px] shrink-0 flex-col border-r border-line-soft bg-panel/40">
+    <aside className="flex h-full w-full flex-col border-r border-line-soft bg-panel/40">
       {/* Brand */}
       <div className="flex items-center gap-2.5 px-5 pb-3 pt-5">
         <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-ink">C</div>

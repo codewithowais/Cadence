@@ -8,7 +8,7 @@ interface CodeDrawerProps {
 /** The escape hatch: the edit is code. Pros can read the exact edit-doc. */
 export function CodeDrawer({ doc, onClose }: CodeDrawerProps) {
   return (
-    <aside className="flex w-full max-w-[420px] shrink-0 flex-col border-l border-line-soft bg-panel">
+    <aside className="flex h-full w-full flex-col border-l border-line-soft bg-panel">
       <div className="flex items-center justify-between border-b border-line-soft px-4 py-3">
         <div className="text-sm font-semibold text-text">edit-doc</div>
         <button
