@@ -5,6 +5,11 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 ## Status legend
 ✅ done & verified · 🚧 in progress · ⬜ todo · ⛔ blocked on money gate
 
+## QA / end-to-end testing
+
+- ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
+  - ⬜ **Bug (MEDIUM):** `setQuality` anchors ultra/high upscale to width (`3840/baseW`) regardless of orientation → vertical "make it 4K" overshoots to ~3844×6836 instead of 2160×3840. Fix: cap the LONG edge at 3840 (or clamp both dims to a 4K pixel budget). (`packages/director/src/edits.ts`.)
+
 ## Phase 0 — Spike (prove the loop) — ✅ COMPLETE
 
 - ✅ **S0.1 Scaffold + verify gate.** npm workspaces monorepo; `@cadence/core` (engine-agnostic edit-doc schema + render interface); `@cadence/render-node` (headless canvas RenderEngine); `npm run typecheck` + `npm run verify` (renders one real frame, fails loudly). Pinned versions. — *verified: typecheck exit 0, verify renders 1280×720 PNG.*

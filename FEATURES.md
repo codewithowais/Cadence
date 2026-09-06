@@ -80,6 +80,7 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 ## 10. Engineering / quality gates
 - ✅ **Verify gate** — `npm run typecheck` + `npm run verify` renders real frames and asserts (currently **17 checks**: trivial, highlight, edit tools, slideshow, titles/fades/looks, enhance providers, export plan, ffmpeg-graceful, DB builders, migrations, music, b-roll, kinetic, punch-in, whisper-parse, transcriber-factory, agentic-loop).
 - ✅ **Eval suite** — `npm run evals` runs the agentic loop over 5 capability prompts, asserting each verifies, calls the right tools, and renders a proof frame (`.cadence/`).
+- ✅ **End-to-end browser test** — `npm run test:e2e` (Playwright, headless Chromium) drives the REAL running app: it authors a real `.webm` in-browser (canvas → `MediaRecorder`) plus PNG photos, uploads them through the actual file input, runs the full video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), the rooms rail, the Audio mute toggle, the photo→slideshow flow, and the graceful ffmpeg-missing export (message + JSON fallback) — asserting the edit-doc and AppliedStatus after each step, with a screenshot per step to `test-artifacts/`. CI: `npm run test:e2e:install` (Chromium) then `npm run test:e2e` (boots its own dev server when none is running).
 - ✅ Pinned dependencies + committed lockfile; small verified commits; `TASKS.md` + `CHANGELOG.md` trail.
 
 ---

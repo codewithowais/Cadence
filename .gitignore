@@ -11,6 +11,12 @@ out/
 .env.*.local
 # cadence render/verify scratch
 .cadence/
+# e2e screenshots + generated fixtures
+test-artifacts/
+# playwright
+apps/web/playwright-report/
+apps/web/test-results/
+apps/web/.playwright/
 # os
 .DS_Store
 # logs
