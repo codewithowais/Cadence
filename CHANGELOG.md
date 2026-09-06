@@ -79,3 +79,14 @@ All notable changes, one line per verified slice.
 - Schema `quality`: added `faithful` (always true) + `enhanceProvider`.
 - **Honesty fix:** `set_quality` no longer implies the preview changed — it says the upscale renders on **export** (preview stays at source res), and that enhancement is faithful (no face/content changes). Addresses "it says 4K but doesn't look 4K."
 - *verified:* verify gate check 6 asserts CLI templating, provider selection, and that all providers are identity-preserving with both AI and non-AI options.
+
+### S2.1 — Creative capabilities: music, b-roll, kinetic titles, punch-in
+- **Edits-as-code, all surfaces.** Four new capabilities, each as data on the `EditDoc` + a typed Director tool + StubDirector routing + Node canvas renderer + web Stage preview + ffmpeg export plan + a verify check that renders a frame.
+- **Schema (`@cadence/core`):** `TextAnim` (kinetic slide+scale intro) on `TextClip.anim`; `Emphasis` (punch-in scale pulse) on `VideoClip.emphasis`. Both are pure data, resolved by deterministic helpers.
+- **Pure helpers (`grade.ts`):** `textKinetic(clip, t)` (eased slide + scale-in, mirrors `transitionOpacity`) and `emphasisScale(clip, t)` (sine pulse 1→zoom→1 over `[atSec, atSec+dur]`) — shared by canvas, Stage, and export so the three agree.
+- **Background music + ducking:** `add_music` adds a `music` audio track referencing an audio `MediaAsset`; starts ducked (0.28) and `auto_mix` re-asserts the duck. Silent in the canvas/Stage preview (no audio there) but honored by the ffmpeg export via the existing `amix`/`adelay` path. Web upload now accepts audio files.
+- **B-roll / PiP overlay:** `add_broll` overlays an image/video as a scaled (default 0.35), corner-anchored clip on a top `broll` track for a time range. Canvas paints it on top; Stage renders it as a positioned PiP box (`BrollVideo` seeks video overlays); export composites it with `overlay=…:enable='between(...)'` (excluded from the base concat).
+- **Kinetic titles:** `add_kinetic_title` slides a title up and scales it in. Honored by canvas + Stage (`textKinetic`); export slides it via an eased, time-dependent `drawtext` x/y expression.
+- **Punch-in emphasis:** `add_emphasis(atSec, durationSec, zoom)` sets a scale pulse on the video clip at `atSec`. Honored by canvas + Stage (`emphasisScale`); export animates it with a `zoompan` sine pulse.
+- **QuickActions:** added Punch-in, B-roll, Kinetic title, Music (video) and Kinetic title, Music (photos).
+- *verified:* `npm run typecheck` + `npm run verify` (new checks **11–14**, each renders a real frame and asserts the feature + its export filter) + `apps/web` `next build` — all green. Audio fully manifests only at **export**; the other three appear in the visual preview and export.

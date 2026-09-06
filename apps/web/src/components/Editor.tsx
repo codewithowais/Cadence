@@ -37,6 +37,16 @@ function probeImage(url: string): Promise<{ width: number; height: number }> {
   });
 }
 
+function probeAudio(url: string): Promise<{ duration: number }> {
+  return new Promise((resolve, reject) => {
+    const a = document.createElement("audio");
+    a.preload = "metadata";
+    a.onloadedmetadata = () => resolve({ duration: a.duration || 0 });
+    a.onerror = () => reject(new Error("Could not read that audio file."));
+    a.src = url;
+  });
+}
+
 export function Editor() {
   const [mediaList, setMediaList] = useState<MediaAsset[]>([]);
   const [urls, setUrls] = useState<Record<string, string>>({});
@@ -98,6 +108,7 @@ export function Editor() {
   async function handleFiles(files: File[]) {
     const videos = files.filter((f) => f.type.startsWith("video"));
     const imgs = files.filter((f) => f.type.startsWith("image"));
+    const audios = files.filter((f) => f.type.startsWith("audio"));
     setBusy(true);
     setPlaying(false);
     try {
@@ -159,6 +170,31 @@ export function Editor() {
         setDoc(parseEditDoc(res.doc));
         setTimeSec(0);
         say("director", `${res.summary} Ask for “make it vertical”, “warm look”, or “make it 4K”.`, "edit");
+      } else if (audios.length > 0) {
+        // Add audio as a music source alongside existing footage (doc unchanged).
+        const nextUrls = { ...urlsRef.current };
+        const nextFiles = { ...filesRef.current };
+        const added: MediaAsset[] = [];
+        for (let i = 0; i < audios.length; i++) {
+          const file = audios[i]!;
+          const url = URL.createObjectURL(file);
+          const meta = await probeAudio(url);
+          const asset: MediaAsset = {
+            id: `audio-${Date.now()}-${i}`,
+            kind: "audio",
+            src: file.name,
+            durationSec: Math.round(meta.duration * 1000) / 1000,
+            label: file.name,
+          };
+          nextUrls[asset.id] = url;
+          nextFiles[asset.id] = file;
+          added.push(asset);
+        }
+        setUrls(nextUrls);
+        setFiles(nextFiles);
+        setMediaList((list) => [...list, ...added]);
+        say("you", `Added ${audios.length} audio file${audios.length > 1 ? "s" : ""}`);
+        say("director", `Loaded ${added.map((a) => `“${a.label}”`).join(", ")}. Say “add background music” to lay it under your video.`, "info");
       }
     } catch (err) {
       say("director", err instanceof Error ? err.message : "Something went wrong loading that.", "error");

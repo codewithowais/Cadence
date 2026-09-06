@@ -10,18 +10,22 @@ import { docDurationSec, type EditDoc } from "@cadence/core";
 import type { ProjectState } from "./project";
 import {
   autoMixTool,
+  brollTool,
   captionsTool,
   createHighlightTool,
+  emphasisTool,
   fadesTool,
   fillerCutTool,
+  kineticTitleTool,
   lookTool,
+  musicTool,
   qualityTool,
   reframeTool,
   slideshowTool,
   titleTool,
   type ToolCall,
 } from "./tools";
-import type { TitleStyle } from "./edits";
+import type { BrollCorner, TitleStyle } from "./edits";
 import type { AspectKey, LookKey, QualityKey } from "./edits";
 
 export interface DirectorResult {
@@ -77,6 +81,44 @@ function parseTitle(req: string, original: string): { text: string; style: Title
     if (m) text = m[1]!.trim().replace(/[.]+$/, "");
   }
   return { text: text ?? "Title", style };
+}
+
+function parseKineticTitle(req: string, original: string): { text: string } | null {
+  const wantsKinetic =
+    /\bkinetic\b|animated title|title that (slides|animates|pops|moves|flies)|slide.?in title|animate (the )?title/.test(req);
+  if (!wantsKinetic) return null;
+  const quoted = original.match(/["“'“”]([^"“”']{1,60})["“”']/);
+  let text = quoted?.[1] ?? null;
+  if (!text) {
+    const m = original.match(/(?:titled|that says|called|saying|title:?)\s+(.+)$/i);
+    if (m) text = m[1]!.trim().replace(/[.]+$/, "");
+  }
+  return { text: text ?? "Title" };
+}
+
+function parseBrollCorner(req: string): BrollCorner | undefined {
+  if (/top.?left/.test(req)) return "top-left";
+  if (/top.?right/.test(req)) return "top-right";
+  if (/bottom.?left/.test(req)) return "bottom-left";
+  if (/bottom.?right|corner/.test(req)) return "bottom-right";
+  if (/cent(er|re)/.test(req)) return "center";
+  return undefined;
+}
+
+/** Parse an "at Ns" / "at N seconds" timeline offset, if present. */
+function parseAtSeconds(req: string): number | undefined {
+  const m = req.match(/(?:\bat|from|around)\s+(\d+(?:\.\d+)?)\s*(?:s|sec|second)/i);
+  if (m) return parseFloat(m[1]!);
+  return undefined;
+}
+
+/** Parse a zoom factor like "1.4x", "1.4 x", or "30%" (→ 1.3). */
+function parseZoom(req: string): number | undefined {
+  const x = req.match(/(\d+(?:\.\d+)?)\s*x\b/);
+  if (x) return parseFloat(x[1]!);
+  const pct = req.match(/(\d+(?:\.\d+)?)\s*%/);
+  if (pct) return 1 + parseFloat(pct[1]!) / 100;
+  return undefined;
 }
 
 function parseQuality(req: string): { preset: QualityKey; aiUpscale: boolean } | null {
@@ -143,11 +185,48 @@ export class StubDirector {
       });
     }
 
-    const title = parseTitle(req, request);
+    // B-roll / picture-in-picture overlay.
+    if (/b.?roll|overlay|picture.?in.?picture|\bpip\b|cutaway|inset/.test(req)) {
+      const corner = parseBrollCorner(req);
+      const atSec = parseAtSeconds(req);
+      const input = { corner, atSec };
+      steps.push({
+        run: (p) => brollTool.execute(input, { project: p }),
+        call: { name: brollTool.name, input },
+      });
+    }
+
+    // Kinetic (animated) title takes precedence over a plain title card.
+    const kinetic = parseKineticTitle(req, request);
+    if (kinetic) {
+      steps.push({
+        run: (p) => kineticTitleTool.execute(kinetic, { project: p }),
+        call: { name: kineticTitleTool.name, input: kinetic },
+      });
+    }
+
+    const title = !kinetic ? parseTitle(req, request) : null;
     if (title) {
       steps.push({
         run: (p) => titleTool.execute(title, { project: p }),
         call: { name: titleTool.name, input: title },
+      });
+    }
+
+    // Punch-in emphasis (scale pulse on the video).
+    if (/punch.?in|\bpunch\b|emphasi[sz]|zoom in|push in/.test(req)) {
+      const input = { atSec: parseAtSeconds(req), zoom: parseZoom(req) };
+      steps.push({
+        run: (p) => emphasisTool.execute(input, { project: p }),
+        call: { name: emphasisTool.name, input },
+      });
+    }
+
+    // Background music (added before auto-mix so ducking applies to it).
+    if (/\bmusic\b|background (track|music|song)|soundtrack|\bsong\b|add (a )?track|score it/.test(req)) {
+      steps.push({
+        run: (p) => musicTool.execute({}, { project: p }),
+        call: { name: musicTool.name, input: {} },
       });
     }
 
@@ -208,6 +287,6 @@ export class StubDirector {
     if (!hasVideo && !hasImages) return "Add a video or some photos to begin.";
     if (hasImages && !hasVideo)
       return 'Try: "make a slideshow", "make it vertical", "warm look", or "make it high quality".';
-    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "cinematic look", "auto-mix audio", or "make it 4K".';
+    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "cinematic look", "punch in at 5s", "add b-roll", "an animated title that says …", "add background music", or "make it 4K".';
   }
 }

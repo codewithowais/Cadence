@@ -4,8 +4,10 @@
  * schema so the result is always valid. Tools (tools.ts) wrap these; the real
  * Claude Director will call the same operations.
  */
-import { docDurationSec, parseEditDoc, type ColorGrade, type EditDoc } from "@cadence/core";
+import { docDurationSec, parseEditDoc, type ColorGrade, type EditDoc, type MediaAsset } from "@cadence/core";
 import type { Transcript } from "@cadence/understanding";
+
+const round = (n: number): number => Math.round(n * 1000) / 1000;
 
 // ---- Aspect ratios ---------------------------------------------------------
 
@@ -204,6 +206,179 @@ export function addTitle(doc: EditDoc, text: string, style: TitleStyle = "card")
     clone.tracks.push(titles);
   }
   (titles.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+// ---- Background music ------------------------------------------------------
+
+/**
+ * Add a background-music track referencing an audio asset. The music clip spans
+ * the whole timeline and starts ducked (low volume) so speech stays on top;
+ * auto_mix re-asserts the duck. Music has no visual — it is silent in the canvas
+ * preview but honored by the ffmpeg export (amix). Re-running replaces the track.
+ */
+export function addMusic(
+  doc: EditDoc,
+  asset: MediaAsset,
+  opts: { volume?: number; startSec?: number } = {},
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  // Ensure the audio asset is present in the doc's media so the export can find it.
+  if (!clone.media.some((m) => m.id === asset.id)) clone.media.push(asset);
+  clone.tracks = clone.tracks.filter((t) => t.id !== "music");
+
+  const total = docDurationSec(clone) || asset.durationSec || 30;
+  const clip = {
+    id: `music-${Date.now()}`,
+    kind: "audio" as const,
+    start: Math.max(0, opts.startSec ?? 0),
+    duration: round(total),
+    mediaId: asset.id,
+    sourceIn: 0,
+    volume: opts.volume ?? 0.28,
+  };
+  clone.tracks.push({ id: "music", kind: "audio", clips: [clip as never] });
+  return parseEditDoc(clone);
+}
+
+// ---- B-roll / overlay (picture-in-picture) ---------------------------------
+
+export type BrollCorner = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right";
+
+/**
+ * Overlay a b-roll image or video clip as a smaller picture-in-picture over the
+ * main clip for [atSec, atSec+durationSec]. It lives on the top "broll" visual
+ * track (painted last, so it sits over everything) with a fractional scale and a
+ * corner-anchored transform. Faithful: it composites an existing clip, unchanged.
+ */
+export function addBroll(
+  doc: EditDoc,
+  asset: MediaAsset,
+  opts: { atSec?: number; durationSec?: number; corner?: BrollCorner; size?: number } = {},
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  if (!clone.media.some((m) => m.id === asset.id)) clone.media.push(asset);
+
+  const W = clone.meta.width;
+  const H = clone.meta.height;
+  const size = Math.max(0.1, Math.min(1, opts.size ?? 0.35));
+  const atSec = Math.max(0, opts.atSec ?? 0);
+  const durationSec = Math.max(0.1, opts.durationSec ?? Math.min(4, docDurationSec(clone) || 4));
+  const corner: BrollCorner = opts.corner ?? "center";
+
+  // Anchor is the clip CENTER; margin keeps the PiP box inside the frame.
+  const margin = 0.04;
+  const half = size / 2;
+  const cx: Record<BrollCorner, number> = {
+    center: 0.5,
+    "top-left": half + margin,
+    "top-right": 1 - half - margin,
+    "bottom-left": half + margin,
+    "bottom-right": 1 - half - margin,
+  };
+  const cy: Record<BrollCorner, number> = {
+    center: 0.5,
+    "top-left": half + margin,
+    "top-right": half + margin,
+    "bottom-left": 1 - half - margin,
+    "bottom-right": 1 - half - margin,
+  };
+
+  const clip: Record<string, unknown> = {
+    id: `broll-${Date.now()}`,
+    kind: asset.kind === "video" ? "video" : "image",
+    start: round(atSec),
+    duration: round(durationSec),
+    mediaId: asset.id,
+    transform: { x: round(cx[corner] * W), y: round(cy[corner] * H), scale: round(size) },
+    transitionInSec: 0.25,
+    transitionOutSec: 0.25,
+  };
+  if (asset.kind === "video") clip.sourceIn = 0;
+
+  let broll = clone.tracks.find((t) => t.id === "broll");
+  if (!broll) {
+    broll = { id: "broll", kind: "visual", clips: [] };
+    clone.tracks.push(broll);
+  }
+  (broll.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+// ---- Kinetic (animated) titles ---------------------------------------------
+
+/**
+ * Add a kinetic title that slides up and scales in, then holds. The animation is
+ * pure data on the text clip (`anim`), resolved deterministically by
+ * `textKinetic` in core — so canvas, Stage, and export agree.
+ */
+export function addKineticTitle(doc: EditDoc, text: string): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const w = clone.meta.width;
+  const h = clone.meta.height;
+  const animDur = 0.6;
+  const clip = {
+    id: `ktitle-${Date.now()}`,
+    kind: "text" as const,
+    start: 0,
+    duration: 3,
+    text,
+    fontSize: Math.round(h * 0.09),
+    color: "#ffffff",
+    align: "center" as const,
+    transform: { x: w / 2, y: h / 2 },
+    transitionInSec: 0.25,
+    transitionOutSec: 0.4,
+    // Slide up from below (+8% of height) and grow from 0.6 over the intro.
+    anim: { style: "kinetic" as const, fromX: 0, fromY: Math.round(h * 0.08), fromScale: 0.6, durationSec: animDur },
+  };
+
+  let titles = clone.tracks.find((t) => t.id === "titles");
+  if (!titles) {
+    titles = { id: "titles", kind: "visual", clips: [] };
+    clone.tracks.push(titles);
+  }
+  (titles.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+// ---- Punch-in emphasis -----------------------------------------------------
+
+/**
+ * Set a punch-in emphasis (scale pulse) on the video clip active at `atSec`. The
+ * emphasis is pure data on the clip (`emphasis`), resolved by `emphasisScale` in
+ * core so canvas, Stage, and export scale identically. Faithful: only zooms the
+ * existing frame up and back.
+ */
+export function addEmphasis(
+  doc: EditDoc,
+  opts: { atSec?: number; durationSec?: number; zoom?: number } = {},
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const durationSec = Math.max(0.2, opts.durationSec ?? 2);
+  const zoom = Math.max(1, opts.zoom ?? 1.25);
+  const atSec = Math.max(0, opts.atSec ?? 0);
+
+  // Find the video clip whose timeline range contains atSec (fallback: first video).
+  let target: { start: number; duration: number; emphasis?: unknown } | null = null;
+  for (const track of clone.tracks) {
+    if (track.id === "broll") continue; // don't punch-in the PiP itself
+    for (const clip of track.clips) {
+      if (clip.kind !== "video") continue;
+      if (atSec >= clip.start && atSec < clip.start + clip.duration) {
+        target = clip;
+        break;
+      }
+      if (!target) target = clip; // remember the first as a fallback
+    }
+    if (target && atSec >= target.start && atSec < target.start + target.duration) break;
+  }
+  if (!target) throw new Error("Add a video first — punch-in needs footage.");
+
+  // Clamp the window to the clip so the pulse fully lands inside it.
+  const winStart = Math.max(atSec, target.start);
+  const winEnd = Math.min(winStart + durationSec, target.start + target.duration);
+  target.emphasis = { atSec: round(winStart), durationSec: round(Math.max(0.2, winEnd - winStart)), zoom: round(zoom) };
   return parseEditDoc(clone);
 }
 

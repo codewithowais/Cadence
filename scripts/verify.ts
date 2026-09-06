@@ -8,11 +8,25 @@
  *   2 highlight: media → transcript → Director → edit-doc → frame
  *   3 edit tools: filler cut · reframe 9:16 + captions + look · quality
  *   4 slideshow: photos → Director → video → frame
+ *   … 5–10 titles/fades · enhance · export plan · ffmpeg graceful · db · migrations
+ *   11 background music: add_music + auto-mix duck → valid doc, renders, amix on export
+ *   12 b-roll: add_broll picture-in-picture → overlay clip renders + overlay on export
+ *   13 kinetic title: add_kinetic_title → mid-animation frame + slide expr on export
+ *   14 punch-in emphasis: add_emphasis → increased scale in-window + zoompan on export
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseEditDoc, docDurationSec, type EditDoc, type MediaAsset } from "@cadence/core";
+import {
+  parseEditDoc,
+  docDurationSec,
+  emphasisScale,
+  textKinetic,
+  type EditDoc,
+  type MediaAsset,
+  type TextClip,
+  type VideoClip,
+} from "@cadence/core";
 import { CanvasRenderEngine } from "@cadence/render-node";
 import { StubTranscriber } from "@cadence/understanding";
 import { ProjectState, StubDirector } from "@cadence/director";
@@ -361,6 +375,115 @@ function checkMigrations(): void {
   console.log(`  [32m✔[0m check 10 (migrations): ${migrations.length} ordered — ${names}`);
 }
 
+async function checkMusic(): Promise<void> {
+  // A project with source video + a music/audio asset.
+  const project = videoProject();
+  project.media.push({ id: "song-001", kind: "audio", src: "uploads/song.mp3", durationSec: 200, label: "bed.mp3" });
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+
+  await new StubDirector().interpret("cut a 30 second highlight", project);
+  const r = await new StubDirector().interpret("add background music and auto-mix the audio", project);
+  const names = r.toolCalls.map((c) => c.name);
+  assert(names.includes("add_music"), "expected add_music");
+  assert(names.includes("auto_mix"), "expected auto_mix (ducking)");
+
+  const music = r.doc.tracks.find((t) => t.id === "music");
+  assert(music?.kind === "audio", "expected an audio 'music' track");
+  const clip = music!.clips[0];
+  assert(clip?.kind === "audio" && clip.mediaId === "song-001", "music clip should reference the audio asset");
+  assert(clip.kind === "audio" && clip.volume <= 0.35, `music should be ducked, got ${clip.kind === "audio" ? clip.volume : "?"}`);
+  assert(r.doc.media.some((m) => m.id === "song-001"), "audio asset should be in doc.media");
+
+  // Doc stays valid + renders (music is silent in the canvas preview).
+  const n = await renderAndAssert(r.doc, docDurationSec(r.doc) / 2, "verify-music.png");
+
+  // Export honors music through the amix path.
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/music.mp4");
+  assert(plan.filterComplex.includes("amix="), "music: expected amix in export");
+  assert(plan.filterComplex.includes("adelay="), "music: expected adelay for the music track");
+  console.log(`  [32m✔[0m check 11 (music): add_music + duck → valid doc renders (${n}b), amix on export (audio manifests at export only)`);
+}
+
+async function checkBroll(): Promise<void> {
+  // Video + an image to overlay as b-roll.
+  const project = videoProject();
+  project.media.push({ id: "broll-img", kind: "image", src: "uploads/insert.jpg", width: 1920, height: 1080, label: "insert.jpg" });
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const r = await new StubDirector().interpret("add b-roll as picture-in-picture at 2s", project);
+  assert(r.toolCalls.some((c) => c.name === "add_broll"), "expected add_broll");
+
+  const broll = r.doc.tracks.find((t) => t.id === "broll");
+  assert((broll?.clips.length ?? 0) > 0, "expected a broll track with a clip");
+  const pip = broll!.clips[0]!;
+  assert(
+    (pip.kind === "image" || pip.kind === "video") && pip.transform.scale < 1,
+    `b-roll should be a scaled overlay, got scale ${"transform" in pip ? pip.transform.scale : "?"}`,
+  );
+
+  // Render a frame INSIDE the PiP window; the overlay tile is painted on top.
+  const mid = pip.start + pip.duration / 2;
+  const n = await renderAndAssert(r.doc, mid, "verify-broll.png");
+
+  // Export overlays the b-roll (not concatenated into the base sequence).
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/broll.mp4");
+  assert(plan.filterComplex.includes("overlay="), "b-roll: expected overlay in export");
+  console.log(`  [32m✔[0m check 12 (b-roll): picture-in-picture overlay renders mid-window (${n}b) + overlay on export`);
+}
+
+async function checkKineticTitle(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const r = await new StubDirector().interpret('add an animated title that says "Kinetic"', project);
+  assert(r.toolCalls.some((c) => c.name === "add_kinetic_title"), "expected add_kinetic_title");
+
+  const kt = r.doc.tracks
+    .flatMap((t) => t.clips)
+    .find((c): c is TextClip => c.kind === "text" && c.anim.style === "kinetic");
+  assert(kt, "expected a kinetic text clip");
+  assert(kt!.anim.durationSec > 0, "kinetic anim should have a duration");
+
+  // Mid-animation the title is still sliding + smaller than resting (scaleMul<1).
+  const midAnim = kt!.start + kt!.anim.durationSec / 2;
+  const state = textKinetic(kt!, midAnim);
+  assert(state.scaleMul > 0 && state.scaleMul < 1, `mid-animation scaleMul should be <1, got ${state.scaleMul}`);
+  assert(state.dy !== 0 || state.dx !== 0, "mid-animation should still be offset (sliding)");
+  const n = await renderAndAssert(r.doc, midAnim, "verify-kinetic.png");
+
+  // Export slides the title via a time-dependent drawtext expression.
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/kinetic.mp4");
+  assert(plan.filterComplex.includes("pow(1-"), "kinetic: expected an eased slide expression in export");
+  console.log(`  [32m✔[0m check 13 (kinetic title): mid-animation frame (${n}b) — sliding+scaling; slide expr on export`);
+}
+
+async function checkEmphasis(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 30 second highlight", project);
+  const r = await new StubDirector().interpret("punch in for emphasis at 4s with 1.4x zoom", project);
+  assert(r.toolCalls.some((c) => c.name === "add_emphasis"), "expected add_emphasis");
+
+  const emphClip = r.doc.tracks
+    .flatMap((t) => t.clips)
+    .find((c): c is VideoClip => c.kind === "video" && !!c.emphasis && c.emphasis.zoom > 1);
+  assert(emphClip, "expected a video clip with a punch-in emphasis");
+  const e = emphClip!.emphasis!;
+
+  // At the center of the window the scale is meaningfully increased.
+  const mid = e.atSec + e.durationSec / 2;
+  const s = emphasisScale(emphClip!, mid);
+  assert(s > 1.05, `emphasis scale mid-window should be >1, got ${s}`);
+  // Outside the window it's back to 1 (identity).
+  assert(emphasisScale(emphClip!, e.atSec + e.durationSec + 1) === 1, "emphasis should be identity outside the window");
+  const n = await renderAndAssert(r.doc, mid, "verify-emphasis.png");
+
+  // Export animates the punch-in via zoompan with the sine pulse.
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/emphasis.mp4");
+  assert(plan.filterComplex.includes("zoompan=") && plan.filterComplex.includes("sin("), "emphasis: expected zoompan sine pulse in export");
+  console.log(`  [32m✔[0m check 14 (punch-in): mid-window scale ${Math.round(s * 100) / 100}× renders (${n}b) + zoompan pulse on export`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -373,6 +496,10 @@ async function main(): Promise<void> {
   await checkFfmpegGraceful();
   await checkDbQueries();
   checkMigrations();
+  await checkMusic();
+  await checkBroll();
+  await checkKineticTitle();
+  await checkEmphasis();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

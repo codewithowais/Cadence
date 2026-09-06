@@ -50,6 +50,42 @@ export const KenBurns = z.object({
 });
 export type KenBurns = z.infer<typeof KenBurns>;
 
+/**
+ * Kinetic intro animation for a text clip — a deterministic slide + scale in,
+ * resolved by a PURE helper (`textKinetic` in grade.ts) so it previews in the
+ * browser (CSS transform) exactly as it renders on the server canvas and on
+ * export (drawtext x/y expressions). Faithful: moves/scales the title only.
+ */
+export const TextAnim = z.object({
+  /** "none" (static) or "kinetic" (slide + scale in over `durationSec`). */
+  style: z.enum(["none", "kinetic"]).default("none"),
+  /** Offset (composition px) the text slides FROM, toward its resting x. */
+  fromX: z.number().default(0),
+  /** Offset (composition px) the text slides FROM, toward its resting y. */
+  fromY: z.number().default(0),
+  /** Scale the text grows FROM toward its resting 1 (e.g. 0.6). */
+  fromScale: z.number().positive().default(1),
+  /** How long the intro animation lasts, in seconds (0 = no animation). */
+  durationSec: z.number().nonnegative().default(0),
+});
+export type TextAnim = z.infer<typeof TextAnim>;
+
+/**
+ * Punch-in emphasis for a video clip — a scale pulse over a timeline sub-range
+ * [atSec, atSec+durationSec], resolved by a PURE helper (`emphasisScale` in
+ * grade.ts). Faithful: only scales the existing frame up and back, no content
+ * change.
+ */
+export const Emphasis = z.object({
+  /** Timeline time (seconds) the punch-in window starts. */
+  atSec: z.number().nonnegative().default(0),
+  /** How long the punch-in window lasts, in seconds (0 = off). */
+  durationSec: z.number().nonnegative().default(0),
+  /** Peak scale multiplier at the center of the window (e.g. 1.25). */
+  zoom: z.number().positive().default(1),
+});
+export type Emphasis = z.infer<typeof Emphasis>;
+
 /** Media kinds we can ingest. */
 export const MediaKind = z.enum(["video", "audio", "image"]);
 export type MediaKind = z.infer<typeof MediaKind>;
@@ -92,6 +128,8 @@ export const VideoClip = z.object({
   look: ColorGrade.prefault({}),
   transitionInSec,
   transitionOutSec,
+  /** Optional punch-in emphasis (scale pulse over a timeline sub-range). */
+  emphasis: Emphasis.optional(),
 });
 export type VideoClip = z.infer<typeof VideoClip>;
 
@@ -122,6 +160,8 @@ export const TextClip = z.object({
   transitionOutSec,
   /** Optional pill background behind the text (used by captions). */
   background: HexColor.optional(),
+  /** Kinetic intro animation (slide + scale in); "none" by default. */
+  anim: TextAnim.prefault({}),
 });
 export type TextClip = z.infer<typeof TextClip>;
 

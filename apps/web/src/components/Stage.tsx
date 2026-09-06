@@ -1,12 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   activeClipsAt,
   cssFilter,
+  emphasisScale,
   imageMotion,
+  textKinetic,
   transitionOpacity,
   type EditDoc,
+  type ImageClip,
+  type TextClip,
+  type VideoClip,
 } from "@cadence/core";
 import { computePreview } from "@/lib/preview";
 import { fmtTime } from "@/lib/format";
@@ -24,6 +29,34 @@ interface StageProps {
   canNudge: boolean;
 }
 
+/** A b-roll PiP <video> that seeks to its source time (own ref, like the main one). */
+function BrollVideo(props: {
+  src: string;
+  clip: VideoClip;
+  timeSec: number;
+  playing: boolean;
+  style: CSSProperties;
+}) {
+  const { src, clip, timeSec, playing, style } = props;
+  const ref = useRef<HTMLVideoElement>(null);
+  const sourceTime = clip.sourceIn + (timeSec - clip.start);
+  useEffect(() => {
+    const v = ref.current;
+    if (!v) return;
+    v.currentTime = Math.max(0, sourceTime);
+    if (playing) void v.play().catch(() => {});
+    else v.pause();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, clip.id]);
+  useEffect(() => {
+    const v = ref.current;
+    if (!v || playing) return;
+    v.currentTime = Math.max(0, sourceTime);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeSec]);
+  return <video ref={ref} src={src} muted playsInline preload="auto" style={style} />;
+}
+
 export function Stage(props: StageProps) {
   const { urls, hasMedia, doc, timeSec, durationSec, playing } = props;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -31,16 +64,30 @@ export function Stage(props: StageProps) {
   const [frameH, setFrameH] = useState(0);
 
   const preview = useMemo(() => computePreview(doc, timeSec), [doc, timeSec]);
-  const active = useMemo(() => activeClipsAt(doc, timeSec).map((c) => c.clip), [doc, timeSec]);
+  const activeOnTracks = useMemo(() => activeClipsAt(doc, timeSec), [doc, timeSec]);
   const scale = frameH > 0 ? frameH / doc.meta.height : 0;
 
+  // The main (full-frame) video is the first video clip on a non-b-roll track.
   const videoMediaId = useMemo(() => {
-    for (const track of doc.tracks) for (const c of track.clips) if (c.kind === "video") return c.mediaId;
+    for (const track of doc.tracks) {
+      if (track.id === "broll") continue;
+      for (const c of track.clips) if (c.kind === "video") return c.mediaId;
+    }
     return null;
   }, [doc]);
-  const activeVideo = active.find((c) => c.kind === "video");
-  const activeImages = active.filter((c) => c.kind === "image");
-  const activeTexts = active.filter((c) => c.kind === "text");
+  // Base (full-frame) clips vs. b-roll overlays (picture-in-picture).
+  const activeVideo = activeOnTracks.find((c) => c.track.id !== "broll" && c.clip.kind === "video")?.clip as
+    | VideoClip
+    | undefined;
+  const activeImages = activeOnTracks
+    .filter((c) => c.track.id !== "broll")
+    .map((c) => c.clip)
+    .filter((c): c is ImageClip => c.kind === "image");
+  const activeTexts = activeOnTracks.map((c) => c.clip).filter((c): c is TextClip => c.kind === "text");
+  const activeBroll = activeOnTracks
+    .filter((c) => c.track.id === "broll")
+    .map((c) => c.clip)
+    .filter((c): c is VideoClip | ImageClip => c.kind === "image" || c.kind === "video");
 
   useEffect(() => {
     const el = frameRef.current;
@@ -92,10 +139,13 @@ export function Stage(props: StageProps) {
               muted
               playsInline
               preload="auto"
-              className="absolute inset-0 h-full w-full object-cover"
+              className="absolute inset-0 h-full w-full object-cover will-change-transform"
               style={{
                 opacity: activeVideo ? transitionOpacity(activeVideo, timeSec) : 0,
                 filter: activeVideo ? cssFilter(activeVideo.look) : "none",
+                // Punch-in emphasis — same core helper as the canvas/export.
+                transform: activeVideo ? `scale(${emphasisScale(activeVideo, timeSec)})` : undefined,
+                transformOrigin: "center",
               }}
             />
           )}
@@ -121,19 +171,50 @@ export function Stage(props: StageProps) {
               );
             })}
 
+          {/* B-roll / picture-in-picture overlays (top track, scaled + positioned) */}
+          {hasMedia &&
+            activeBroll.map((clip) => {
+              const url = urls[clip.mediaId];
+              if (!url) return null;
+              const sizePct = clip.transform.scale * 100;
+              const left = (clip.transform.x / doc.meta.width) * 100;
+              const top = (clip.transform.y / doc.meta.height) * 100;
+              const style: CSSProperties = {
+                position: "absolute",
+                width: `${sizePct}%`,
+                height: `${sizePct}%`,
+                left: `${left}%`,
+                top: `${top}%`,
+                transform: "translate(-50%, -50%)",
+                opacity: transitionOpacity(clip, timeSec),
+                filter: cssFilter(clip.look),
+                objectFit: "cover",
+                borderRadius: `${Math.max(4, scale * doc.meta.height * 0.02)}px`,
+                boxShadow: "0 8px 30px -8px rgba(0,0,0,0.7)",
+                outline: "2px solid rgba(255,255,255,0.14)",
+              };
+              return clip.kind === "video" ? (
+                <BrollVideo key={clip.id} src={url} clip={clip} timeSec={timeSec} playing={playing} style={style} />
+              ) : (
+                <img key={clip.id} src={url} alt="" className="will-change-transform" style={style} />
+              );
+            })}
+
           {/* Text / caption overlays */}
           {scale > 0 &&
             activeTexts.map((t) => {
               const anchor =
                 t.align === "center" ? "translate(-50%, -50%)" : t.align === "right" ? "translate(-100%, -50%)" : "translate(0, -50%)";
+              // Kinetic intro (slide + scale in) — same core helper as canvas/export.
+              const kin = textKinetic(t, timeSec);
               return (
                 <div
                   key={t.id}
-                  className="pointer-events-none absolute font-semibold"
+                  className="pointer-events-none absolute font-semibold will-change-transform"
                   style={{
                     left: `${(t.transform.x / doc.meta.width) * 100}%`,
                     top: `${(t.transform.y / doc.meta.height) * 100}%`,
-                    transform: `${anchor} rotate(${t.transform.rotation}deg)`,
+                    transform: `${anchor} translate(${kin.dx * scale}px, ${kin.dy * scale}px) scale(${kin.scaleMul}) rotate(${t.transform.rotation}deg)`,
                     opacity: transitionOpacity(t, timeSec),
                     maxWidth: "92%",
                   }}

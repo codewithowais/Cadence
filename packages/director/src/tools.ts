@@ -17,14 +17,19 @@ import { buildHighlightDoc } from "./highlight";
 import { fillerCut } from "./filler";
 import { buildSlideshowDoc } from "./slideshow";
 import {
+  addBroll,
   addCaptions,
+  addEmphasis,
   addFades,
+  addKineticTitle,
+  addMusic,
   addTitle,
   applyLook,
   autoMix,
   reframe,
   setQuality,
   type AspectKey,
+  type BrollCorner,
   type LookKey,
   type QualityKey,
   type TitleStyle,
@@ -65,6 +70,28 @@ function sourceVideo(project: ProjectState): { media: MediaAsset; transcript: Tr
 
 function images(project: ProjectState): MediaAsset[] {
   return project.media.filter((m) => m.kind === "image");
+}
+
+/** First audio asset in the project, for background music. */
+function audioAsset(project: ProjectState): MediaAsset {
+  const a = project.media.find((m) => m.kind === "audio");
+  if (!a) throw new Error("Add a music/audio file first — this needs an audio track.");
+  return a;
+}
+
+/** A media asset to overlay as b-roll: a chosen id, else the first non-main clip. */
+function brollAsset(project: ProjectState, mediaId?: string): MediaAsset {
+  if (mediaId) {
+    const m = project.media.find((x) => x.id === mediaId);
+    if (m) return m;
+  }
+  // Prefer an image or a second video/image not already the main footage.
+  const img = project.media.find((m) => m.kind === "image");
+  if (img) return img;
+  const vids = project.media.filter((m) => m.kind === "video");
+  if (vids.length > 1) return vids[1]!;
+  if (vids.length === 1) return vids[0]!;
+  throw new Error("Add a photo or a second clip to overlay as b-roll.");
 }
 
 function commit(project: ProjectState, doc: EditDocT, summary: string): ToolResult {
@@ -218,6 +245,87 @@ export const slideshowTool: DirectorTool<{ perImageSec?: number; look?: LookKey;
   },
 };
 
+// ---- add_music -------------------------------------------------------------
+
+export const musicTool: DirectorTool<{ mediaId?: string; volume?: number }> = {
+  name: "add_music",
+  description: "Add a background-music track from an audio asset (starts ducked under speech).",
+  inputSchema: z.object({ mediaId: z.string().optional(), volume: z.number().min(0).max(1).optional() }),
+  async execute(input, ctx) {
+    const asset = input.mediaId
+      ? ctx.project.media.find((m) => m.id === input.mediaId && m.kind === "audio") ?? audioAsset(ctx.project)
+      : audioAsset(ctx.project);
+    const doc = addMusic(ctx.project.doc, asset, { volume: input.volume });
+    return commit(
+      ctx.project,
+      doc,
+      `Added background music (${asset.label ?? asset.src}), ducked under speech. ` +
+        `(Music is silent in the preview — you'll hear it in the exported .mp4.)`,
+    );
+  },
+};
+
+// ---- add_broll -------------------------------------------------------------
+
+export const brollTool: DirectorTool<{ mediaId?: string; atSec?: number; durationSec?: number; corner?: BrollCorner; size?: number }> = {
+  name: "add_broll",
+  description: "Overlay an image/video as picture-in-picture b-roll over the main clip for a time range.",
+  inputSchema: z.object({
+    mediaId: z.string().optional(),
+    atSec: z.number().nonnegative().optional(),
+    durationSec: z.number().positive().optional(),
+    corner: z.enum(["center", "top-left", "top-right", "bottom-left", "bottom-right"]).optional(),
+    size: z.number().positive().max(1).optional(),
+  }),
+  async execute(input, ctx) {
+    const asset = brollAsset(ctx.project, input.mediaId);
+    const doc = addBroll(ctx.project.doc, asset, {
+      atSec: input.atSec,
+      durationSec: input.durationSec,
+      corner: input.corner,
+      size: input.size,
+    });
+    return commit(
+      ctx.project,
+      doc,
+      `Overlaid b-roll (${asset.label ?? asset.src}) as picture-in-picture (${input.corner ?? "center"}).`,
+    );
+  },
+};
+
+// ---- add_kinetic_title -----------------------------------------------------
+
+export const kineticTitleTool: DirectorTool<{ text: string }> = {
+  name: "add_kinetic_title",
+  description: "Add an animated title that slides up and scales in (kinetic).",
+  inputSchema: z.object({ text: z.string().min(1) }),
+  async execute(input, ctx) {
+    const doc = addKineticTitle(ctx.project.doc, input.text);
+    return commit(ctx.project, doc, `Added a kinetic title: “${input.text}” (slides + scales in).`);
+  },
+};
+
+// ---- add_emphasis ----------------------------------------------------------
+
+export const emphasisTool: DirectorTool<{ atSec?: number; durationSec?: number; zoom?: number }> = {
+  name: "add_emphasis",
+  description: "Punch in on the video (scale-up emphasis) over a sub-range for impact.",
+  inputSchema: z.object({
+    atSec: z.number().nonnegative().optional(),
+    durationSec: z.number().positive().optional(),
+    zoom: z.number().min(1).max(3).optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = addEmphasis(ctx.project.doc, {
+      atSec: input.atSec,
+      durationSec: input.durationSec,
+      zoom: input.zoom,
+    });
+    const z = input.zoom ?? 1.25;
+    return commit(ctx.project, doc, `Added a punch-in emphasis (${z}× zoom at ${input.atSec ?? 0}s).`);
+  },
+};
+
 // ---- set_quality -----------------------------------------------------------
 
 export const qualityTool: DirectorTool<{ preset: QualityKey; aiUpscale?: boolean }> = {
@@ -254,4 +362,8 @@ export const DIRECTOR_TOOLS = {
   set_quality: qualityTool,
   add_title: titleTool,
   add_fades: fadesTool,
+  add_music: musicTool,
+  add_broll: brollTool,
+  add_kinetic_title: kineticTitleTool,
+  add_emphasis: emphasisTool,
 } as const;

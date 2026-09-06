@@ -149,7 +149,7 @@ export function DirectorRail({ messages, busy, hasMedia, onSend, onFiles }: Dire
       <input
         ref={fileRef}
         type="file"
-        accept="video/*,image/*"
+        accept="video/*,image/*,audio/*"
         multiple
         className="hidden"
         onChange={(e) => {

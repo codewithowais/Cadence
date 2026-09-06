@@ -9,6 +9,9 @@ import type { ColorGrade, ImageClip, SolidClip, TextClip, VideoClip } from "./sc
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 
+/** Ease-out cubic — fast start, gentle settle. Deterministic; p is 0..1. */
+const easeOutCubic = (p: number): number => 1 - Math.pow(1 - clamp01(p), 3);
+
 /** A CSS/canvas `filter` string for a color grade ("none" when neutral). */
 export function cssFilter(look: ColorGrade): string {
   const parts: string[] = [];
@@ -59,6 +62,48 @@ export function imageMotion(clip: ImageClip, timeSec: number): MotionState {
     panXFrac: clip.motion.panX * p,
     panYFrac: clip.motion.panY * p,
   };
+}
+
+/** Offset (composition px) + scale multiplier from a kinetic title intro. */
+export interface KineticState {
+  /** X offset (composition px) still to travel toward the resting position. */
+  dx: number;
+  /** Y offset (composition px) still to travel toward the resting position. */
+  dy: number;
+  /** Extra scale multiplier on top of transform.scale (settles to 1). */
+  scaleMul: number;
+}
+
+/**
+ * Kinetic title state at `timeSec` — the text slides from (fromX, fromY) and
+ * grows from `fromScale` toward its resting transform over the first
+ * `durationSec`, eased. Identity when the clip has no kinetic animation, so it
+ * is safe to call for every text clip. Deterministic, mirroring transitionOpacity.
+ */
+export function textKinetic(clip: TextClip, timeSec: number): KineticState {
+  const a = clip.anim;
+  if (a.style !== "kinetic" || a.durationSec <= 0) return { dx: 0, dy: 0, scaleMul: 1 };
+  const e = easeOutCubic((timeSec - clip.start) / a.durationSec);
+  return {
+    dx: a.fromX * (1 - e),
+    dy: a.fromY * (1 - e),
+    scaleMul: a.fromScale + (1 - a.fromScale) * e,
+  };
+}
+
+/**
+ * Punch-in emphasis scale for a video clip at `timeSec`. Returns a multiplier
+ * that pulses from 1 up to `emphasis.zoom` at the center of the window
+ * [atSec, atSec+durationSec] and back to 1 (sine pulse), and 1 outside it.
+ * Identity when the clip has no emphasis. Deterministic.
+ */
+export function emphasisScale(clip: VideoClip, timeSec: number): number {
+  const e = clip.emphasis;
+  if (!e || e.durationSec <= 0 || e.zoom === 1) return 1;
+  if (timeSec < e.atSec || timeSec > e.atSec + e.durationSec) return 1;
+  const p = (timeSec - e.atSec) / e.durationSec;
+  const pulse = Math.sin(clamp01(p) * Math.PI); // 0 at edges, 1 at center
+  return 1 + (e.zoom - 1) * pulse;
 }
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;

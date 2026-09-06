@@ -12,6 +12,15 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **S0.3 Ingest + transcript (stub).** `@cadence/understanding`: `Transcript` types + `Transcriber` interface + deterministic `StubTranscriber` (offline, free). — *verified: 3-min media → 39 segments.* **Next:** `FasterWhisperTranscriber` drop-in (real local Whisper).
 - ✅ **S0.4 "Cut a 60s highlight" end-to-end.** media → transcript → StubDirector → 61s edit-doc (15 cuts, word-accurate source offsets) → rendered full-frame preview. **Phase-0 done gate met.**
 
+## Phase 2 — Color + Audio / creative capabilities
+
+- ✅ **S2.1 Music · b-roll · kinetic titles · punch-in.** Four creative capabilities, each edits-as-code across every surface (EditDoc data → typed Director tool → StubDirector routing → Node canvas renderer → web Stage preview → ffmpeg export plan → verify check that renders a frame).
+  - **Background music + ducking** (`add_music`): a `music` audio track referencing an audio `MediaAsset`, ducked (0.28) and re-ducked by `auto_mix`. Silent in the canvas/Stage preview; honored on export via `amix`/`adelay`. Audio upload wired into the web app. *Manifests fully at export only.*
+  - **B-roll / PiP overlay** (`add_broll`): scaled (≈0.35), corner-anchored image/video on a top `broll` track for a range. Canvas + Stage render the PiP; export composites with `overlay=…:enable=…` (kept out of the base concat).
+  - **Kinetic titles** (`add_kinetic_title`): title slides up + scales in, via pure core helper `textKinetic`. Canvas + Stage honor it; export slides it with a time-dependent `drawtext` x/y expression.
+  - **Punch-in emphasis** (`add_emphasis`): scale pulse on a video clip over `[atSec, atSec+dur]`, via pure core helper `emphasisScale`. Canvas + Stage + export (`zoompan` sine pulse) honor it.
+  - QuickActions added: Punch-in, B-roll, Kinetic title, Music. — *verified: typecheck + verify **checks 11–14** (each renders a real frame + asserts the export filter) + `apps/web` next build, all green.*
+
 ## Phase 1 — Social MVP (see AGENTS.md §11 for done)
 
 - ✅ **S1.1 Next.js editor app.** web + 3 api routes; north-star dark/amber conversation-first UI with rooms rail, live preview (seeks real uploaded footage), cuts timeline, nudge, code drawer, JSON export. — *verified: `next build` clean, UI renders, HTTP pipeline returns valid PNG.*

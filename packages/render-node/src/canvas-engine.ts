@@ -15,7 +15,9 @@ import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
 import {
   activeClipsAt,
   cssFilter,
+  emphasisScale,
   imageMotion,
+  textKinetic,
   transitionOpacity,
   type EditDoc,
   type ImageClip,
@@ -31,10 +33,14 @@ const degToRad = (deg: number): number => (deg * Math.PI) / 180;
 function drawText(ctx: SKRSContext2D, clip: TextClip): void {
   const op = transitionOpacity(clip, clipTimeCache);
   if (op <= 0) return;
+  // Kinetic intro: slide from an offset and scale up, resolved by core (shared
+  // with the Stage preview + export so all three agree).
+  const kin = textKinetic(clip, clipTimeCache);
+  const effScale = clip.transform.scale * kin.scaleMul;
   ctx.save();
-  ctx.translate(clip.transform.x, clip.transform.y);
+  ctx.translate(clip.transform.x + kin.dx, clip.transform.y + kin.dy);
   if (clip.transform.rotation !== 0) ctx.rotate(degToRad(clip.transform.rotation));
-  if (clip.transform.scale !== 1) ctx.scale(clip.transform.scale, clip.transform.scale);
+  if (effScale !== 1) ctx.scale(effScale, effScale);
   ctx.globalAlpha = op;
   ctx.font = `${clip.fontSize}px ${clip.fontFamily}`;
   ctx.textAlign = clip.align;
@@ -70,7 +76,9 @@ function drawMedia(
   if (op <= 0) return;
 
   const motion = clip.kind === "image" ? imageMotion(clip, clipTimeCache) : null;
-  const effScale = clip.transform.scale * (motion ? motion.scale : 1);
+  // Punch-in emphasis pulses a video clip's scale up over a sub-range (core helper).
+  const emphasis = clip.kind === "video" ? emphasisScale(clip, clipTimeCache) : 1;
+  const effScale = clip.transform.scale * (motion ? motion.scale : 1) * emphasis;
   const panX = motion ? motion.panXFrac * frameW : 0;
   const panY = motion ? motion.panYFrac * frameH : 0;
 

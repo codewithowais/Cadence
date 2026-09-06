@@ -122,14 +122,29 @@ function drawtextFor(clip: TextClip): string {
   const { color, alpha } = hexToFfColor(clip.color);
   const tx = Math.round(clip.transform.x);
   const ty = Math.round(clip.transform.y);
+  const start = r3(clip.start);
+  const end = r3(clip.start + clip.duration);
   // transform.x/y is the clip anchor; canvas uses center anchor + middle baseline.
-  const x =
+  let x =
     clip.align === "center"
       ? `${tx}-text_w/2`
       : clip.align === "right"
         ? `${tx}-text_w`
         : `${tx}`;
-  const y = `${ty}-text_h/2`;
+  let y = `${ty}-text_h/2`;
+
+  // Kinetic intro: slide from (fromX, fromY) toward the resting position over
+  // `durationSec`, eased (1-(1-p)^3) — mirrors core's textKinetic. Commas inside
+  // expression fn-calls are escaped for the filtergraph. (Export honors the slide;
+  // the scale-in is a preview/canvas nicety.)
+  const a = clip.anim;
+  if (a.style === "kinetic" && a.durationSec > 0 && (a.fromX !== 0 || a.fromY !== 0)) {
+    const p = `clip((t-${start})/${r3(a.durationSec)}\\,0\\,1)`;
+    const e = `(1-pow(1-${p}\\,3))`;
+    if (a.fromX !== 0) x = `(${x})+(${r3(a.fromX)})*(1-${e})`;
+    if (a.fromY !== 0) y = `(${y})+(${r3(a.fromY)})*(1-${e})`;
+  }
+
   const parts = [
     `text='${escapeDrawtext(clip.text)}'`,
     `x=${x}`,
@@ -144,8 +159,6 @@ function drawtextFor(clip: TextClip): string {
     parts.push(`boxcolor=${bg.color}${bg.alpha < 1 ? `@${bg.alpha}` : ""}`);
     parts.push(`boxborderw=${Math.max(6, Math.round(clip.fontSize * 0.3))}`);
   }
-  const start = r3(clip.start);
-  const end = r3(clip.start + clip.duration);
   parts.push(`enable='between(t\\,${start}\\,${end})'`);
   return `drawtext=${parts.join(":")}`;
 }
@@ -156,12 +169,26 @@ function collectVisualBase(doc: EditDoc): (VideoClip | ImageClip)[] {
   const base: (VideoClip | ImageClip)[] = [];
   for (const track of doc.tracks) {
     if (track.kind !== "visual") continue;
+    if (track.id === "broll") continue; // b-roll is overlaid, not concatenated
     for (const clip of track.clips) {
       if (clip.kind === "video" || clip.kind === "image") base.push(clip);
     }
   }
   base.sort((a, b) => a.start - b.start);
   return base;
+}
+
+/** B-roll / PiP overlay clips (top "broll" visual track). */
+function collectBroll(doc: EditDoc): (VideoClip | ImageClip)[] {
+  const out: (VideoClip | ImageClip)[] = [];
+  for (const track of doc.tracks) {
+    if (track.id !== "broll") continue;
+    for (const clip of track.clips) {
+      if (clip.kind === "video" || clip.kind === "image") out.push(clip);
+    }
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
 }
 
 function collectTextClips(doc: EditDoc): TextClip[] {
@@ -214,6 +241,26 @@ function zoompanFor(clip: ImageClip, w: number, h: number, fps: number): string 
   return `zoompan=z='${zExpr}':x='${xExpr}':y='${yExpr}':d=${d}:s=${w}x${h}:fps=${fps}`;
 }
 
+// --- punch-in emphasis (zoompan on video) -----------------------------------
+
+/**
+ * A zoompan that pulses a video clip's scale from 1 → zoom → 1 over the clip-local
+ * emphasis window (sine pulse), centered — mirrors core's emphasisScale. `on` is
+ * this input's output-frame index (PTS reset per clip), so the window is in
+ * clip-local frames. Null when the clip has no emphasis. Faithful: scales only.
+ */
+function emphasisZoompan(clip: VideoClip, w: number, h: number, fps: number): string | null {
+  const e = clip.emphasis;
+  if (!e || e.durationSec <= 0 || e.zoom <= 1) return null;
+  const sf = Math.max(0, Math.round((e.atSec - clip.start) * fps));
+  const ef = Math.round((e.atSec + e.durationSec - clip.start) * fps);
+  const span = ef - sf;
+  if (span <= 0) return null;
+  // Commas inside fn-calls are escaped for the filtergraph.
+  const zExpr = `if(between(on\\,${sf}\\,${ef})\\,1+(${r3(e.zoom - 1)})*sin((on-${sf})/${span}*PI)\\,1)`;
+  return `zoompan=z='${zExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${w}x${h}:fps=${fps}`;
+}
+
 // --- main -------------------------------------------------------------------
 
 /**
@@ -256,10 +303,12 @@ export function buildExportPlan(
     base.forEach((clip, i) => {
       const c = clip as VideoClip;
       const idx = addInput(["-ss", String(r3(c.sourceIn)), "-t", String(r3(c.duration))], resolveMediaPath(c.mediaId));
+      const emph = emphasisZoompan(c, W, H, fps);
       const vChain = [
         "setpts=PTS-STARTPTS",
         `scale=${W}:${H}:force_original_aspect_ratio=increase`,
         `crop=${W}:${H}`,
+        ...(emph ? [emph] : []),
         ...lookFilters(c.look),
         "format=yuv420p",
       ];
@@ -316,10 +365,12 @@ export function buildExportPlan(
               ["-ss", String(r3((c as VideoClip).sourceIn)), "-t", String(r3(c.duration))],
               resolveMediaPath(c.mediaId),
             );
+      const emph = c.kind === "video" ? emphasisZoompan(c, W, H, fps) : null;
       const vChain = [
         "setpts=PTS-STARTPTS",
         `scale=${W}:${H}:force_original_aspect_ratio=increase`,
         `crop=${W}:${H}`,
+        ...(emph ? [emph] : []),
         ...lookFilters(c.look),
         "format=yuv420p",
         `fps=${fps}`,
@@ -345,6 +396,37 @@ export function buildExportPlan(
     filters.push(`[${idx}:v]format=yuv420p[vbg]`);
     videoLabel = "vbg";
   }
+
+  // ---- B-roll / PiP overlays (scaled + positioned, time-gated) ------------
+  const broll = collectBroll(doc);
+  broll.forEach((clip, i) => {
+    const boxW = Math.max(2, Math.round(W * clip.transform.scale));
+    const boxH = Math.max(2, Math.round(H * clip.transform.scale));
+    const st = r3(clip.start);
+    const en = r3(clip.start + clip.duration);
+    const idx =
+      clip.kind === "image"
+        ? addInput(["-loop", "1", "-t", String(r3(clip.duration))], resolveMediaPath(clip.mediaId))
+        : addInput(
+            ["-ss", String(r3((clip as VideoClip).sourceIn)), "-t", String(r3(clip.duration))],
+            resolveMediaPath(clip.mediaId),
+          );
+    const ovChain = [
+      `scale=${boxW}:${boxH}:force_original_aspect_ratio=increase`,
+      `crop=${boxW}:${boxH}`,
+      ...lookFilters(clip.look),
+      "format=yuv420p",
+      // Present the b-roll aligned to its timeline start, so it plays from its head.
+      `setpts=PTS-STARTPTS+${st}/TB`,
+    ];
+    filters.push(`[${idx}:v]${ovChain.join(",")}[bov${i}]`);
+    // transform.x/y is the box CENTER; overlay x/y is its top-left.
+    const ox = Math.round(clip.transform.x - boxW / 2);
+    const oy = Math.round(clip.transform.y - boxH / 2);
+    const out = `vbr${i}`;
+    filters.push(`[${videoLabel}][bov${i}]overlay=${ox}:${oy}:enable='between(t\\,${st}\\,${en})'[${out}]`);
+    videoLabel = out;
+  });
 
   // ---- Burn-in captions / titles (drawtext, time-gated) -------------------
   const texts = collectTextClips(doc);
