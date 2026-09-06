@@ -15,7 +15,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify": "tsx scripts/verify.ts",
     "evals": "tsx scripts/evals.ts",
-    "test": "vitest run",
+    "test:unit": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
     "test:e2e": "npm run test:e2e --workspace @cadence/web",
     "test:e2e:install": "npm run test:e2e:install --workspace @cadence/web"
   },

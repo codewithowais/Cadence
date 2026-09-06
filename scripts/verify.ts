@@ -16,6 +16,7 @@
  *   19 speed ramp: set_speed slow-mo/fast → sourceTimeAt mapping + setpts/atempo on export
  *   20 zoom (manual reframe): zoom → transform.scale on clips + scale/crop on export
  *   21 transitions: set_transition dip-to-black/slide/wipe → xfade name on slideshow export
+ *   22 color adjust: adjustColor merges a manual grade + renders; NL "brighter/warmer" → adjust_color
  *   15 whisper parse: parseWhisperJson (OpenAI + whisper.cpp shapes) → valid Transcript
  *   16 transcriber factory: real Whisper when available, else graceful StubTranscriber
  *   17 agentic loop: runDirectorLoop (plan→act→verify→correct) verifies + renders,
@@ -51,6 +52,7 @@ import {
   ProjectState,
   StubDirector,
   runDirectorLoop,
+  adjustColor,
   reframe,
   setQuality,
   type DirectorLike,
@@ -621,6 +623,34 @@ async function checkTransitions(): Promise<void> {
   console.log(`  [32m✔[0m check 21 (transitions): dip-to-black/slide/wipe → xfade fadeblack/slideleft/wipeleft on slideshow export; frame ${n}b`);
 }
 
+async function checkColorAdjust(): Promise<void> {
+  // Base doc: a highlight cut whose video clips start with a neutral grade.
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  const hl = await new StubDirector().interpret("cut a 20 second highlight", project);
+  const before = hl.doc.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(before && before.look.brightness === 1 && before.look.warmth === 0, "expected a neutral starting grade");
+
+  // (a) PURE adjustColor merges a partial grade onto every main visual clip.
+  const graded = adjustColor(hl.doc, { brightness: 1.2, warmth: 0.4 });
+  const after = graded.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(after && after.look.brightness === 1.2 && after.look.warmth === 0.4, `adjustColor should set the grade, got ${JSON.stringify(after?.look)}`);
+  // Omitted fields keep their prior value (a merge, not a replace).
+  assert(after!.look.contrast === before!.look.contrast && after!.look.saturation === before!.look.saturation, "adjustColor should merge (leave omitted fields untouched)");
+  // The graded doc stays schema-valid and renders a real PNG frame.
+  const n = await renderAndAssert(graded, docDurationSec(graded) / 2, "verify-adjust-color.png");
+
+  // (b) NL path: "brighter/warmer" routes to adjust_color (a relative tweak),
+  // NOT a preset, and moves the grade off neutral.
+  const nl = await new StubDirector().interpret("make it brighter and warmer", project);
+  assert(nl.toolCalls.some((c) => c.name === "adjust_color"), "expected adjust_color from an NL request");
+  assert(!nl.toolCalls.some((c) => c.name === "apply_look"), "a relative tweak should not also apply a preset");
+  const nlClip = nl.doc.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(nlClip && nlClip.look.brightness > 1 && nlClip.look.warmth > 0, `NL adjust should raise brightness+warmth, got ${JSON.stringify(nlClip?.look)}`);
+
+  console.log(`  [32m✔[0m check 22 (color adjust): adjustColor merges grade + renders (${n}b); "brighter/warmer" → adjust_color (not a preset)`);
+}
+
 async function checkWhisperParse(): Promise<void> {
   // (a) OpenAI whisper / faster-whisper shape: seconds + word probabilities.
   const openai = {
@@ -800,6 +830,7 @@ async function main(): Promise<void> {
   await checkSpeedRamp();
   await checkZoom();
   await checkTransitions();
+  await checkColorAdjust();
   await checkWhisperParse();
   await checkTranscriberFactory();
   await checkAgenticLoop();

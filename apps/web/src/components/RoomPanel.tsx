@@ -1,7 +1,8 @@
 "use client";
 
 import { useRef } from "react";
-import type { EditDoc, MediaAsset, QualityPreset } from "@cadence/core";
+import type { ColorGrade, EditDoc, MediaAsset, QualityPreset } from "@cadence/core";
+import { adjustColor, currentGrade, NEUTRAL_GRADE } from "@cadence/director";
 import { fmtTime } from "@/lib/format";
 import { LOOKS, describeDoc } from "@/lib/status";
 import type { RoomKey } from "./RoomsRail";
@@ -13,6 +14,12 @@ interface RoomPanelProps {
   busy: boolean;
   /** Same handler QuickActions/DirectorRail use — a director request. */
   onAction: (prompt: string) => void;
+  /**
+   * Apply a fully-formed edit-doc directly (client-side, no server round-trip).
+   * Wired to the editor's setDoc so the Color sliders give instant feedback —
+   * `@cadence/director` is pure, so `adjustColor(doc, …)` runs in the browser.
+   */
+  onApplyDoc: (doc: EditDoc) => void;
   /** Same handler DirectorRail uses — add files (video/photos/audio). */
   onFiles: (files: File[]) => void;
   onExport: () => void;
@@ -68,7 +75,7 @@ const QUALITY_PRESETS: { key: QualityPreset; label: string; prompt: string }[] =
 ];
 
 export function RoomPanel(props: RoomPanelProps) {
-  const { room, doc, mediaList, busy, onAction, onFiles, onExport, canExport, muted, onToggleMute } = props;
+  const { room, doc, mediaList, busy, onAction, onApplyDoc, onFiles, onExport, canExport, muted, onToggleMute } = props;
   const fileRef = useRef<HTMLInputElement>(null);
   const openPicker = () => fileRef.current?.click();
 
@@ -124,21 +131,14 @@ export function RoomPanel(props: RoomPanelProps) {
 
   if (room === "color") {
     return (
-      <Shell label="color">
-        {LOOKS.map((l) => {
-          const active = l.key === "none" ? status.look === null : status.look?.toLowerCase() === l.label.toLowerCase();
-          return (
-            <Pill
-              key={l.key}
-              onClick={() => onAction(l.key === "none" ? "remove the color grade" : `give it a ${l.key} look`)}
-              disabled={busy || mediaList.length === 0}
-              active={active}
-            >
-              {l.label}
-            </Pill>
-          );
-        })}
-      </Shell>
+      <ColorRoom
+        doc={doc}
+        mediaList={mediaList}
+        busy={busy}
+        onAction={onAction}
+        onApplyDoc={onApplyDoc}
+        status={status}
+      />
     );
   }
 
@@ -197,27 +197,186 @@ export function RoomPanel(props: RoomPanelProps) {
 
   // deliver
   return (
+    <DeliverRoom
+      doc={doc}
+      mediaList={mediaList}
+      busy={busy}
+      onAction={onAction}
+      onExport={onExport}
+      canExport={canExport}
+      status={status}
+    />
+  );
+}
+
+// ---- Color room ------------------------------------------------------------
+
+const ASPECT_CHIPS: { label: string; prompt: string }[] = [
+  { label: "9:16", prompt: "make it vertical 9:16" },
+  { label: "1:1", prompt: "make it square 1:1" },
+  { label: "4:5", prompt: "make it 4:5 portrait" },
+  { label: "16:9", prompt: "make it 16:9 widescreen" },
+];
+
+const gradeKey = (g: ColorGrade): string => `${g.brightness}|${g.contrast}|${g.saturation}|${g.warmth}`;
+
+function GradeSlider({
+  label,
+  value,
+  min,
+  max,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  disabled?: boolean;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="flex w-[120px] shrink-0 flex-col gap-1">
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wider text-faint">
+        <span>{label}</span>
+        <span className="tabular-nums text-muted">{value.toFixed(2)}</span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={0.01}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={`${label}: ${value.toFixed(2)}`}
+        style={{ accentColor: "var(--color-teal)" }}
+        className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-line disabled:cursor-not-allowed disabled:opacity-40"
+      />
+    </label>
+  );
+}
+
+function ColorRoom({
+  doc,
+  mediaList,
+  busy,
+  onAction,
+  onApplyDoc,
+  status,
+}: {
+  doc: EditDoc;
+  mediaList: MediaAsset[];
+  busy: boolean;
+  onAction: (prompt: string) => void;
+  onApplyDoc: (doc: EditDoc) => void;
+  status: ReturnType<typeof describeDoc>;
+}) {
+  const hasVisual = mediaList.some((m) => m.kind === "video" || m.kind === "image");
+  // The sliders are read straight from the doc — the single source of truth — so
+  // they always reflect whatever grade is applied (a preset, an NL tweak, reset).
+  const grade = currentGrade(doc);
+  const disabled = busy || !hasVisual;
+
+  // Merge one field onto the live doc and apply instantly (pure, client-side).
+  const set = (partial: Partial<ColorGrade>) => {
+    if (!hasVisual) return;
+    onApplyDoc(adjustColor(doc, partial));
+  };
+  const isNeutral = gradeKey(grade) === gradeKey(NEUTRAL_GRADE);
+
+  return (
+    <Shell label="color">
+      {LOOKS.map((l) => {
+        const active = l.key === "none" ? status.look === null : status.look?.toLowerCase() === l.label.toLowerCase();
+        return (
+          <Pill
+            key={l.key}
+            onClick={() => onAction(l.key === "none" ? "remove the color grade" : `give it a ${l.key} look`)}
+            disabled={busy || mediaList.length === 0}
+            active={active}
+          >
+            {l.label}
+          </Pill>
+        );
+      })}
+      <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
+      <GradeSlider label="Brightness" value={grade.brightness} min={0.5} max={1.5} disabled={disabled} onChange={(v) => set({ brightness: v })} />
+      <GradeSlider label="Contrast" value={grade.contrast} min={0.5} max={1.5} disabled={disabled} onChange={(v) => set({ contrast: v })} />
+      <GradeSlider label="Saturation" value={grade.saturation} min={0} max={2} disabled={disabled} onChange={(v) => set({ saturation: v })} />
+      <GradeSlider label="Warmth" value={grade.warmth} min={0} max={1} disabled={disabled} onChange={(v) => set({ warmth: v })} />
+      <button
+        type="button"
+        onClick={() => set({ ...NEUTRAL_GRADE })}
+        disabled={disabled || isNeutral}
+        className="shrink-0 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:opacity-40"
+      >
+        Reset
+      </button>
+    </Shell>
+  );
+}
+
+// ---- Deliver room ----------------------------------------------------------
+
+function DeliverRoom({
+  doc,
+  mediaList,
+  busy,
+  onAction,
+  onExport,
+  canExport,
+  status,
+}: {
+  doc: EditDoc;
+  mediaList: MediaAsset[];
+  busy: boolean;
+  onAction: (prompt: string) => void;
+  onExport: () => void;
+  canExport: boolean;
+  status: ReturnType<typeof describeDoc>;
+}) {
+  const noMedia = busy || mediaList.length === 0;
+  const outW = doc.quality.targetWidth ?? doc.meta.width;
+  const outH = doc.quality.targetHeight ?? doc.meta.height;
+  const upscaled = outW !== doc.meta.width || outH !== doc.meta.height;
+
+  return (
     <Shell label="deliver">
+      <span className="shrink-0 text-[10px] uppercase tracking-wider text-faint">Aspect</span>
+      {ASPECT_CHIPS.map((a) => (
+        <Pill key={a.label} onClick={() => onAction(a.prompt)} disabled={noMedia} active={status.aspect === a.label}>
+          {a.label}
+        </Pill>
+      ))}
+      <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
+      <span className="shrink-0 text-[10px] uppercase tracking-wider text-faint">Quality</span>
       {QUALITY_PRESETS.map((q) => (
-        <Pill
-          key={q.key}
-          onClick={() => onAction(q.prompt)}
-          disabled={busy || mediaList.length === 0}
-          active={doc.quality.preset === q.key}
-        >
+        <Pill key={q.key} onClick={() => onAction(q.prompt)} disabled={noMedia} active={doc.quality.preset === q.key}>
           {q.label}
           {q.key === "ultra" ? " · 4K" : ""}
         </Pill>
       ))}
+      <span
+        className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated px-2.5 py-1 text-[11px] text-muted"
+        title={upscaled ? `Upscales ${doc.meta.width}×${doc.meta.height} → ${outW}×${outH} on export` : "Output resolution"}
+      >
+        <span className="text-faint">Output</span>
+        <span className="tabular-nums">
+          {outW}×{outH}
+        </span>
+      </span>
       <button
         type="button"
         onClick={onExport}
         disabled={!canExport || busy}
         className="shrink-0 rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
       >
-        Export
+        Export .mp4
       </button>
-      <span className="shrink-0 text-[11px] text-faint">Real .mp4 export needs ffmpeg (runs via <code>docker compose up</code>).</span>
+      <span className="shrink-0 text-[11px] text-faint">
+        Real .mp4 export renders via ffmpeg (runs with <code>docker compose up</code>); otherwise you get the edit-doc JSON.
+      </span>
     </Shell>
   );
 }

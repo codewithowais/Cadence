@@ -97,6 +97,54 @@ export function applyLook(doc: EditDoc, look: LookKey): EditDoc {
   return parseEditDoc(clone);
 }
 
+/** A neutral (identity) color grade — no brightness/contrast/saturation/warmth change. */
+export const NEUTRAL_GRADE: ColorGrade = { brightness: 1, contrast: 1, saturation: 1, warmth: 0 };
+
+/**
+ * Read the color grade currently on the first MAIN visual clip (video/image),
+ * falling back to a neutral grade when there's no footage yet. Used to seed the
+ * manual sliders and to compute relative NL adjustments ("brighter", "warmer").
+ */
+export function currentGrade(doc: EditDoc): ColorGrade {
+  for (const track of doc.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind === "video" || clip.kind === "image") return { ...clip.look };
+    }
+  }
+  return { ...NEUTRAL_GRADE };
+}
+
+/**
+ * Manual color grade — set any of brightness/contrast/saturation/warmth on every
+ * MAIN visual clip, MERGING with each clip's existing look (omitted fields keep
+ * their current value). This is the edits-as-code primitive behind the Color
+ * room's live sliders: pure, deterministic, and re-parsed through the schema so
+ * the result is always valid and previews identically everywhere (cssFilter).
+ * Faithful: only tone/color multipliers change, never content. Values are clamped
+ * to the schema's ranges (multipliers 0–4; warmth 0–1).
+ */
+export function adjustColor(doc: EditDoc, partial: Partial<ColorGrade>): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video" && clip.kind !== "image") continue;
+      const g = clip.look;
+      clip.look = {
+        brightness: round(clamp(partial.brightness ?? g.brightness, 0, 4)),
+        contrast: round(clamp(partial.contrast ?? g.contrast, 0, 4)),
+        saturation: round(clamp(partial.saturation ?? g.saturation, 0, 4)),
+        warmth: round(clamp(partial.warmth ?? g.warmth, 0, 1)),
+      };
+      changed++;
+    }
+  }
+  if (changed === 0) throw new Error("Add a video or photos first — color grading needs a visual clip.");
+  return parseEditDoc(clone);
+}
+
 // ---- Captions --------------------------------------------------------------
 
 /**

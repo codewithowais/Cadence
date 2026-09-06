@@ -25,6 +25,7 @@ import {
   addKineticTitle,
   addMusic,
   addTitle,
+  adjustColor,
   applyLook,
   autoMix,
   reframe,
@@ -185,6 +186,31 @@ export const lookTool: DirectorTool<{ look: LookKey }> = {
   async execute(input, ctx) {
     const doc = applyLook(ctx.project.doc, input.look);
     return commit(ctx.project, doc, `Applied the ${input.look} look.`);
+  },
+};
+
+// ---- adjust_color (manual grade) -------------------------------------------
+
+export const adjustColorTool: DirectorTool<{ brightness?: number; contrast?: number; saturation?: number; warmth?: number }> = {
+  name: "adjust_color",
+  description:
+    "Manually nudge the color grade on the main clips: brightness/contrast/saturation multipliers (1 = neutral) and warmth (0–1). Omitted fields keep their current value. Faithful — tone only, no content change.",
+  inputSchema: z.object({
+    brightness: z.number().min(0).max(4).optional(),
+    contrast: z.number().min(0).max(4).optional(),
+    saturation: z.number().min(0).max(4).optional(),
+    warmth: z.number().min(0).max(1).optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = adjustColor(ctx.project.doc, input);
+    const parts = Object.entries(input)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => `${k} ${v}`);
+    return commit(
+      ctx.project,
+      doc,
+      parts.length ? `Adjusted the grade (${parts.join(", ")}).` : "Adjusted the color grade.",
+    );
   },
 };
 
@@ -419,6 +445,7 @@ export const DIRECTOR_TOOLS = {
   reframe: reframeTool,
   add_captions: captionsTool,
   apply_look: lookTool,
+  adjust_color: adjustColorTool,
   auto_mix: autoMixTool,
   make_slideshow: slideshowTool,
   set_quality: qualityTool,

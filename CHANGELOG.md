@@ -4,6 +4,12 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.2 — Cycle B: color grading rooms + unit test suite
+- **Color room (B2):** manual grading — a preset grid **plus four live sliders** (brightness/contrast/saturation/warmth) that edit the doc instantly via a pure `adjustColor(doc, partialGrade)` (merges onto every main visual clip, clamped, re-parsed). Sliders are doc-controlled (single source of truth) so presets/NL/Reset move them too. New `adjust_color` Director tool + StubDirector routing ("brighter", "warmer", "more contrast", "less saturated"). Verify **check 22**.
+- **Deliver room (B2):** real export panel — aspect chips, quality presets (Standard/High/Ultra·4K), resolution readout, Export, ffmpeg note.
+- **Unit test suite (B4):** `tests/` via Node's built-in `node:test` (zero new deps, run through tsx) — **44 tests** over schema/engine/grade/edits/understanding/enhance, incl. the long-edge 4K invariant, caption sync, filler cut, whisper parsing, and provider faithfulness. `npm run test:unit`; repointed the broken `test` script off vitest.
+- *verified:* typecheck + `test:unit` 44/44 + verify 22/22 + `next build` clean.
+
 ### S3.1 — Cycle B: engine features + audio waveform + bug fixes
 - **Engine (B1):** **speed-ramp** (`set_speed`, 0.25–4×, slow-mo/fast — canvas source-time mapping + ffmpeg `setpts`/chained `atempo`), **crop/zoom** (`zoom`, static reframe via scale+pan, distinct from animated punch-in + ffmpeg `scale`/`crop`), and a **transitions library** (`set_transition`: crossfade / dip-to-black / slide / wipe → xfade `fade`/`fadeblack`/`slideleft`/`wipeleft`). New core helpers `sourceTimeAt`/`sourceSpanSec`/`transitionMotion`. Verify checks 19–21 (render + export-plan). *verified: verify 21/21, evals 5/5.*
 - **Audio waveform (B3):** the timeline now shows a decoded **audio waveform** (Web Audio `decodeAudioData` → normalized peaks, ~600 buckets, cached per media, off the render path, drawn as a teal SVG envelope). Degrades to nothing when there's no audio; prefers the base video's own audio.

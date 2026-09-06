@@ -6,10 +6,11 @@
  *   "cut a 30s highlight, make it vertical with captions and a warm look"
  * The real Director swaps this rules brain for an LLM but calls the same tools.
  */
-import { docDurationSec, type EditDoc } from "@cadence/core";
+import { docDurationSec, type ColorGrade, type EditDoc } from "@cadence/core";
 import type { ProjectState } from "./project";
 import type { TransitionType } from "@cadence/core";
 import {
+  adjustColorTool,
   autoMixTool,
   brollTool,
   captionsTool,
@@ -29,8 +30,12 @@ import {
   zoomTool,
   type ToolCall,
 } from "./tools";
+import { currentGrade } from "./edits";
 import type { BrollCorner, TitleStyle } from "./edits";
 import type { AspectKey, LookKey, QualityKey } from "./edits";
+
+const round = (n: number): number => Math.round(n * 1000) / 1000;
+const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 
 export interface DirectorResult {
   doc: EditDoc;
@@ -186,6 +191,36 @@ function parseTransition(req: string): TransitionType | null {
   return null;
 }
 
+/**
+ * Parse a RELATIVE color adjustment ("brighter", "more contrast", "warmer",
+ * "less saturated") into absolute grade targets, computed from the doc's CURRENT
+ * grade so repeated nudges accumulate. Returns null when the request isn't a
+ * relative tweak (a named preset like "warm look" is handled by parseLook). The
+ * comparative forms take precedence over the presets (see interpret()).
+ */
+function parseColorAdjust(req: string, doc: EditDoc): Partial<ColorGrade> | null {
+  const g = currentGrade(doc);
+  const out: Partial<ColorGrade> = {};
+  const STEP = 0.12;
+  if (/brighter|brighten|lighter|more (light|exposure)|raise exposure/.test(req))
+    out.brightness = round(clamp(g.brightness + STEP, 0.2, 3));
+  if (/darker|darken|dimmer|less (light|exposure|bright)/.test(req))
+    out.brightness = round(clamp(g.brightness - STEP, 0.2, 3));
+  if (/more contrast|punchier|higher contrast|add contrast|increase contrast/.test(req))
+    out.contrast = round(clamp(g.contrast + STEP, 0.2, 3));
+  if (/less contrast|flatter|lower contrast|reduce contrast|decrease contrast/.test(req))
+    out.contrast = round(clamp(g.contrast - STEP, 0.2, 3));
+  if (/more saturat|more colou?r|richer|boost colou?r|deeper colou?r/.test(req))
+    out.saturation = round(clamp(g.saturation + 0.15, 0, 3));
+  if (/less saturat|desaturat|muted|washed?.?out|reduce colou?r|drain (the )?colou?r/.test(req))
+    out.saturation = round(clamp(g.saturation - 0.15, 0, 3));
+  if (/warmer|warm it up|more warmth|add warmth/.test(req))
+    out.warmth = round(clamp(g.warmth + 0.15, 0, 1));
+  if (/cooler|cool it (down|off)|less warmth|more blue|colder/.test(req))
+    out.warmth = round(clamp(g.warmth - 0.15, 0, 1));
+  return Object.keys(out).length ? out : null;
+}
+
 function parseQuality(req: string): { preset: QualityKey; aiUpscale: boolean } | null {
   const aiUpscale = /\bai\b.*upscal|upscale.*\bai\b|super.?resolution|super.?res/.test(req);
   if (/4k|ultra|2160/.test(req)) return { preset: "ultra", aiUpscale };
@@ -238,11 +273,22 @@ export class StubDirector {
       });
     }
 
+    // A relative color tweak ("brighter", "warmer") takes precedence over a
+    // preset so "make it warmer" nudges warmth instead of applying the warm look.
+    const colorAdjust = parseColorAdjust(req, project.doc);
+
     const look = parseLook(req);
-    if (look && !wantsSlideshow) {
+    if (look && !wantsSlideshow && !colorAdjust) {
       steps.push({
         run: (p) => lookTool.execute({ look }, { project: p }),
         call: { name: lookTool.name, input: { look } },
+      });
+    }
+
+    if (colorAdjust) {
+      steps.push({
+        run: (p) => adjustColorTool.execute(colorAdjust, { project: p }),
+        call: { name: adjustColorTool.name, input: colorAdjust },
       });
     }
 
@@ -386,6 +432,6 @@ export class StubDirector {
     if (!hasVideo && !hasImages) return "Add a video or some photos to begin.";
     if (hasImages && !hasVideo)
       return 'Try: "make a slideshow", "make it vertical", "warm look", "use dip-to-black transitions", or "make it high quality".';
-    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "cinematic look", "slow motion", "zoom in 1.5x", "punch in at 5s", "wipe transitions", "add b-roll", "an animated title that says …", "add background music", or "make it 4K".';
+    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "cinematic look", "make it brighter", "warmer", "slow motion", "zoom in 1.5x", "punch in at 5s", "wipe transitions", "add b-roll", "an animated title that says …", "add background music", or "make it 4K".';
   }
 }

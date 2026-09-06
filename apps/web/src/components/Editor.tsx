@@ -432,6 +432,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             mediaList={mediaList}
             busy={busy}
             onAction={handleSend}
+            onApplyDoc={setDoc}
             onFiles={handleFiles}
             onExport={exportDoc}
             canExport={mediaList.length > 0 && durationSec > 0}
