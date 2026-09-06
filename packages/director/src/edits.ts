@@ -156,10 +156,13 @@ export function setQuality(doc: EditDoc, preset: QualityKey, aiUpscale = false):
   const clone: EditDoc = structuredClone(doc);
   const baseW = clone.meta.width;
   const baseH = clone.meta.height;
+  // Anchor the upscale to the LONG edge so orientation doesn't blow up the frame:
+  // 4K = 3840 on the long side (landscape 3840×2160, vertical 2160×3840).
+  const longEdge = Math.max(baseW, baseH);
   const table: Record<QualityKey, { scale: number; sharpen: number; denoise: number }> = {
     standard: { scale: 1, sharpen: 0, denoise: 0 },
-    high: { scale: Math.max(1, Math.round((2560 / baseW) * 100) / 100), sharpen: 0.3, denoise: 0.2 },
-    ultra: { scale: Math.max(1, Math.round((3840 / baseW) * 100) / 100), sharpen: 0.5, denoise: 0.35 },
+    high: { scale: Math.max(1, Math.round((2560 / longEdge) * 100) / 100), sharpen: 0.3, denoise: 0.2 },
+    ultra: { scale: Math.max(1, Math.round((3840 / longEdge) * 100) / 100), sharpen: 0.5, denoise: 0.35 },
   };
   const q = table[preset];
   clone.quality = {
