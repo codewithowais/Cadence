@@ -30,6 +30,7 @@ import { buildDemo, type BuildDemoOptions } from "./demo";
 import { addTrack, moveClipToTrack, removeTrack, reorderTrack, setTrack } from "./tracks";
 import { rollEdit, slipEdit, slideEdit } from "./trims";
 import {
+  addAdjustment,
   addBroll,
   addCallout,
   addCaptions,
@@ -47,6 +48,7 @@ import {
   adjustHsl,
   animate,
   applyLook,
+  applyLut,
   applyVfx,
   audioFade,
   autoMix,
@@ -1075,6 +1077,58 @@ export const adjustHslTool: DirectorTool<{ hueShift?: number; saturation?: numbe
   },
 };
 
+// ---- apply_lut (.cube LUT import) ------------------------------------------
+
+export const applyLutTool: DirectorTool<{ lut: string; clipId?: string }> = {
+  name: "apply_lut",
+  description:
+    "Import a 3D LUT (.cube color lookup table) as the creative look, merged onto the main visual clips (or one clip by `clipId`). The LUT is applied on EXPORT (ffmpeg lut3d) as a color remap on top of the other grade; the canvas preview approximates the other grade fields but not the LUT (documented). Pass an empty `lut` to clear it. Faithful — color only.",
+  inputSchema: z.object({ lut: z.string(), clipId: z.string().min(1).optional() }),
+  async execute(input, ctx) {
+    const doc = applyLut(ctx.project.doc, { lut: input.lut, clipId: input.clipId });
+    return commit(
+      ctx.project,
+      doc,
+      input.lut.trim() ? `Applied LUT “${input.lut}”.` : "Cleared the LUT.",
+    );
+  },
+};
+
+// ---- add_adjustment (adjustment layer) -------------------------------------
+
+export const addAdjustmentTool: DirectorTool<{
+  atSec?: number;
+  durationSec?: number;
+  look?: LookKey;
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  warmth?: number;
+}> = {
+  name: "add_adjustment",
+  description:
+    "Add an ADJUSTMENT LAYER — a color grade that applies to EVERYTHING beneath it over a timeline window [atSec, atSec+durationSec], on its own topmost 'adjustments' track. Seed it from a `look` preset and/or explicit brightness/contrast/saturation/warmth. Unlike apply_look/adjust_color (which grade individual clips), this grades the whole composite for a span. Defaults span the whole timeline. Faithful — tone/color only.",
+  inputSchema: z.object({
+    atSec: z.number().nonnegative().optional(),
+    durationSec: z.number().positive().optional(),
+    look: z.enum(LOOK_KEYS).optional(),
+    brightness: z.number().min(0).max(4).optional(),
+    contrast: z.number().min(0).max(4).optional(),
+    saturation: z.number().min(0).max(4).optional(),
+    warmth: z.number().min(0).max(1).optional(),
+  }),
+  async execute(input, ctx) {
+    const { atSec, durationSec, look, ...gradeFields } = input;
+    const grade = Object.values(gradeFields).some((v) => v !== undefined) ? gradeFields : undefined;
+    const doc = addAdjustment(ctx.project.doc, { atSec, durationSec, look, grade });
+    return commit(
+      ctx.project,
+      doc,
+      `Added an adjustment layer${look ? ` (${look})` : ""}.`,
+    );
+  },
+};
+
 // ---- audio_fade ------------------------------------------------------------
 
 export const audioFadeTool: DirectorTool<{ fadeInSec?: number; fadeOutSec?: number; track?: string }> = {
@@ -1437,6 +1491,8 @@ export const DIRECTOR_TOOLS = {
   add_mask: addMaskTool,
   adjust_curves: adjustCurvesTool,
   adjust_hsl: adjustHslTool,
+  apply_lut: applyLutTool,
+  add_adjustment: addAdjustmentTool,
   audio_fade: audioFadeTool,
   set_pan: setPanTool,
   normalize_loudness: normalizeLoudnessTool,

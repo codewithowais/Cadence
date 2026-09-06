@@ -94,6 +94,8 @@ import {
   adjustColor,
   adjustCurves,
   adjustHsl,
+  applyLut,
+  addAdjustment,
   addCaptions,
   addMarker,
   addMusic,
@@ -2720,6 +2722,109 @@ async function checkTransitionLibrary(): Promise<void> {
   );
 }
 
+async function checkLutImport(): Promise<void> {
+  const resolve = (id: string) => `/media/${id}`;
+
+  // A single-video doc with a neutral look (no eq/curves) → the LUT is the ONLY
+  // added filter, so we can prove additivity byte-for-byte.
+  const base = parseEditDoc({
+    version: 1,
+    meta: { title: "lut", width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "v.mp4", kind: "video", src: "/media/v.mp4" }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 4, mediaId: "v.mp4", transform: { x: 960, y: 540 } }] },
+    ],
+  });
+
+  // (a) applyLut sets look.lut on the main visual clip (merged, non-destructive).
+  const withLut = applyLut(base, { lut: "teal.cube" });
+  const clip = withLut.tracks[0]!.clips[0]!;
+  assert(clip.kind === "video" && clip.look.lut === "teal.cube", `applyLut should set look.lut, got ${JSON.stringify(clip.kind === "video" ? clip.look : {})}`);
+
+  // (b) Export plan with a LUT emits lut3d=file=<resolved path> (resolved through
+  // the SAME resolver as media → same whitelist).
+  const lutPlan = buildExportPlan(withLut, resolve, "/out/lut.mp4");
+  assert(lutPlan.filterComplex.includes("lut3d=file=/media/teal.cube"), `LUT export must contain lut3d=file=, got: ${lutPlan.filterComplex.slice(0, 300)}`);
+
+  // (c) Without a LUT → no lut3d AND byte-identical to the same doc's plan (the LUT
+  // is purely additive: removing the appended lut3d segment yields the base graph).
+  const basePlan = buildExportPlan(base, resolve, "/out/lut.mp4");
+  assert(!basePlan.filterComplex.includes("lut3d"), "a doc without a LUT must not emit lut3d");
+  assert(
+    lutPlan.filterComplex.replace("lut3d=file=/media/teal.cube,", "") === basePlan.filterComplex,
+    "LUT must be additive — removing lut3d should reproduce the no-LUT graph byte-for-byte",
+  );
+
+  // (d) Clearing the LUT (empty string) removes the field again.
+  const cleared = applyLut(withLut, { lut: "" });
+  const cc = cleared.tracks[0]!.clips[0]!;
+  assert(cc.kind === "video" && cc.look.lut === undefined, "applyLut('') should clear the LUT");
+
+  // (e) The apply_lut Director tool sets the field via the same pure fn.
+  const project = new ProjectState({ media: [{ id: "v.mp4", kind: "video", src: "/media/v.mp4", durationSec: 10 }] });
+  project.setDoc(base);
+  await DIRECTOR_TOOLS.apply_lut.execute({ lut: "warm.cube" }, { project });
+  const toolClip = project.doc.tracks[0]!.clips[0]!;
+  assert(toolClip.kind === "video" && toolClip.look.lut === "warm.cube", "apply_lut tool should set look.lut");
+
+  // The canvas still renders (LUT is export-only; canvas skips it gracefully).
+  const n = await renderAndAssert(withLut, 2, "verify-lut.png");
+  console.log(`  [32m✔[0m check 61 (LUT import): applyLut sets look.lut → ffmpeg lut3d=file= (resolved+escaped, export-only); additive (no LUT ⇒ byte-identical, no lut3d); clears on ''; apply_lut tool; canvas renders (${n}b)`);
+}
+
+async function checkAdjustmentLayer(): Promise<void> {
+  const resolve = (id: string) => `/media/${id}.mp4`;
+
+  const base = parseEditDoc({
+    version: 1,
+    meta: { title: "adjustment", width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "v", kind: "video", src: "/media/v.mp4" }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 8, mediaId: "v", transform: { x: 960, y: 540 } }] },
+    ],
+  });
+
+  // (a) addAdjustment creates an "adjustments" track (topmost = last) with one
+  // adjustment clip over the window.
+  const adj = addAdjustment(base, { atSec: 2, durationSec: 4, look: "noir" });
+  const track = adj.tracks.find((t) => t.id === "adjustments");
+  assert(track && track.clips.length === 1 && track.clips[0]!.kind === "adjustment", "addAdjustment should add an adjustment clip on its own track");
+  assert(adj.tracks[adj.tracks.length - 1]!.id === "adjustments", "the adjustments track must be topmost (last in array = highest z)");
+  const adjClip = track!.clips[0]!;
+  assert(adjClip.start === 2 && adjClip.duration === 4, `adjustment window should be [2,6], got start=${adjClip.start} dur=${adjClip.duration}`);
+
+  // (b) Renders a real frame INSIDE the window.
+  const nIn = await renderAndAssert(adj, 4, "verify-adjustment.png");
+
+  // (c) Export plan applies the grade to the composite, GATED by
+  // enable='between(t,2,6)' (noir → eq with saturation=0).
+  const ap = buildExportPlan(adj, resolve, "/out/adj.mp4");
+  assert(ap.filterComplex.includes("enable='between(t\\,2\\,6)'"), `adjustment grade must be gated to its window, got: ${ap.filterComplex.slice(-300)}`);
+  assert(/\[v0\][^;]*eq=[^;]*enable='between\(t\\,2\\,6\)'[^;]*\[vadj0\]/.test(ap.filterComplex), `adjustment must grade the composite (v0) into vadj0, got: ${ap.filterComplex.slice(-300)}`);
+  assert(ap.args.includes("[vadj0]"), "the graded stream (vadj0) must be the mapped video output");
+
+  // (d) A frame INSIDE the window differs from one OUTSIDE it (grade only applies
+  // within [2,6]).
+  const inside = await renderBytes(adj, 4);
+  const outside = await renderBytes(adj, 0.5);
+  assert(!inside.equals(outside), "an in-window adjustment frame must differ from an out-of-window frame");
+
+  // (e) No adjustment → the composite is byte-identical (the adjustment is appended
+  // as a post-composite pass, leaving the base graph unchanged).
+  const basePlan = buildExportPlan(base, resolve, "/out/base.mp4");
+  assert(!basePlan.filterComplex.includes("vadj") && !basePlan.filterComplex.includes("between(t\\,2\\,6)"), "a doc with no adjustment must not emit any adjustment grade");
+  assert(ap.filterComplex.startsWith(basePlan.filterComplex + ";[v0]"), "adjustment must be additive — the base composite graph stays byte-identical, with the grade appended");
+
+  // (f) The add_adjustment Director tool creates the layer via the same pure fn.
+  const project = new ProjectState({ media: [{ id: "v", kind: "video", src: "/media/v.mp4", durationSec: 10 }] });
+  project.setDoc(base);
+  await DIRECTOR_TOOLS.add_adjustment.execute({ atSec: 1, durationSec: 3, brightness: 1.3 }, { project });
+  const toolTrack = project.doc.tracks.find((t) => t.id === "adjustments");
+  assert(toolTrack && toolTrack.clips.length === 1 && toolTrack.clips[0]!.kind === "adjustment", "add_adjustment tool should create an adjustment layer");
+
+  console.log(`  [32m✔[0m check 62 (adjustment layer): addAdjustment → own topmost track + real frame (${nIn}b); ffmpeg grades the composite gated by enable='between(t,2,6)'; in-window frame differs from out; additive (no adjustment ⇒ base graph byte-identical); add_adjustment tool`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -2782,6 +2887,8 @@ async function main(): Promise<void> {
   await checkRollSlipSlide();
   await checkSpeedRampCurve();
   await checkTransitionLibrary();
+  await checkLutImport();
+  await checkAdjustmentLayer();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

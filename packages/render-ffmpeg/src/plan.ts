@@ -20,6 +20,7 @@ import {
   docDurationSec,
   sourceSpanSec,
   speedRampIntegral,
+  type AdjustmentClip,
   type BlendMode,
   type CalloutClip,
   type ChromaKey,
@@ -35,6 +36,7 @@ import {
   type TextClip,
   type TransitionType,
   type VideoClip,
+  type Vfx,
 } from "@cadence/core";
 
 /** What a built plan carries. `args` is the ffmpeg argv (no shell needed). */
@@ -120,8 +122,34 @@ export function curvesFilter(c: Curves): string | null {
   return parts.length ? `curves=${parts.join(":")}` : null;
 }
 
-/** The per-clip look chain (eq + warm + hue + curves), as filter segments. */
-function lookFilters(look: ColorGrade): string[] {
+/**
+ * Escape a LOCAL file path for use as a filtergraph option value (e.g.
+ * `lut3d=file=<path>`). We pass argv directly (no shell), so only filtergraph
+ * escaping applies: backslash first, then the option/graph metacharacters that
+ * would otherwise end the value (' : , ; [ ]). A plain path is unchanged.
+ */
+export function escapeFilterPath(p: string): string {
+  return p
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/:/g, "\\:")
+    .replace(/,/g, "\\,")
+    .replace(/;/g, "\\;")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]");
+}
+
+/**
+ * The per-clip look chain (eq + warm + hue + curves + optional LUT), as filter
+ * segments. The LUT (.cube) is applied LAST — a creative film-emulation look on top
+ * of the technical correction — via ffmpeg `lut3d=file=<path>` (verified against
+ * ffmpeg-filters.html). The LUT asset id/path is resolved through `resolveLut` (the
+ * SAME resolver as media, so it reuses the media whitelist) and escaped for the
+ * graph; lut3d reads a LOCAL file only (no arbitrary protocols). When `resolveLut`
+ * is absent, or `look.lut` is unset, NO lut3d is emitted — so existing plans are
+ * byte-identical. Canvas can't parse a .cube (documented export-only limit).
+ */
+function lookFilters(look: ColorGrade, resolveLut?: ResolveMediaPath): string[] {
   const out: string[] = [];
   const eq = eqFromLook(look);
   if (eq) out.push(eq);
@@ -133,6 +161,10 @@ function lookFilters(look: ColorGrade): string[] {
   if (look.curves) {
     const cf = curvesFilter(look.curves);
     if (cf) out.push(cf);
+  }
+  // LUT (.cube) → ffmpeg `lut3d`, applied last (creative look on top of correction).
+  if (look.lut && resolveLut) {
+    out.push(`lut3d=file=${escapeFilterPath(resolveLut(look.lut))}`);
   }
   return out;
 }
@@ -788,6 +820,52 @@ function collectCursors(doc: EditDoc): CursorClip[] {
 }
 
 /**
+ * Adjustment-layer clips, in start order. A `hidden` track contributes nothing (a
+ * hidden adjustment layer is skipped, matching `activeClipsAt` / the canvas). All
+ * default off, so a doc with no adjustment clips returns [] and the export graph is
+ * byte-for-byte unchanged (the fast path).
+ */
+function collectAdjustments(doc: EditDoc): AdjustmentClip[] {
+  const out: AdjustmentClip[] = [];
+  for (const track of doc.tracks) {
+    if (track.hidden) continue;
+    for (const clip of track.clips) if (clip.kind === "adjustment") out.push(clip);
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+/**
+ * The gated filter chain for ONE adjustment layer: the SAME per-clip grade chain
+ * (`lookFilters`: eq / colorbalance / hue / curves / lut3d) plus, optionally, the
+ * whole-frame vignette + grain — each segment gated to the clip's window with
+ * `enable='between(t,start,end)'` (the documented ffmpeg timeline-editing option,
+ * supported by every filter used here). The grade applies to the FINAL composited
+ * stream, so it grades everything beneath the layer over its span. `lightLeak` is
+ * not applied per-adjustment (it needs a separate blended source over the window);
+ * the whole-doc `vfx.lightLeak` finishing pass still covers that case. Faithful:
+ * tone/color only. Returns [] when the adjustment is fully neutral (no-op).
+ */
+function adjustmentFilters(
+  clip: AdjustmentClip,
+  resolveLut: ResolveMediaPath,
+): string[] {
+  const start = r3(clip.start);
+  const end = r3(clip.start + clip.duration);
+  const gate = (f: string): string => `${f}:enable='between(t\\,${start}\\,${end})'`;
+  const out = lookFilters(clip.grade, resolveLut).map(gate);
+  const vfx = clip.vfx;
+  if (vfx) {
+    if (vfx.grain > 0) out.push(gate(`noise=alls=${Math.round(clamp(vfx.grain, 0, 1) * 40)}:allf=t+u`));
+    if (vfx.vignette > 0) {
+      const a = r3(Math.PI / 5 + clamp(vfx.vignette, 0, 1) * (Math.PI / 2.2 - Math.PI / 5));
+      out.push(gate(`vignette=angle=${a}`));
+    }
+  }
+  return out;
+}
+
+/**
  * Extra audio-track clips (music / voice-over), honoring per-track flags:
  *  - `hidden` or `muted` track → dropped from the mix.
  *  - when any audio track solos → only soloed tracks contribute.
@@ -960,7 +1038,7 @@ export function buildExportPlan(
       ...staticZoomFilters(c, W, H),
       ...(emph ? [emph] : []),
       ...(kfZoom ? [kfZoom] : []),
-      ...lookFilters(c.look),
+      ...lookFilters(c.look, resolveMediaPath),
       "format=yuv420p",
       ...(appendFps ? [`fps=${fps}`] : []),
     ];
@@ -1005,7 +1083,7 @@ export function buildExportPlan(
         `scale=${W}:${H}:force_original_aspect_ratio=increase`,
         `crop=${W}:${H}`,
         ...staticZoomFilters(c, W, H),
-        ...lookFilters(c.look),
+        ...lookFilters(c.look, resolveMediaPath),
         "format=yuv420p",
         `fps=${fps}`,
       ];
@@ -1117,7 +1195,7 @@ export function buildExportPlan(
         `crop=${W}:${H}`,
         "setpts=PTS-STARTPTS",
         zoompanFor(c, W, H, fps),
-        ...lookFilters(c.look),
+        ...lookFilters(c.look, resolveMediaPath),
         "format=yuv420p",
         `fps=${fps}`,
       ];
@@ -1167,7 +1245,7 @@ export function buildExportPlan(
         `crop=${W}:${H}`,
         ...staticZoomFilters(c, W, H),
         ...(kfZoom ? [kfZoom] : []),
-        ...lookFilters(c.look),
+        ...lookFilters(c.look, resolveMediaPath),
         "format=yuv420p",
         `fps=${fps}`,
       ];
@@ -1227,7 +1305,7 @@ export function buildExportPlan(
     const chain: string[] = [
       `scale=${boxW}:${boxH}:force_original_aspect_ratio=increase`,
       `crop=${boxW}:${boxH}`,
-      ...lookFilters(clip.look),
+      ...lookFilters(clip.look, resolveMediaPath),
     ];
     if (isAlpha) {
       // Alpha path: operate in rgba so chroma transparency + the geq mask survive.
@@ -1288,6 +1366,22 @@ export function buildExportPlan(
     const parts = cursorFilters(clip);
     if (parts.length === 0) return;
     const out = `vcur${i}`;
+    filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
+    videoLabel = out;
+  });
+
+  // ---- Adjustment layers (grade everything beneath, gated to a window) -----
+  // An adjustment layer applies its color grade (eq/curves/colorbalance/hue/lut3d)
+  // — the SAME chain used per-clip — to the FINAL composited stream, gated by
+  // `enable='between(t,start,end)'`, so one grade spans every clip beneath it over
+  // its span. Applied here (after the visual composite + overlays) as a
+  // post-composite pass, ordered by start. When there are no adjustment clips this
+  // is a no-op and the graph is byte-for-byte unchanged (the fast path).
+  const adjustments = collectAdjustments(doc);
+  adjustments.forEach((clip, i) => {
+    const parts = adjustmentFilters(clip, resolveMediaPath);
+    if (parts.length === 0) return;
+    const out = `vadj${i}`;
     filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
     videoLabel = out;
   });

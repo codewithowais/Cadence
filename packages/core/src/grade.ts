@@ -91,8 +91,9 @@ export function cssFilter(look: ColorGrade): string {
   // Hue rotation previews via CSS/canvas hue-rotate(); export uses ffmpeg hue=h=.
   if (look.hueShift && look.hueShift !== 0) parts.push(`hue-rotate(${round(look.hueShift)}deg)`);
   if (look.warmth > 0) parts.push(`sepia(${round(look.warmth * 0.45)})`);
-  // NOTE: `curves` has no CSS filter equivalent, so it is not previewed here — the
-  // ffmpeg export applies it exactly (documented preview limit).
+  // NOTE: `curves` and `lut` (.cube LUT) have no CSS filter equivalent, so they are
+  // not previewed here — the ffmpeg export applies them exactly (documented preview
+  // limit; the LUT is EXPORT-ONLY, resolved to ffmpeg `lut3d`).
   return parts.length ? parts.join(" ") : "none";
 }
 

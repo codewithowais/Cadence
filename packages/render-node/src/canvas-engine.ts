@@ -11,7 +11,7 @@
  * edit-doc renders a real frame — with looks, crossfades and Ken Burns motion —
  * that we can assert on and that matches the browser preview.
  */
-import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
+import { createCanvas, type Canvas, type SKRSContext2D } from "@napi-rs/canvas";
 import {
   activeClipsAt,
   blendCompositeOperation,
@@ -30,6 +30,7 @@ import {
   transitionOpacity,
   typewriterText,
   valueAt,
+  type AdjustmentClip,
   type CalloutClip,
   type Clip,
   type CursorClip,
@@ -454,8 +455,56 @@ function drawContentClip(ctx: SKRSContext2D, clip: Clip, doc: EditDoc, width: nu
     case "audio":
     case "cursor":
     case "callout":
+    case "adjustment":
+      // Overlays / non-content clips: drawn elsewhere (cursor/callout) or applied as
+      // a post-composite pass (adjustment); audio is silent on the canvas.
       break;
   }
+}
+
+/**
+ * Apply an ADJUSTMENT LAYER's grade to the WHOLE frame — a post-composite pass that
+ * grades everything already painted beneath it (the canvas mirror of the ffmpeg
+ * `enable`-gated grade chain). The caller only invokes this while the clip is active
+ * at the frame time, so the window gating is inherent. Re-draws the composited
+ * canvas through the shared `cssFilter(grade)` (brightness/contrast/saturation/hue/
+ * warmth), then the warm soft-light overlay (mirroring drawMedia) and any Vfx. The
+ * clip's LUT is EXPORT-ONLY, so it is skipped here gracefully (documented, exactly
+ * like per-clip LUTs / curves). No-op when the grade is neutral and there is no Vfx.
+ */
+function applyAdjustment(
+  ctx: SKRSContext2D,
+  srcCanvas: Canvas,
+  clip: AdjustmentClip,
+  w: number,
+  h: number,
+): void {
+  const grade = clip.grade;
+  const filter = cssFilter(grade);
+  if (filter !== "none") {
+    // Snapshot the current composite, then redraw it through the grade filter. A
+    // second canvas is needed because reading and writing the same canvas is unsafe.
+    const tmp = createCanvas(w, h);
+    tmp.getContext("2d").drawImage(srcCanvas, 0, 0);
+    ctx.save();
+    ctx.filter = filter;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(tmp, 0, 0);
+    ctx.filter = "none";
+    ctx.restore();
+  }
+  // Warm soft-light overlay for the warmth field — mirrors drawMedia's warm wash so
+  // an adjustment's warmth reads the same as a per-clip warm look.
+  if (grade.warmth > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = "soft-light";
+    ctx.globalAlpha = Math.min(1, grade.warmth * 0.6);
+    ctx.fillStyle = "#ff8a3d";
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+  // Optional whole-frame Vfx (vignette / grain / light-leak), gated to this window.
+  if (clip.vfx) drawVfx(ctx, clip.vfx, w, h);
 }
 
 // The active render time, so draw helpers can read it without threading it
@@ -475,7 +524,12 @@ export class CanvasRenderEngine implements RenderEngine {
     const active = activeClipsAt(doc, timeSec).map(({ clip }) => clip);
     const callouts = active.filter((c): c is CalloutClip => c.kind === "callout");
     const cursors = active.filter((c): c is CursorClip => c.kind === "cursor");
-    const content = active.filter((c) => c.kind !== "callout" && c.kind !== "cursor");
+    // Adjustment layers grade the composite AFTER everything is drawn (post-pass);
+    // they are not "content", so keep them out of the content draw.
+    const adjustments = active.filter((c): c is AdjustmentClip => c.kind === "adjustment");
+    const content = active.filter(
+      (c) => c.kind !== "callout" && c.kind !== "cursor" && c.kind !== "adjustment",
+    );
 
     // A callout with zoom magnifies the composited CONTENT toward its rect. Apply
     // that transform (scale about the rect center, shared core helper) around the
@@ -494,6 +548,12 @@ export class CanvasRenderEngine implements RenderEngine {
     // Callouts (dim + border + label), then cursors, over the content.
     for (const c of callouts) drawCallout(ctx, c, width, height);
     for (const c of cursors) drawCursor(ctx, c, width, height);
+
+    // Adjustment layers: grade the whole composite, gated to each active clip's
+    // window (only active ones reach here). Applied in start order, after all
+    // content + overlays and before the whole-doc finishing pass. No-op when none.
+    adjustments.sort((a, b) => a.start - b.start);
+    for (const adj of adjustments) applyAdjustment(ctx, canvas, adj, width, height);
 
     // Whole-frame finishing overlays (vignette / grain / light-leak), over everything.
     drawVfx(ctx, doc.vfx, width, height);

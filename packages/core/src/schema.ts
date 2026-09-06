@@ -75,6 +75,17 @@ export const ColorGrade = z.object({
    * approximates them (no CSS curve primitive — documented limit).
    */
   curves: Curves.optional(),
+  /**
+   * Optional 3D LUT (.cube) — an asset id / local file path of a color lookup
+   * table applied as the creative "look" on top of the primary correction. On
+   * export it becomes the ffmpeg `lut3d=file=<path>` filter (the path is resolved
+   * through the SAME resolver/whitelist as media and escaped for the filtergraph;
+   * lut3d reads a LOCAL file only — no arbitrary protocols). CSS/canvas have no
+   * .cube primitive, so the LUT is EXPORT-ONLY: the canvas preview skips it
+   * gracefully (documented, exactly like `curves`). Optional so existing docs stay
+   * valid. Faithful: a color remap only, never a content change.
+   */
+  lut: z.string().optional(),
 });
 export type ColorGrade = z.infer<typeof ColorGrade>;
 
@@ -737,6 +748,53 @@ export const CalloutClip = z.object({
 });
 export type CalloutClip = z.infer<typeof CalloutClip>;
 
+/**
+ * Whole-composition VFX overlays — a finishing pass applied on top of the fully
+ * composited frame (all clips already drawn). Expressed as data so it previews on
+ * the canvas exactly as it renders on export:
+ *  - vignette  — 0..1 darkening toward the frame edges (radial gradient on the
+ *                canvas; the `vignette` filter, angle-scaled, on export).
+ *  - grain     — 0..1 procedural film grain (seeded noise on the canvas; the
+ *                `noise=alls=N:allf=t+u` filter on export).
+ *  - lightLeak — a warm light-leak wash (a diagonal warm gradient screen-blended
+ *                on the canvas; a warm color source `blend=all_mode=screen` on
+ *                export).
+ * All DEFAULTED (off) so existing docs stay valid. Faithful: tone/texture only,
+ * never a content change. (Defined here — before the Clip union — so an
+ * AdjustmentClip can carry an optional Vfx; the whole-doc finishing pass reuses it.)
+ */
+export const Vfx = z.object({
+  vignette: z.number().min(0).max(1).default(0),
+  grain: z.number().min(0).max(1).default(0),
+  lightLeak: z.boolean().default(false),
+});
+export type Vfx = z.infer<typeof Vfx>;
+
+/**
+ * An ADJUSTMENT LAYER — a color grade (+ optional whole-frame Vfx) that applies to
+ * EVERYTHING BENEATH it over a timeline range [start, start+duration]. Unlike a
+ * per-clip `look`, an adjustment grades the FINAL composited frame, gated to its
+ * window, so one grade can span many clips. It lives on its OWN (topmost visual)
+ * track — array order is z-order, so an adjustment placed on the last track sits
+ * over all footage. The renderers apply it as a POST-COMPOSITE pass:
+ *  - canvas: re-grades the whole frame while the clip is active (the LUT field, if
+ *            any, is export-only — the same documented limit as per-clip LUTs);
+ *  - ffmpeg: appends the grade's eq/curves/colorbalance/hue (+ lut3d) to the
+ *            composited stream, each gated by `enable='between(t,start,end)'`.
+ * Every nested field is defaulted/optional (grade prefaults to neutral, vfx is
+ * optional), so an adjustment clip is valid with just id/kind/start/duration and
+ * existing docs are unaffected. Faithful: a color/tone remap only, no content change.
+ */
+export const AdjustmentClip = z.object({
+  ...clipBase,
+  kind: z.literal("adjustment"),
+  /** The color grade applied to everything beneath, over the clip's window. */
+  grade: ColorGrade.prefault({}),
+  /** Optional whole-frame finishing (vignette / grain) gated to the clip's window. */
+  vfx: Vfx.optional(),
+});
+export type AdjustmentClip = z.infer<typeof AdjustmentClip>;
+
 export const Clip = z.discriminatedUnion("kind", [
   VideoClip,
   ImageClip,
@@ -745,6 +803,7 @@ export const Clip = z.discriminatedUnion("kind", [
   SolidClip,
   CursorClip,
   CalloutClip,
+  AdjustmentClip,
 ]);
 export type Clip = z.infer<typeof Clip>;
 
@@ -820,27 +879,6 @@ export const Quality = z.object({
   faithful: z.boolean().default(true),
 });
 export type Quality = z.infer<typeof Quality>;
-
-/**
- * Whole-composition VFX overlays — a finishing pass applied on top of the fully
- * composited frame (all clips already drawn). Expressed as data so it previews on
- * the canvas exactly as it renders on export:
- *  - vignette  — 0..1 darkening toward the frame edges (radial gradient on the
- *                canvas; the `vignette` filter, angle-scaled, on export).
- *  - grain     — 0..1 procedural film grain (seeded noise on the canvas; the
- *                `noise=alls=N:allf=t+u` filter on export).
- *  - lightLeak — a warm light-leak wash (a diagonal warm gradient screen-blended
- *                on the canvas; a warm color source `blend=all_mode=screen` on
- *                export).
- * All DEFAULTED (off) so existing docs stay valid. Faithful: tone/texture only,
- * never a content change.
- */
-export const Vfx = z.object({
-  vignette: z.number().min(0).max(1).default(0),
-  grain: z.number().min(0).max(1).default(0),
-  lightLeak: z.boolean().default(false),
-});
-export type Vfx = z.infer<typeof Vfx>;
 
 /**
  * A timeline marker (a labeled point in TIMELINE seconds) — chapter points, beat

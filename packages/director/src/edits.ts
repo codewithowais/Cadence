@@ -43,6 +43,7 @@ export const OVERLAY_TRACK_IDS = new Set([
   "cursor",
   "callouts",
   "demo-text",
+  "adjustments",
 ]);
 /**
  * A "main" (magnetic) visual track carries the primary footage/photos and
@@ -1696,6 +1697,104 @@ export function adjustHsl(
     }
   }
   if (changed === 0) throw new Error("Add a video or photos first — HSL needs a visual clip.");
+  return parseEditDoc(clone);
+}
+
+// ---- LUT import (.cube) -----------------------------------------------------
+
+export interface ApplyLutOpts {
+  /** Asset id / local file path of the .cube LUT. Empty string clears the LUT. */
+  lut: string;
+  /** Target one clip by id; otherwise every MAIN visual clip. */
+  clipId?: string;
+}
+
+/**
+ * Import a 3D LUT (.cube) as the creative look. Sets `look.lut` on the target
+ * clip(s) — one clip when `clipId` is given, otherwise every MAIN visual clip
+ * (mirroring adjustColor / adjustCurves) — MERGING with each clip's existing look
+ * (brightness/contrast/curves/etc. are preserved). An empty `lut` clears it. The
+ * LUT is applied on EXPORT (ffmpeg `lut3d`); the canvas preview approximates the
+ * other grade fields but not the LUT (documented, like curves). Pure + re-parsed.
+ * Faithful: a color remap only, never a content change.
+ */
+export function applyLut(doc: EditDoc, opts: ApplyLutOpts): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const lut = opts.lut.trim() || undefined;
+  let changed = 0;
+  for (const track of clone.tracks) {
+    for (const clip of track.clips) {
+      if (clip.kind !== "video" && clip.kind !== "image") continue;
+      if (opts.clipId) {
+        if (clip.id !== opts.clipId) continue;
+      } else if (!isMainVisualTrack(track.id)) {
+        continue;
+      }
+      clip.look = { ...clip.look, lut };
+      changed++;
+    }
+  }
+  if (changed === 0) {
+    throw new Error(
+      opts.clipId
+        ? `No visual clip "${opts.clipId}" to apply the LUT to.`
+        : "Add a video or photos first — a LUT needs a visual clip.",
+    );
+  }
+  return parseEditDoc(clone);
+}
+
+// ---- Adjustment layer ------------------------------------------------------
+
+export interface AddAdjustmentOpts {
+  /** Window start on the timeline (seconds). Defaults to 0. */
+  atSec?: number;
+  /** Window length (seconds). Defaults to the rest of the timeline (min 0.2). */
+  durationSec?: number;
+  /** Explicit grade fields (merged over any `look` preset). */
+  grade?: Partial<ColorGrade>;
+  /** A named look preset to seed the grade from. */
+  look?: LookKey;
+}
+
+/**
+ * Add an ADJUSTMENT LAYER — a color grade spanning [atSec, atSec+durationSec] on
+ * its own topmost "adjustments" track (created on first use). The grade is seeded
+ * from a `look` preset and/or explicit `grade` fields (explicit fields win); the
+ * layer grades EVERYTHING beneath it over its window in all three renderers (the
+ * canvas post-composite pass + the ffmpeg `enable`-gated chain). The track is
+ * pushed LAST, so array-order z-order places it over all footage. Pure + re-parsed;
+ * additive (an empty adjustments track and a neutral grade are both valid).
+ */
+export function addAdjustment(doc: EditDoc, opts: AddAdjustmentOpts = {}): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const start = round(Math.max(0, opts.atSec ?? 0));
+  const rest = docDurationSec(clone) - start;
+  const duration = round(Math.max(0.2, opts.durationSec ?? (rest > 0.2 ? rest : 3)));
+  const preset = opts.look ? LOOK_PRESETS[opts.look] : undefined;
+  const g = opts.grade ?? {};
+  const grade: ColorGrade = {
+    brightness: round(clamp(g.brightness ?? preset?.brightness ?? 1, 0, 4)),
+    contrast: round(clamp(g.contrast ?? preset?.contrast ?? 1, 0, 4)),
+    saturation: round(clamp(g.saturation ?? preset?.saturation ?? 1, 0, 4)),
+    warmth: round(clamp(g.warmth ?? preset?.warmth ?? 0, 0, 1)),
+    ...(g.hueShift !== undefined ? { hueShift: round(g.hueShift) } : {}),
+    ...(g.curves ? { curves: g.curves } : {}),
+    ...(g.lut ? { lut: g.lut } : {}),
+  };
+  const clip: Record<string, unknown> = {
+    id: `adjustment-${Date.now()}`,
+    kind: "adjustment",
+    start,
+    duration,
+    grade,
+  };
+  let track = clone.tracks.find((t) => t.id === "adjustments");
+  if (!track) {
+    track = mkTrack("adjustments", "visual");
+    clone.tracks.push(track);
+  }
+  (track.clips as unknown[]).push(clip);
   return parseEditDoc(clone);
 }
 
