@@ -4,6 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.22 — cool accent (emerald/teal) + "easy but pro" polish
+- **New accent:** deep **emerald/teal** (`#0d7a6b`, hover `#0a6b5c`, deep `#0a5648`, near-white mint `--color-onaccent`) replacing coral — AA both as text and as buttons; secondary **steel blue** (`#2f6690`); base harmonized warm→**neutral-slightly-cool** off-white (ink `#f3f4f4`, still not pure white); glow/shadows/Stage backdrop shifted cool. Cohesive, calm, "editing-tool" — no orange, no AI-purple.
+- **Polish:** new `--color-danger` token (`#b42318`, AA) — migrated ~12 files off the near-invisible `text-red-*` dark leftovers so destructive states are legible; richer Stage empty state; hierarchy/consistency tidy-ups. Kept video-content colors untouched.
+- *verified:* typecheck (root+web) + `next build` clean; e2e green except the export spec (a separate real filtergraph bug, fixed in S4.23).
+
 ### S4.21 — fix: real .mp4 export works locally (bundled ffmpeg)
 - Added **`ffmpeg-static`** (free, prebuilt binary) and a shared `resolveFfmpegBin()` (FFMPEG_PATH → bundled ffmpeg-static → system `ffmpeg`) used by both `detectFfmpeg` and `runExport`. **Export now works out of the box** — no Docker or system install needed (the host has no system ffmpeg, which is why export was failing). Marked `ffmpeg-static` a `serverExternalPackage`.
 - *verified:* real end-to-end encode via the bundled ffmpeg 6.1.1 (rendered a proof `.mp4`); typecheck (root+web) + verify + `next build` clean.

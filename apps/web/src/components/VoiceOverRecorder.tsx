@@ -127,9 +127,9 @@ export function VoiceOverRecorder({ disabled, onRecorded }: VoiceOverRecorderPro
         <button
           type="button"
           onClick={stop}
-          className="flex shrink-0 items-center gap-1.5 rounded-full border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs text-red-300 transition hover:bg-red-500/25"
+          className="flex shrink-0 items-center gap-1.5 rounded-full border border-danger/40 bg-danger/15 px-3 py-1.5 text-xs text-danger transition hover:bg-danger/25"
         >
-          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-400" aria-hidden />
+          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-danger" aria-hidden />
           Stop · {fmt(elapsed)}
         </button>
       ) : (
@@ -147,7 +147,7 @@ export function VoiceOverRecorder({ disabled, onRecorded }: VoiceOverRecorderPro
         </button>
       )}
       {error && (
-        <span role="alert" className="max-w-[280px] shrink-0 text-[11px] leading-tight text-red-300">
+        <span role="alert" className="max-w-[280px] shrink-0 text-[11px] leading-tight text-danger">
           {error}
         </span>
       )}

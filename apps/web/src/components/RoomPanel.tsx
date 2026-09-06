@@ -728,7 +728,7 @@ function Scopes({
         <canvas ref={paradeRef} width={220} height={80} className="rounded-lg border border-line bg-panel" />
         <figcaption className="text-[10px] uppercase tracking-wider text-faint">RGB parade</figcaption>
       </figure>
-      {err && <span className="self-center text-[11px] text-red-300">Couldn&apos;t read the frame for scopes.</span>}
+      {err && <span className="self-center text-[11px] text-danger">Couldn&apos;t read the frame for scopes.</span>}
     </div>
   );
 }
@@ -1611,7 +1611,7 @@ function DeliverRoom({
       {/* Honest one-liner: the real render needs ffmpeg. */}
       <span className="shrink-0 basis-full text-[11px] text-faint">
         {thumbState === "error" ? (
-          <span className="text-red-300">Couldn&apos;t render a thumbnail — try again once media is loaded. </span>
+          <span className="text-danger">Couldn&apos;t render a thumbnail — try again once media is loaded. </span>
         ) : null}
         A real .mp4 renders via ffmpeg (<code>docker compose up</code>); without it you get the edit-doc JSON. Thumbnail &amp; .srt download instantly, no ffmpeg.
       </span>
@@ -2314,7 +2314,7 @@ function MediaTile({
             disabled={busy}
             aria-label={`Remove ${label}`}
             title="Remove"
-            className="grid h-6 w-6 place-items-center rounded-md bg-black/60 text-white/80 transition hover:bg-red-500/70 disabled:opacity-30"
+            className="grid h-6 w-6 place-items-center rounded-md bg-black/60 text-white/80 transition hover:bg-danger/70 disabled:opacity-30"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
           </button>
@@ -2509,7 +2509,7 @@ function TrackPanel({
                 title={muted ? "Unmute track" : "Mute track"}
                 className={[
                   "ml-0.5 grid h-6 w-6 place-items-center rounded-md transition disabled:opacity-30",
-                  muted ? "text-red-300 hover:bg-red-500/15" : "text-faint hover:bg-line hover:text-text",
+                  muted ? "text-danger hover:bg-danger/15" : "text-faint hover:bg-line hover:text-text",
                 ].join(" ")}
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">

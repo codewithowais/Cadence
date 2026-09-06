@@ -5,32 +5,39 @@
   --font-chrome: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
   --font-voice: var(--font-fraunces), Georgia, "Times New Roman", serif;
 
-  /* Graded LIGHT palette — soft warm off-white base (neutral-warm, not white,
-     not gray-blue). Surfaces get lighter/cleaner as they rise; elevation is
-     carried by subtle warm borders + soft shadows rather than dark fills. */
-  --color-ink: #f6f3ee; /* page base — soft warm off-white (never pure white) */
-  --color-panel: #fcfaf7; /* cards / panels — cleaner near-white */
+  /* Graded LIGHT palette — soft neutral, very-slightly-cool off-white base
+     (not white, not blue-gray). Surfaces get lighter/cleaner as they rise;
+     elevation is carried by subtle cool-neutral borders + soft shadows rather
+     than dark fills. Harmonized toward the cool emerald accent below. */
+  --color-ink: #f3f4f4; /* page base — soft neutral-cool off-white (never pure white) */
+  --color-panel: #fbfcfc; /* cards / panels — cleaner near-white */
   --color-elevated: #ffffff; /* raised menus, inputs, popovers */
-  --color-line: #dbd2c4; /* visible warm border (inputs, cards, dividers) */
-  --color-line-soft: #e7dfd3; /* subtle hairline — still readable on the base */
+  --color-line: #d3d8d8; /* visible cool-neutral border (inputs, cards, dividers) */
+  --color-line-soft: #e3e7e7; /* subtle hairline — still readable on the base */
 
-  --color-text: #211e1a; /* near-black warm — AA everywhere */
-  --color-muted: #6b6358; /* secondary text — AA on all surfaces */
-  --color-faint: #74695a; /* hints — still AA on the off-white base */
+  --color-text: #1b1e1e; /* near-black cool — AA everywhere (~15:1) */
+  --color-muted: #5a615e; /* secondary text — AA on all surfaces (~5.9:1) */
+  --color-faint: #626b67; /* hints — still AA on the off-white base (~5:1) */
 
-  /* Accent (coral / vermilion) = action / brand. Deepened for a light bg so it
-     passes AA both as text (labels/links) AND as a button surface under the
+  /* Accent (deep emerald / teal) = action / brand. Tuned for the light base so
+     it passes AA both as text (labels/links) AND as a button surface under the
      on-accent foreground below. The `amber` token names are kept for
-     zero-churn re-coloring. On light, `bright` is the *hover* and is a touch
-     DEEPER (darkening feedback) so it doubles safely as warning/status text. */
-  --color-amber: #bc4029; /* primary — AA as text (~4.9:1) & button */
-  --color-amber-bright: #a6371f; /* hover (darker) + warning text */
-  --color-amber-deep: #932e19; /* deepest — tints / borders */
-  --color-onaccent: #fff6f2; /* foreground on accent (amber/teal) surfaces */
+     zero-churn re-coloring. `bright` is the *hover* and is a touch DEEPER
+     (darkening feedback). */
+  --color-amber: #0d7a6b; /* primary — AA as text (~4.75:1) & button */
+  --color-amber-bright: #0a6b5c; /* hover (deeper) + status text (~5.8:1) */
+  --color-amber-deep: #0a5648; /* deepest — tints / borders (~7.8:1) */
+  --color-onaccent: #f2faf8; /* foreground on accent (amber/teal) surfaces */
 
-  /* Teal = selection / sparing secondary — deepened for AA on light */
-  --color-teal: #0f766e;
-  --color-teal-soft: #147d72;
+  /* Steel blue = selection / "is on" / sparing secondary — AA on light */
+  --color-teal: #2f6690; /* ~5.6:1 as text on base */
+  --color-teal-soft: #35759f; /* brighter hover — AA (~4.5:1) */
+
+  /* Danger = destructive actions. A deep red that stays AA as text on the light
+     base/panels (the old raw `red-200/300` Tailwind tints were near-invisible
+     here). Use `bg-danger`, `text-danger`, `border-danger` + opacity for tints. */
+  --color-danger: #b42318; /* ~6:1 as text on base */
+  --color-danger-bright: #971a11; /* hover (deeper) */
 }
 
 /* ---- Base ------------------------------------------------------------ */
@@ -44,11 +51,11 @@ body {
   font-family: var(--font-chrome);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* subtle graded warmth on the off-white — a faint coral whisper top-left,
-     a teal counterpoint top-right. Kept very low-alpha so the base stays calm. */
+  /* subtle graded cool tint on the off-white — a faint emerald whisper top-left,
+     a steel-blue counterpoint top-right. Kept very low-alpha so the base stays calm. */
   background-image:
-    radial-gradient(1200px 600px at 12% -10%, rgba(188, 64, 41, 0.05), transparent 60%),
-    radial-gradient(1000px 700px at 110% 10%, rgba(15, 118, 110, 0.035), transparent 55%);
+    radial-gradient(1200px 600px at 12% -10%, rgba(13, 122, 107, 0.05), transparent 60%),
+    radial-gradient(1000px 700px at 110% 10%, rgba(47, 102, 144, 0.04), transparent 55%);
   background-attachment: fixed;
 }
 

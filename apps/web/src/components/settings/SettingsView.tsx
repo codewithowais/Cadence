@@ -83,7 +83,7 @@ export function SettingsView(props: SettingsViewProps) {
               className={[
                 "whitespace-nowrap rounded-lg px-3.5 py-2 text-sm font-medium transition",
                 selected ? "bg-elevated text-text shadow-sm" : "text-muted hover:text-text",
-                t.id === "danger" && selected ? "text-red-200" : "",
+                t.id === "danger" && selected ? "text-danger" : "",
               ].join(" ")}
             >
               {t.label}

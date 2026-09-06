@@ -96,7 +96,7 @@ export function ProjectCard({
           id={menuId}
           role="menu"
           aria-label={`Actions for ${project.name}`}
-          className="absolute right-0 top-full z-20 mt-1.5 w-44 overflow-hidden rounded-xl border border-line bg-panel p-1 shadow-xl shadow-[rgba(41,35,28,0.14)]"
+          className="absolute right-0 top-full z-20 mt-1.5 w-44 overflow-hidden rounded-xl border border-line bg-panel p-1 shadow-xl shadow-[rgba(24,34,38,0.14)]"
         >
           <Link
             href={`/project/${project.id}`}
@@ -135,7 +135,7 @@ export function ProjectCard({
               setOpen(false);
               onDelete(project.id, project.name);
             }}
-            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm text-red-300 transition hover:bg-red-500/10"
+            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm text-danger transition hover:bg-danger/10"
           >
             <MenuIcon name="delete" /> Delete
           </button>

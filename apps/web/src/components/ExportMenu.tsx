@@ -113,7 +113,7 @@ export function ExportMenu({ doc, canExport, busy, onExport }: ExportMenuProps) 
         <div
           role="dialog"
           aria-label="Export options"
-          className="absolute right-0 top-full z-40 mt-2 w-64 rounded-2xl border border-line bg-panel p-4 text-left shadow-[0_16px_44px_-16px_rgba(41,35,28,0.22)]"
+          className="absolute right-0 top-full z-40 mt-2 w-64 rounded-2xl border border-line bg-panel p-4 text-left shadow-[0_16px_44px_-16px_rgba(24,34,38,0.22)]"
         >
           <div className="space-y-3">
             <div>

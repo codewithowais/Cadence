@@ -246,7 +246,7 @@ export function ProjectHub({ initialProjects }: { initialProjects: DashProject[]
       </div>
 
       {notice && (
-        <div role="alert" className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-200">
+        <div role="alert" className="mt-4 rounded-xl border border-danger/30 bg-danger/10 px-4 py-2.5 text-sm text-danger">
           {notice}
         </div>
       )}

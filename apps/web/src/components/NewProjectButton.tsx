@@ -51,7 +51,7 @@ export function NewProjectButton({ disabled }: { disabled?: boolean }) {
       >
         {busy ? "Creating…" : "New project"}
       </button>
-      {error && <span className="text-xs text-red-300">{error}</span>}
+      {error && <span className="text-xs text-danger">{error}</span>}
     </div>
   );
 }

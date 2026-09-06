@@ -90,7 +90,7 @@ export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFi
                 m.role === "you"
                   ? "voice bg-elevated text-text"
                   : m.tone === "error"
-                    ? "border border-red-500/30 bg-red-500/10 text-red-300"
+                    ? "border border-danger/30 bg-danger/10 text-danger"
                     : m.tone === "edit"
                       ? "border border-teal/25 bg-teal/10 text-text"
                       : "bg-elevated/60 text-muted",
@@ -109,7 +109,7 @@ export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFi
               <button
                 type="button"
                 onClick={onCancel}
-                className="ml-2 rounded-full border border-line bg-elevated px-2.5 py-0.5 text-[11px] text-muted transition hover:border-red-500/40 hover:text-red-300"
+                className="ml-2 rounded-full border border-line bg-elevated px-2.5 py-0.5 text-[11px] text-muted transition hover:border-danger/40 hover:text-danger"
               >
                 Cancel
               </button>

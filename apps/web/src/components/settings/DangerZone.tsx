@@ -26,10 +26,10 @@ export function DangerZone({ role }: { role: string | null }) {
         </form>
       </div>
 
-      <div className="rounded-xl border border-red-500/30 bg-red-500/[0.06] p-4">
+      <div className="rounded-xl border border-danger/30 bg-danger/[0.06] p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-red-200">Delete workspace</h3>
+            <h3 className="text-sm font-semibold text-danger">Delete workspace</h3>
             <p className="mt-0.5 text-sm text-muted">
               Permanently removes this workspace and every project, asset, and version in it. This can't be undone.
             </p>
@@ -39,12 +39,12 @@ export function DangerZone({ role }: { role: string | null }) {
             disabled
             aria-disabled="true"
             title="Contact support to delete a workspace"
-            className="w-full cursor-not-allowed rounded-xl border border-red-500/40 bg-transparent px-4 py-2 text-sm font-semibold text-red-300/60 opacity-60 sm:w-auto"
+            className="w-full cursor-not-allowed rounded-xl border border-danger/40 bg-transparent px-4 py-2 text-sm font-semibold text-danger/70 opacity-60 sm:w-auto"
           >
             Delete workspace
           </button>
         </div>
-        <p className="mt-3 border-t border-red-500/20 pt-3 text-xs text-muted">
+        <p className="mt-3 border-t border-danger/20 pt-3 text-xs text-muted">
           Workspace deletion is owner-only and handled manually to prevent accidental data loss.{" "}
           {role === "owner" ? (
             <>

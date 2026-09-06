@@ -1747,7 +1747,7 @@ function TrackHeader({
             disabled={!canRemove}
             aria-label={`Remove ${trackLabel(track)} track`}
             title={canRemove ? "Remove track" : "The base video track can't be removed"}
-            className="ml-auto grid h-4 w-4 place-items-center rounded text-faint transition hover:bg-red-500/15 hover:text-red-300 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-faint"
+            className="ml-auto grid h-4 w-4 place-items-center rounded text-faint transition hover:bg-danger/15 hover:text-danger disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-faint"
           >
             <Icon path={ICONS.close} />
           </button>
@@ -2054,7 +2054,7 @@ function ClipInspector({
         type="button"
         onClick={() => edit.onRippleDelete(clip.id)}
         title="Delete and close the gap (Del)"
-        className="rounded-md border border-line bg-panel px-2 py-1 text-red-300 transition hover:bg-red-500/15"
+        className="rounded-md border border-line bg-panel px-2 py-1 text-danger transition hover:bg-danger/15"
       >
         Ripple delete
       </button>
@@ -2639,7 +2639,7 @@ function KeyframeEditor({
           <button
             type="button"
             onClick={() => edit.onRemoveKeyframe(clip.id, sel.prop, sel.t)}
-            className="rounded-md border border-line bg-panel px-2 py-0.5 text-red-300 transition hover:bg-red-500/15"
+            className="rounded-md border border-line bg-panel px-2 py-0.5 text-danger transition hover:bg-danger/15"
           >
             Remove
           </button>

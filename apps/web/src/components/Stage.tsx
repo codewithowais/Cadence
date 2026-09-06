@@ -206,12 +206,16 @@ export function Stage(props: StageProps) {
       <div className="flex min-h-0 flex-1 items-center justify-center p-4 sm:p-6">
         <div
           ref={frameRef}
-          className="relative flex max-h-full items-center justify-center overflow-hidden rounded-2xl border border-line bg-[#1b1713] shadow-[0_18px_50px_-20px_rgba(41,35,28,0.30)]"
+          className="relative flex max-h-full items-center justify-center overflow-hidden rounded-2xl border border-line bg-[#12181a] shadow-[0_18px_50px_-20px_rgba(24,34,38,0.30)]"
           style={{ aspectRatio: `${doc.meta.width} / ${doc.meta.height}`, maxWidth: "100%", height: "100%" }}
         >
           {!hasMedia && (
-            <div className="grid h-full w-full place-items-center text-faint">
-              <span className="text-sm">Preview will appear here</span>
+            <div className="grid h-full w-full place-items-center px-6 text-center">
+              <div className="flex flex-col items-center gap-2.5 text-white/45">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 9h20M7 5v14M17 5v14M5 5v14M19 5v14" /></svg>
+                <span className="text-sm font-medium text-white/70">Preview will appear here</span>
+                <span className="text-xs text-white/40">Add media in the Media room, then describe an edit or use the timeline.</span>
+              </div>
             </div>
           )}
 

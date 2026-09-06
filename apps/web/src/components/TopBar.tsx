@@ -122,7 +122,7 @@ function OverflowMenu(props: {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
       </button>
       {open && (
-        <div role="menu" className="absolute right-0 top-full z-40 mt-2 w-52 rounded-2xl border border-line bg-panel p-1.5 shadow-[0_16px_44px_-16px_rgba(41,35,28,0.22)]">
+        <div role="menu" className="absolute right-0 top-full z-40 mt-2 w-52 rounded-2xl border border-line bg-panel p-1.5 shadow-[0_16px_44px_-16px_rgba(24,34,38,0.22)]">
           <button type="button" role="menuitem" className={`${item} text-muted hover:bg-elevated hover:text-text`} onClick={() => { setOpen(false); props.onShowShortcuts(); }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12" /></svg>
             Keyboard shortcuts
@@ -131,7 +131,7 @@ function OverflowMenu(props: {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
             Duplicate as new
           </button>
-          <button type="button" role="menuitem" className={`${item} text-red-300 hover:bg-red-500/10`} onClick={() => { setOpen(false); props.onStartOver(); }}>
+          <button type="button" role="menuitem" className={`${item} text-danger hover:bg-danger/10`} onClick={() => { setOpen(false); props.onStartOver(); }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
             Start over
           </button>

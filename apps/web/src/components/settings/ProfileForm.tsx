@@ -78,7 +78,7 @@ export function ProfileForm({
         />
         <p id={`${nameId}-help`} className="mt-1.5 text-xs text-faint">
           {tooLong ? (
-            <span className="text-red-300">That name is too long (max 120 characters).</span>
+            <span className="text-danger">That name is too long (max 120 characters).</span>
           ) : (
             "This is how your name appears to your workspace."
           )}
@@ -100,7 +100,7 @@ export function ProfileForm({
         </button>
         <span aria-live="polite" className="text-sm">
           {status.kind === "ok" && <span className="text-teal">{status.msg}</span>}
-          {status.kind === "error" && <span className="text-red-300">{status.msg}</span>}
+          {status.kind === "error" && <span className="text-danger">{status.msg}</span>}
         </span>
       </div>
 
