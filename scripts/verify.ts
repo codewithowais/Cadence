@@ -26,6 +26,10 @@
  *   17 agentic loop: runDirectorLoop (plan→act→verify→correct) verifies + renders,
  *      and recovers a broken Director output to a safe doc (full 5-prompt suite:
  *      `npm run evals`)
+ *   55 per-cut transition: setTransition({clipId}/{atSec}) retargets ONE cut only
+ *      (renders + xfade on that boundary, others unchanged); clearTransition → hard cut
+ *   56 manual keyframes: setKeyframe upsert · moveKeyframe re-sort · removeKeyframe
+ *      delete · valueAt reflects each · keyframed proof frame
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -89,14 +93,19 @@ import {
   applyVfx,
   audioFade,
   autoReframe,
+  clearTransition,
+  clipKeyframes,
   editByTranscript,
   freezeFrame,
   generateVoiceoverTool,
+  moveKeyframe,
   normalizeLoudness,
   reframe,
   reframeTo,
+  removeKeyframe,
   removeSilence,
   reverseClip,
+  setKeyframe,
   setPan,
   setPlatform,
   setQuality,
@@ -2186,6 +2195,167 @@ async function checkMultiTrackLayers(): Promise<void> {
   console.log(`  [32m✔[0m check 54 (multi-track layers): 2-layer doc paints bottom→top (${n}b) + upper overlays/blends OVER base (v0) on export; hidden track skipped in canvas+export; mute/solo drop audio (anullsink); addTrack/reorder/move(free start)/lock-guarded remove`);
 }
 
+/** A 3-cut, hard-cut video doc (clips laid back-to-back, no transition). */
+function threeCutDoc(): EditDoc {
+  return parseEditDoc({
+    version: 1,
+    meta: { title: "cuts3", width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "clip-001", kind: "video", src: "/media/clip-001.mp4", durationSec: 180 }],
+    tracks: [
+      {
+        id: "video",
+        kind: "visual",
+        clips: [
+          { id: "c0", kind: "video", start: 0, duration: 4, mediaId: "clip-001", sourceIn: 6, transform: { x: 960, y: 540 } },
+          { id: "c1", kind: "video", start: 4, duration: 5, mediaId: "clip-001", sourceIn: 40, transform: { x: 960, y: 540 } },
+          { id: "c2", kind: "video", start: 9, duration: 4, mediaId: "clip-001", sourceIn: 80, transform: { x: 960, y: 540 } },
+        ],
+      },
+    ],
+  });
+}
+
+function videoClips(doc: EditDoc): VideoClip[] {
+  return doc.tracks.find((t) => t.id === "video")!.clips.filter((c): c is VideoClip => c.kind === "video");
+}
+
+async function checkPerCutTransition(): Promise<void> {
+  // Wave C P1-1: setTransition can target ONE cut's incoming boundary via clipId
+  // (or atSec), leaving every other cut as it is — while the global path is
+  // unchanged. Start from an all-crossfade 3-cut sequence, then re-target the
+  // middle boundary (c1) to dip-to-black.
+  const base = setTransition(threeCutDoc(), "crossfade");
+  const b = videoClips(base);
+  assert(b.every((c) => c.transitionType === "crossfade"), "global path: every cut should be crossfade");
+  assert(b[1]!.transitionInSec > 0 && b[2]!.transitionInSec > 0, "global path: non-first cuts overlap");
+
+  const perCut = setTransition(base, "dip-to-black", 0.6, { clipId: "c1" });
+  const p = videoClips(perCut);
+  // ONLY c1's incoming boundary changed.
+  assert(p[1]!.transitionType === "dip-to-black", "per-cut: c1 should become dip-to-black");
+  assert(p[2]!.transitionType === "crossfade", "per-cut: c2 (other cut) must be UNAFFECTED");
+  assert(p[0]!.transitionType === "crossfade", "per-cut: c0 must be UNAFFECTED");
+  // Geometry of the untouched boundary is byte-identical (c2 keeps its overlap/start).
+  assert(p[2]!.start === b[2]!.start && p[2]!.transitionInSec === b[2]!.transitionInSec, "per-cut: c2's overlap must be untouched");
+  // c1 still carries a transition and still overlaps c0 (real A→B dissolve).
+  assert(p[1]!.transitionInSec > 0, "per-cut: c1 should still carry a transition");
+  const overlapStart = p[1]!.start;
+  const overlapEnd = p[0]!.start + p[0]!.duration;
+  assert(overlapStart < overlapEnd - 1e-6, "per-cut: c1 should overlap c0");
+  const activeVids = activeClipsAt(perCut, (overlapStart + overlapEnd) / 2).filter(({ clip }) => clip.kind === "video");
+  assert(activeVids.length === 2, `per-cut: both clips active mid-transition, got ${activeVids.length}`);
+  const n = await renderAndAssert(perCut, (overlapStart + overlapEnd) / 2, "verify-percut-transition.png");
+
+  // Export: the c1 boundary is fadeblack, the c2 boundary is still fade — both
+  // present, proving only the targeted cut changed on export too.
+  const plan = buildExportPlan(perCut, (id) => `/media/${id}.mp4`, "/out/percut.mp4");
+  assert(plan.filterComplex.includes("xfade=transition=fadeblack:"), "per-cut: c1 boundary should be xfade fadeblack on export");
+  assert(plan.filterComplex.includes("xfade=transition=fade:"), "per-cut: c2 boundary should stay xfade fade on export");
+
+  // atSec targeting hits the cut active at that time. Pick a time past c1's end
+  // (clips overlap by the transition, so only c2 is active there — first match wins).
+  const atSec = p[1]!.start + p[1]!.duration + 1;
+  assert(atSec >= p[2]!.start && atSec < p[2]!.start + p[2]!.duration, "atSec should fall inside c2 only");
+  const byAt = setTransition(base, "wipe", 0.6, { atSec });
+  const a = videoClips(byAt);
+  assert(a[2]!.transitionType === "wipe", "atSec: the cut active at atSec should become wipe");
+  assert(a[1]!.transitionType === "crossfade", "atSec: c1 (other cut) must be UNAFFECTED");
+  const aplan = buildExportPlan(byAt, (id) => `/media/${id}.mp4`, "/out/percut-at.mp4");
+  assert(aplan.filterComplex.includes("xfade=transition=wipeleft:"), "atSec: c2 boundary should be xfade wipeleft on export");
+
+  // clearTransition turns one cut back into a hard cut (transitionInSec → 0) and
+  // closes the neighbour back-to-back.
+  const cleared = clearTransition(base, "c1");
+  const cc = videoClips(cleared);
+  assert(cc[1]!.transitionInSec === 0, "clear: c1 should become a hard cut (transitionInSec 0)");
+  assert(Math.abs(cc[1]!.start - (cc[0]!.start + cc[0]!.duration)) < 1e-6, "clear: c1 should lay back-to-back after c0");
+  assert(cc[2]!.transitionInSec > 0, "clear: c2 (other cut) must keep its transition");
+
+  console.log(`  [32m✔[0m check 55 (per-cut transition): setTransition({clipId}) sets only c1 (dip→fadeblack) with c2 untouched (still fade) on export (${n}b); atSec targets the active cut (wipe→wipeleft); clearTransition → hard cut; global path unchanged`);
+}
+
+/** A single-video-clip doc with a known clip id, for manual keyframe ops. */
+function keyframeDoc(): EditDoc {
+  return parseEditDoc({
+    version: 1,
+    meta: { title: "kf", width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "m", kind: "video", src: "/media/m.mp4", durationSec: 60 }],
+    tracks: [
+      {
+        id: "video",
+        kind: "visual",
+        clips: [{ id: "kf", kind: "video", start: 0, duration: 6, mediaId: "m", sourceIn: 0, transform: { x: 960, y: 540 } }],
+      },
+    ],
+  });
+}
+
+function kfClip(doc: EditDoc): VideoClip {
+  return doc.tracks[0]!.clips.find((c): c is VideoClip => c.id === "kf")!;
+}
+
+async function checkManualKeyframes(): Promise<void> {
+  // Wave C P1-2: the timeline diamond editor's pure ops. t is CLIP-PROGRESS 0..1
+  // (the unit valueAt uses), NOT clip-relative seconds.
+
+  // (a) setKeyframe INSERTS, sorted.
+  let doc = setKeyframe(keyframeDoc(), "kf", { prop: "scale", t: 1, value: 2 });
+  doc = setKeyframe(doc, "kf", { prop: "scale", t: 0, value: 1 });
+  doc = setKeyframe(doc, "kf", { prop: "scale", t: 0.5, value: 1.5 });
+  let kfs = clipKeyframes(kfClip(doc), "scale");
+  assert(kfs.length === 3, `setKeyframe should have inserted 3 keyframes, got ${kfs.length}`);
+  assert(kfs[0]!.t === 0 && kfs[1]!.t === 0.5 && kfs[2]!.t === 1, "setKeyframe should keep the array sorted by t");
+  assert(Math.abs(valueAt(kfClip(doc).keyframes, "scale", 0.5, 1) - 1.5) < 1e-9, "valueAt should read the inserted midpoint (1.5)");
+
+  // (b) setKeyframe REPLACES at ~t (upsert), not inserting a duplicate.
+  doc = setKeyframe(doc, "kf", { prop: "scale", t: 0.5, value: 1.75, easing: "ease-in" });
+  kfs = clipKeyframes(kfClip(doc), "scale");
+  assert(kfs.length === 3, `setKeyframe upsert should NOT add a duplicate at ~t, got ${kfs.length}`);
+  assert(kfs[1]!.value === 1.75 && kfs[1]!.easing === "ease-in", "setKeyframe upsert should replace value + easing at ~t");
+  assert(Math.abs(valueAt(kfClip(doc).keyframes, "scale", 0.5, 1) - 1.75) < 1e-9, "valueAt should reflect the replaced value (1.75)");
+
+  // (c) moveKeyframe re-times (and re-sorts); optional new value applies.
+  doc = moveKeyframe(doc, "kf", "scale", 0.5, 0.9);
+  kfs = clipKeyframes(kfClip(doc), "scale");
+  assert(kfs.map((k) => k.t).join(",") === "0,0.9,1", `moveKeyframe should re-sort to 0,0.9,1, got ${kfs.map((k) => k.t).join(",")}`);
+  assert(!kfs.some((k) => Math.abs(k.t - 0.5) < 1e-6), "moveKeyframe should leave nothing at the old t");
+  assert(kfs.find((k) => k.t === 0.9)!.value === 1.75, "moveKeyframe without a value keeps the old value");
+  doc = moveKeyframe(doc, "kf", "scale", 0.9, 0.8, 1.9);
+  kfs = clipKeyframes(kfClip(doc), "scale");
+  assert(kfs.find((k) => k.t === 0.8)!.value === 1.9, "moveKeyframe with a value updates it");
+
+  // (d) removeKeyframe deletes at ~t; last removal drops the array entirely.
+  doc = removeKeyframe(doc, "kf", "scale", 0.8);
+  kfs = clipKeyframes(kfClip(doc), "scale");
+  assert(kfs.length === 2 && !kfs.some((k) => Math.abs(k.t - 0.8) < 1e-6), "removeKeyframe should delete the keyframe at ~t");
+  // Surviving keyframes are t=0(v1,linear) and t=1(v2,linear); valueAt at p=0.8
+  // now interpolates linearly to 1.8 (the deleted midpoint no longer bends it).
+  assert(Math.abs(valueAt(kfClip(doc).keyframes, "scale", 0.8, 1) - 1.8) < 1e-9, "valueAt after removal should interpolate the surviving endpoints (1.8)");
+
+  // Proof frame: a keyframed doc renders and differs from the same doc with no
+  // keyframes (the diamonds actually drive the picture).
+  const proof = setKeyframe(setKeyframe(keyframeDoc(), "kf", { prop: "scale", t: 0, value: 1 }), "kf", { prop: "scale", t: 1, value: 2 });
+  const n = await renderAndAssert(proof, 3, "verify-manual-keyframe.png");
+  const withKf = await renderBytes(proof, 3);
+  const noKf = await renderBytes(keyframeDoc(), 3);
+  assert(!withKf.equals(noKf), "the keyframed scale should change the rendered frame");
+
+  // Full removal → keyframes gone, clip back to its static value.
+  let bare = removeKeyframe(proof, "kf", "scale", 0);
+  bare = removeKeyframe(bare, "kf", "scale", 1);
+  assert(kfClip(bare).keyframes === undefined, "removing the last keyframe should drop the keyframes array");
+
+  // Guards: unknown clipId + missing keyframe throw.
+  let threw = false;
+  try { setKeyframe(keyframeDoc(), "nope", { prop: "scale", t: 0, value: 1 }); } catch { threw = true; }
+  assert(threw, "setKeyframe on an unknown clipId should throw");
+  threw = false;
+  try { moveKeyframe(keyframeDoc(), "kf", "scale", 0.5, 0.6); } catch { threw = true; }
+  assert(threw, "moveKeyframe with no matching keyframe should throw");
+
+  console.log(`  [32m✔[0m check 56 (manual keyframes): setKeyframe insert(3, sorted)+upsert-at-t; moveKeyframe re-sorts (0,0.9,1)+value; removeKeyframe deletes & drops the array; valueAt reflects each; keyframed frame differs (${n}b); guards throw`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -2242,6 +2412,8 @@ async function main(): Promise<void> {
   await checkTranscriberFactory();
   await checkAgenticLoop();
   await checkSecurityGuard();
+  await checkPerCutTransition();
+  await checkManualKeyframes();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }
 

@@ -53,12 +53,15 @@ import {
   addVoiceover,
   carryOverAudio,
   chromaKey,
+  clearTransition,
   editByTranscript,
   freezeFrame,
+  moveKeyframe,
   normalizeLoudness,
   reframe,
   reframeTo,
   regionBlur,
+  removeKeyframe,
   removeSilence,
   reverseClip,
   setBlend,
@@ -564,14 +567,41 @@ export const zoomTool: DirectorTool<{ scale?: number; panXFrac?: number; panYFra
 
 // ---- set_transition --------------------------------------------------------
 
-export const transitionTool: DirectorTool<{ type: TransitionType }> = {
+export const transitionTool: DirectorTool<{
+  type: TransitionType;
+  clipId?: string;
+  atSec?: number;
+}> = {
   name: "set_transition",
   description:
-    "Set the transition style between clips/photos: crossfade, dip-to-black, slide, or wipe.",
-  inputSchema: z.object({ type: z.enum(["crossfade", "dip-to-black", "slide", "wipe"]) }),
+    "Set the transition style: crossfade, dip-to-black, slide, wipe, dissolve, zoom, or smooth. By default it applies to EVERY cut/photo. Pass `clipId` (or `atSec`) to set only ONE cut's incoming boundary (a per-cut transition), leaving the others as they are.",
+  inputSchema: z.object({
+    type: z.enum(["crossfade", "dip-to-black", "slide", "wipe", "dissolve", "zoom", "smooth"]),
+    clipId: z.string().optional(),
+    atSec: z.number().nonnegative().optional(),
+  }),
   async execute(input, ctx) {
-    const doc = setTransition(ctx.project.doc, input.type);
-    return commit(ctx.project, doc, `Set ${input.type} transitions between clips.`);
+    const doc = setTransition(ctx.project.doc, input.type, 0.6, {
+      clipId: input.clipId,
+      atSec: input.atSec,
+    });
+    const where =
+      input.clipId !== undefined
+        ? ` on cut “${input.clipId}”`
+        : input.atSec !== undefined
+          ? ` on the cut at ${input.atSec}s`
+          : " between clips";
+    return commit(ctx.project, doc, `Set ${input.type} transition${where}.`);
+  },
+};
+
+export const clearTransitionTool: DirectorTool<{ clipId: string }> = {
+  name: "clear_transition",
+  description: "Turn one cut's incoming transition back into a hard cut (by clipId).",
+  inputSchema: z.object({ clipId: z.string() }),
+  async execute(input, ctx) {
+    const doc = clearTransition(ctx.project.doc, input.clipId);
+    return commit(ctx.project, doc, `Cleared the transition on cut “${input.clipId}”.`);
   },
 };
 
@@ -765,6 +795,46 @@ export const addKeyframeTool: DirectorTool<{
   async execute(input, ctx) {
     const doc = addKeyframe(ctx.project.doc, input);
     return commit(ctx.project, doc, `Added a ${input.prop} keyframe (t=${input.t} → ${input.value}).`);
+  },
+};
+
+// ---- move_keyframe / remove_keyframe (manual keyframe parity) ---------------
+
+export const moveKeyframeTool: DirectorTool<{
+  clipId: string;
+  prop: KeyframeProp;
+  fromT: number;
+  toT: number;
+  value?: number;
+}> = {
+  name: "move_keyframe",
+  description:
+    "Move an existing keyframe on a clip (by clipId): the `prop` keyframe at `fromT` (0..1 clip-progress) moves to `toT`, optionally changing its `value`.",
+  inputSchema: z.object({
+    clipId: z.string(),
+    prop: z.enum(KF_PROPS),
+    fromT: z.number().min(0).max(1),
+    toT: z.number().min(0).max(1),
+    value: z.number().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = moveKeyframe(ctx.project.doc, input.clipId, input.prop, input.fromT, input.toT, input.value);
+    return commit(ctx.project, doc, `Moved the ${input.prop} keyframe (t=${input.fromT} → ${input.toT}).`);
+  },
+};
+
+export const removeKeyframeTool: DirectorTool<{ clipId: string; prop: KeyframeProp; t: number }> = {
+  name: "remove_keyframe",
+  description:
+    "Delete a keyframe on a clip (by clipId): the `prop` keyframe at `t` (0..1 clip-progress). The clip falls back to its static value when its last keyframe is removed.",
+  inputSchema: z.object({
+    clipId: z.string(),
+    prop: z.enum(KF_PROPS),
+    t: z.number().min(0).max(1),
+  }),
+  async execute(input, ctx) {
+    const doc = removeKeyframe(ctx.project.doc, input.clipId, input.prop, input.t);
+    return commit(ctx.project, doc, `Removed the ${input.prop} keyframe (t=${input.t}).`);
   },
 };
 
@@ -1267,6 +1337,7 @@ export const DIRECTOR_TOOLS = {
   set_speed: speedTool,
   zoom: zoomTool,
   set_transition: transitionTool,
+  clear_transition: clearTransitionTool,
   apply_vfx: vfxTool,
   style_captions: styleCaptionsTool,
   build_demo: buildDemoTool,
@@ -1275,6 +1346,8 @@ export const DIRECTOR_TOOLS = {
   add_callout: addCalloutTool,
   animate: animateTool,
   add_keyframe: addKeyframeTool,
+  move_keyframe: moveKeyframeTool,
+  remove_keyframe: removeKeyframeTool,
   reverse_clip: reverseClipTool,
   freeze_frame: freezeFrameTool,
   add_marker: addMarkerTool,

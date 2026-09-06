@@ -16,6 +16,7 @@ import {
   type CurvePoint,
   type EditDoc,
   type ImageClip,
+  type Keyframe,
   type KeyframeEasing,
   type KeyframeProp,
   type Mask,
@@ -746,8 +747,101 @@ export function setZoom(
  * Slideshow photos are already laid with this overlap, so re-laying them is
  * idempotent. Faithful: reveal style + timing only, never content.
  */
-export function setTransition(doc: EditDoc, type: TransitionType, transitionSec = 0.6): EditDoc {
+/** A visual clip whose transition + timeline position can be re-laid in place. */
+type OverlapClip = {
+  kind: string;
+  start: number;
+  duration: number;
+  transitionInSec: number;
+  transitionType: TransitionType;
+};
+
+/**
+ * Re-lay a MAIN visual track's clips so each incoming clip that carries a
+ * transition (`transitionInSec > 0`) OVERLAPS the previous one by that duration,
+ * and hard cuts stay back-to-back. This is the exact overlap logic the global
+ * `setTransition` uses, factored out so the per-cut path and `clearTransition`
+ * lay the same geometry (the overlap is what makes preview + xfade export agree).
+ * Mutates in place; respects each clip's OWN `transitionInSec` (does not force one).
+ */
+function relayVisualOverlaps(clips: OverlapClip[]): void {
+  const visual = clips.filter((c) => c.kind === "video" || c.kind === "image");
+  let prev: OverlapClip | null = null;
+  for (const clip of visual) {
+    if (prev && clip.transitionInSec > 0) {
+      // Clamp the overlap so it can't exceed either clip (keeps xfade offset >= 0).
+      const xf = Math.min(clip.transitionInSec, prev.duration - 0.05, clip.duration - 0.05);
+      if (xf > 0 && Math.abs(xf - clip.transitionInSec) > 1e-6) clip.transitionInSec = round(xf);
+      clip.start = round(prev.start + prev.duration - clip.transitionInSec);
+    } else if (prev) {
+      clip.start = round(prev.start + prev.duration);
+    }
+    prev = clip;
+  }
+}
+
+/**
+ * Set the transition style of the main visual clips.
+ *
+ * GLOBAL (default — `opts` empty): every main visual cut/photo gets `type`, each
+ * non-first hard cut gets `transitionSec`, and the track is re-laid so each clip
+ * overlaps the previous by its transition duration (a real A→B dissolve honored
+ * by canvas + Stage + the ffmpeg `xfade` chain). Behavior is unchanged.
+ *
+ * PER-CUT (`opts.clipId` or `opts.atSec`): set ONLY the targeted clip's incoming
+ * boundary — its `transitionType` becomes `type` and, if it was a hard cut, its
+ * `transitionInSec` becomes `transitionSec`. The clip's own track is re-laid so
+ * the new overlap exists while every OTHER cut keeps its current transition
+ * (untouched). This is what the per-cut transitions gallery calls. `clipId` wins
+ * over `atSec`; `atSec` picks the main-visual clip active at that time.
+ *
+ * Faithful: reveal style + timing only, never content.
+ */
+export function setTransition(
+  doc: EditDoc,
+  type: TransitionType,
+  transitionSec = 0.6,
+  opts: { clipId?: string; atSec?: number } = {},
+): EditDoc {
   const clone: EditDoc = structuredClone(doc);
+  const targeted = opts.clipId !== undefined || opts.atSec !== undefined;
+
+  if (targeted) {
+    let target: OverlapClip | null = null;
+    let targetTrack: (typeof clone.tracks)[number] | null = null;
+    for (const track of clone.tracks) {
+      for (const clip of track.clips) {
+        if (clip.kind !== "video" && clip.kind !== "image") continue;
+        const match =
+          opts.clipId !== undefined
+            ? clip.id === opts.clipId
+            : isMainVisualTrack(track.id) &&
+              opts.atSec! >= clip.start &&
+              opts.atSec! < clip.start + clip.duration;
+        if (match) {
+          target = clip as unknown as OverlapClip;
+          targetTrack = track;
+          break;
+        }
+      }
+      if (target) break;
+    }
+    if (!target || !targetTrack) {
+      throw new Error(
+        opts.clipId !== undefined
+          ? `No clip “${opts.clipId}” to set a transition on.`
+          : `No clip at ${opts.atSec}s to set a transition on.`,
+      );
+    }
+    target.transitionType = type;
+    if (target.transitionInSec <= 0) target.transitionInSec = transitionSec;
+    // Re-lay the overlap on a magnetic main track; overlay lanes keep free position.
+    if (isMainVisualTrack(targetTrack.id)) {
+      relayVisualOverlaps(targetTrack.clips as unknown as OverlapClip[]);
+    }
+    return parseEditDoc(clone);
+  }
+
   let changed = 0;
   for (const track of clone.tracks) {
     if (!isMainVisualTrack(track.id)) continue;
@@ -773,6 +867,42 @@ export function setTransition(doc: EditDoc, type: TransitionType, transitionSec 
     });
   }
   if (changed === 0) throw new Error("Add a slideshow or video first — transitions need clips.");
+  return parseEditDoc(clone);
+}
+
+/**
+ * Clear the transition on ONE clip's incoming boundary — turn it back into a hard
+ * cut. There is no "none" value in `TransitionType`; a cut is simply
+ * `transitionInSec = 0` (no reveal ramp on canvas/Stage, no `xfade` on export).
+ * The clip's own main track is re-laid so the neighbour closes back to
+ * back-to-back. `transitionType` is left as-is (inert while the duration is 0).
+ */
+export function clearTransition(doc: EditDoc, clipId: string): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  let targetTrack: (typeof clone.tracks)[number] | null = null;
+  for (const track of clone.tracks) {
+    let found = false;
+    for (const clip of track.clips) {
+      if (
+        (clip.kind === "video" ||
+          clip.kind === "image" ||
+          clip.kind === "text" ||
+          clip.kind === "solid") &&
+        clip.id === clipId
+      ) {
+        clip.transitionInSec = 0;
+        found = true;
+      }
+    }
+    if (found) {
+      targetTrack = track;
+      break;
+    }
+  }
+  if (!targetTrack) throw new Error(`No clip “${clipId}” to clear a transition on.`);
+  if (isMainVisualTrack(targetTrack.id)) {
+    relayVisualOverlaps(targetTrack.clips as unknown as OverlapClip[]);
+  }
   return parseEditDoc(clone);
 }
 
@@ -1053,6 +1183,123 @@ export function addKeyframe(doc: EditDoc, opts: AddKeyframeOpts): EditDoc {
     easing: opts.easing ?? ("linear" as KeyframeEasing),
   };
   clip.keyframes = [...(clip.keyframes ?? []), kf].sort((a, b) => a.t - b.t);
+  return parseEditDoc(clone);
+}
+
+// ---- Manual keyframe ops (timeline diamond editor) -------------------------
+//
+// These target ONE clip by id (the manual UI always knows which diamond it is
+// editing), unlike animate/addKeyframe which pick a clip heuristically for the
+// AI. `t` is CLIP-PROGRESS 0..1 (0 = clip start, 1 = clip end) — the exact unit
+// `valueAt` and `addKeyframe` already use — NOT clip-relative seconds. Each op is
+// pure (structuredClone + parseEditDoc) and keeps `keyframes` sorted so `valueAt`
+// (and its ffmpeg mirror) stay correct.
+
+/** Two keyframes are "the same" when their times differ by less than this (0..1). */
+const KF_T_EPS = 1e-3;
+
+/** An identified, mutable clip inside a structuredClone (safe to mutate). */
+type IdentifiedClip = AnimatableClip & { id: string };
+
+/** Find the clip with `clipId` inside the clone (a reference safe to mutate), or null. */
+function findClipById(clone: EditDoc, clipId: string): IdentifiedClip | null {
+  for (const track of clone.tracks) {
+    for (const clip of track.clips as unknown as IdentifiedClip[]) {
+      if (clip.id === clipId) return clip;
+    }
+  }
+  return null;
+}
+
+/**
+ * The keyframes on `clip` for one `prop`, sorted by time (0..1 clip-progress).
+ * Returns a NEW array (never the clip's own). Handy for the timeline diamond
+ * editor to lay out one prop's sub-lane. Pure — no mutation.
+ */
+export function clipKeyframes(clip: { keyframes?: Keyframe[] }, prop: KeyframeProp): Keyframe[] {
+  return (clip.keyframes ?? []).filter((k) => k.prop === prop).sort((a, b) => a.t - b.t);
+}
+
+export interface SetKeyframeInput {
+  prop: KeyframeProp;
+  /** Clip-progress 0..1 (0 = clip start, 1 = clip end). */
+  t: number;
+  value: number;
+  easing?: KeyframeEasing;
+}
+
+/**
+ * Upsert a keyframe at time `t` on `clipId`'s `keyframes[]`: replace the existing
+ * keyframe for `prop` at ~`t` (within KF_T_EPS) if there is one, otherwise insert
+ * a new one, keeping the array sorted. The op the timeline "add keyframe at
+ * playhead" button and diamond drag-to-set-value both call.
+ */
+export function setKeyframe(doc: EditDoc, clipId: string, input: SetKeyframeInput): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const clip = findClipById(clone, clipId);
+  if (!clip) throw new Error(`No clip “${clipId}” to keyframe.`);
+  if (!clipSupportsProp(clip, input.prop)) {
+    throw new Error(`This ${clip.kind} clip can't be keyframed on “${input.prop}”.`);
+  }
+  const t = round(clamp(input.t, 0, 1));
+  const kf: Keyframe = {
+    prop: input.prop,
+    t,
+    value: round(input.value),
+    easing: input.easing ?? ("linear" as KeyframeEasing),
+  };
+  const kfs = [...(clip.keyframes ?? [])];
+  const idx = kfs.findIndex((k) => k.prop === input.prop && Math.abs(k.t - t) < KF_T_EPS);
+  if (idx >= 0) kfs[idx] = kf;
+  else kfs.push(kf);
+  clip.keyframes = kfs.sort((a, b) => a.t - b.t);
+  return parseEditDoc(clone);
+}
+
+/**
+ * Move a keyframe in time (and optionally change its value): find `prop`'s
+ * keyframe at ~`fromT` on `clipId` and move it to `toT`, keeping easing (unless a
+ * new `value` is given) and re-sorting. The op a diamond horizontal-drag calls.
+ */
+export function moveKeyframe(
+  doc: EditDoc,
+  clipId: string,
+  prop: KeyframeProp,
+  fromT: number,
+  toT: number,
+  value?: number,
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const clip = findClipById(clone, clipId);
+  if (!clip) throw new Error(`No clip “${clipId}” to keyframe.`);
+  const kfs = [...(clip.keyframes ?? [])];
+  const idx = kfs.findIndex((k) => k.prop === prop && Math.abs(k.t - fromT) < KF_T_EPS);
+  if (idx < 0) throw new Error(`No “${prop}” keyframe near t=${round(fromT)} to move.`);
+  const cur = kfs[idx]!;
+  kfs[idx] = {
+    prop,
+    t: round(clamp(toT, 0, 1)),
+    value: value !== undefined ? round(value) : cur.value,
+    easing: cur.easing,
+  };
+  clip.keyframes = kfs.sort((a, b) => a.t - b.t);
+  return parseEditDoc(clone);
+}
+
+/**
+ * Delete `prop`'s keyframe at ~`t` on `clipId`. Throws if none matches (the UI
+ * only deletes a diamond it can see). When the last keyframe is removed the
+ * `keyframes` array is dropped entirely so the clip falls back to its static
+ * transform/volume (valueAt returns the base).
+ */
+export function removeKeyframe(doc: EditDoc, clipId: string, prop: KeyframeProp, t: number): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const clip = findClipById(clone, clipId);
+  if (!clip) throw new Error(`No clip “${clipId}” to keyframe.`);
+  const kfs = clip.keyframes ?? [];
+  const next = kfs.filter((k) => !(k.prop === prop && Math.abs(k.t - t) < KF_T_EPS));
+  if (next.length === kfs.length) throw new Error(`No “${prop}” keyframe near t=${round(t)} to remove.`);
+  clip.keyframes = next.length > 0 ? next : undefined;
   return parseEditDoc(clone);
 }
 

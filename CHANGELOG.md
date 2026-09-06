@@ -4,6 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.4 — Cycle F wave C (engine): per-cut transitions + manual keyframe ops
+- **Per-cut transitions:** `setTransition` gains an optional target (`clipId`/`atSec`) so a transition applies to ONE cut (global path unchanged when omitted); new `clearTransition(doc, clipId)` returns a cut to a hard cut. `set_transition` tool accepts `clipId`/`atSec` (+ all 7 types); new `clear_transition` tool.
+- **Manual keyframe ops** (for the on-timeline diamond editor): `setKeyframe` (upsert at t), `moveKeyframe` (re-time/re-sort), `removeKeyframe` (delete, drops empty array), `clipKeyframes` helper — `t` is clip-progress 0..1 matching `valueAt`. New `move_keyframe`/`remove_keyframe` tools (`add_keyframe` already covers add). No schema change (fields already existed).
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify **56/56** + evals 5/5.
+
 ### S4.3 — Cycle F wave B (web): Walkthrough/Demo room + zoom polish
 - **New "Demo" room** exposing the built-but-hidden interaction-demo engine (was chat-only). Upload screenshots as **Screens** (reorderable), set **seconds/screen + transition + seed-login**, and **Build walkthrough** (`buildDemo`).
 - **Visual on-preview placement** — the headline: arm a mode, then click/drag on the live preview to place things (pointer px → composition fractions): **+ Type here** (`typeText`, with mask-password), **+ Cursor/click** (`addCursor` waypoints + click), **+ Callout** (`addCallout` rect, dim/zoom). Fixes the "no field pixels" caveat by letting the user place by hand. All undoable + live-previewed.
