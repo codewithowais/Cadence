@@ -38,7 +38,19 @@ import {
 } from "@/lib/fx";
 import { EMOJI_STICKERS, TEXT_PRESETS, insertSticker, type PlaceOpts } from "@/lib/text-presets";
 import { fmtTime, download, downloadBlob } from "@/lib/format";
-import { LOOKS, describeDoc } from "@/lib/status";
+import { describeDoc } from "@/lib/status";
+import {
+  LOOK_FAMILIES,
+  ALL_LOOKS,
+  BG_SWATCHES,
+  applyLookPreset,
+  clearLook,
+  looksActive,
+  isNeutralGrade,
+  setBackground,
+  backgroundActive,
+  type LookPreset,
+} from "@/lib/design-presets";
 import { captionsToSrt, hasCaptions } from "@/lib/srt";
 import { renderFrameBlob } from "@/lib/api";
 import { VoiceOverRecorder } from "./VoiceOverRecorder";
@@ -284,9 +296,9 @@ export function RoomPanel(props: RoomPanelProps) {
     );
   }
 
-  if (room === "color") {
+  if (room === "design") {
     return (
-      <ColorRoom
+      <DesignRoom
         doc={doc}
         mediaList={mediaList}
         urls={urls}
@@ -294,21 +306,8 @@ export function RoomPanel(props: RoomPanelProps) {
         timeSec={timeSec}
         onAction={onAction}
         onApplyDoc={onApplyDoc}
-        status={status}
-      />
-    );
-  }
-
-  if (room === "vfx") {
-    return (
-      <VfxRoom
-        doc={doc}
-        mediaList={mediaList}
-        busy={busy}
-        timeSec={timeSec}
-        onAction={onAction}
-        onApplyDoc={onApplyDoc}
         onBeginPlacement={onBeginPlacement}
+        status={status}
       />
     );
   }
@@ -788,7 +787,29 @@ function drawParade(cv: HTMLCanvasElement | null, data: Uint8ClampedArray, sw: n
   ctx.putImageData(img, 0, 0);
 }
 
-function ColorRoom({
+// ---- Design room (unified Looks · Color · Backgrounds · Text · Overlays) ----
+
+type DesignCategory = "looks" | "grade" | "backgrounds" | "text" | "overlays" | "advanced";
+
+const DESIGN_CATEGORIES: { key: DesignCategory; label: string; hint: string }[] = [
+  { key: "looks", label: "Looks", hint: "One-tap filters" },
+  { key: "grade", label: "Color grade", hint: "Fine-tune sliders" },
+  { key: "backgrounds", label: "Backgrounds", hint: "Fill behind the frame" },
+  { key: "text", label: "Text styles", hint: "Titles & captions" },
+  { key: "overlays", label: "Overlays / FX", hint: "B-roll, titles, grain" },
+  { key: "advanced", label: "Advanced", hint: "Chroma, blend, mask" },
+];
+
+const DESIGN_CAT_KEY = "cadence:designCat";
+
+/**
+ * The unified DESIGN room — one browsable surface that replaces the old separate
+ * Color and VFX rooms. A left category list switches the right pane between a
+ * thumbnail LOOKS gallery, the full color-grade controls, a background palette,
+ * a text-style gallery, the overlay/FX presets, and the advanced compositing
+ * controls. Every capability from the old rooms is preserved, just reorganized.
+ */
+function DesignRoom({
   doc,
   mediaList,
   urls,
@@ -796,6 +817,7 @@ function ColorRoom({
   timeSec,
   onAction,
   onApplyDoc,
+  onBeginPlacement,
   status,
 }: {
   doc: EditDoc;
@@ -805,16 +827,293 @@ function ColorRoom({
   timeSec: number;
   onAction: (prompt: string) => void;
   onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+  onBeginPlacement?: BeginPlacement;
   status: ReturnType<typeof describeDoc>;
 }) {
+  void status;
+  const [cat, setCat] = useState<DesignCategory>("looks");
+
+  // Restore the last-open category (client-only).
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(DESIGN_CAT_KEY) as DesignCategory | null;
+      if (saved && DESIGN_CATEGORIES.some((c) => c.key === saved)) setCat(saved);
+    } catch {
+      /* storage may be unavailable */
+    }
+  }, []);
+  const choose = (next: DesignCategory) => {
+    setCat(next);
+    try {
+      localStorage.setItem(DESIGN_CAT_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // The frame the look/grade thumbnails and scopes sample: the first loaded visual.
+  const frameMedia = mediaList.find((m) => (m.kind === "video" || m.kind === "image") && urls[m.id]);
+  const frameUrl = frameMedia ? urls[frameMedia.id] : undefined;
+  const frameKind = (frameMedia?.kind as "video" | "image") ?? "image";
+
+  return (
+    <div
+      aria-label="Design"
+      className="flex max-h-[52vh] gap-0 overflow-hidden border-b border-line-soft bg-panel/30"
+    >
+      {/* Category list (the "one place" navigation). */}
+      <nav
+        aria-label="Design categories"
+        className="flex w-[132px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line-soft bg-panel/40 p-2"
+      >
+        {DESIGN_CATEGORIES.map((c) => {
+          const active = c.key === cat;
+          return (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => choose(c.key)}
+              aria-current={active ? "true" : undefined}
+              title={c.hint}
+              className={[
+                "flex flex-col items-start rounded-lg px-2.5 py-1.5 text-left transition",
+                active ? "bg-amber/10 text-amber" : "text-muted hover:bg-elevated hover:text-text",
+              ].join(" ")}
+            >
+              <span className="text-xs font-medium">{c.label}</span>
+              <span className="text-[10px] leading-tight text-faint">{c.hint}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Active category content. */}
+      <div className="min-w-0 flex-1 overflow-y-auto px-4 py-3">
+        {cat === "looks" && (
+          <LooksGallery
+            doc={doc}
+            mediaList={mediaList}
+            busy={busy}
+            frameUrl={frameUrl}
+            frameKind={frameKind}
+            timeSec={timeSec}
+            onApplyDoc={onApplyDoc}
+          />
+        )}
+        {cat === "grade" && (
+          <GradeControls
+            doc={doc}
+            mediaList={mediaList}
+            urls={urls}
+            busy={busy}
+            timeSec={timeSec}
+            onApplyDoc={onApplyDoc}
+          />
+        )}
+        {cat === "backgrounds" && <BackgroundsGallery doc={doc} busy={busy} onApplyDoc={onApplyDoc} />}
+        {cat === "text" && (
+          <TextStylesGallery
+            doc={doc}
+            mediaList={mediaList}
+            busy={busy}
+            timeSec={timeSec}
+            onApplyDoc={onApplyDoc}
+            onBeginPlacement={onBeginPlacement}
+          />
+        )}
+        {cat === "overlays" && <OverlaysSection mediaList={mediaList} busy={busy} onAction={onAction} />}
+        {cat === "advanced" && (
+          <AdvancedFx doc={doc} mediaList={mediaList} busy={busy} onApplyDoc={onApplyDoc} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** A small 16:9 preview of the user's frame with a look's CSS filter applied. */
+function LookThumb({
+  url,
+  kind,
+  filter,
+}: {
+  url?: string;
+  kind: "video" | "image";
+  filter: string;
+}) {
+  if (url && kind === "video") {
+    return (
+      <video
+        src={url}
+        muted
+        playsInline
+        preload="metadata"
+        aria-hidden
+        onLoadedMetadata={(e) => {
+          const v = e.currentTarget;
+          try {
+            v.currentTime = Math.min(1, (v.duration || 2) / 2);
+          } catch {
+            /* first frame is fine */
+          }
+        }}
+        style={{ filter }}
+        className="h-full w-full object-cover"
+      />
+    );
+  }
+  if (url) {
+    return <img src={url} alt="" style={{ filter }} className="h-full w-full object-cover" />;
+  }
+  // No footage yet — preview the filter over a representative gradient so the
+  // card still communicates the look.
+  return (
+    <div
+      style={{ filter, background: "linear-gradient(135deg,#3a4a63 0%,#c98a4a 55%,#e8d9b0 100%)" }}
+      className="h-full w-full"
+    />
+  );
+}
+
+/**
+ * The LOOKS gallery — a CapCut-style grid of named filters, grouped by family,
+ * each rendering the user's OWN current frame with that look's grade applied via
+ * the pure `cssFilter`. Clicking a card applies the look INSTANTLY through the
+ * undoable commit path (no Director round-trip) — the latency fix (A8).
+ */
+function LooksGallery({
+  doc,
+  mediaList,
+  busy,
+  frameUrl,
+  frameKind,
+  timeSec,
+  onApplyDoc,
+}: {
+  doc: EditDoc;
+  mediaList: MediaAsset[];
+  busy: boolean;
+  frameUrl?: string;
+  frameKind: "video" | "image";
+  timeSec: number;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+}) {
+  void timeSec;
   const hasVisual = mediaList.some((m) => m.kind === "video" || m.kind === "image");
-  // The sliders are read straight from the doc — the single source of truth — so
-  // they always reflect whatever grade is applied (a preset, an NL tweak, reset).
+  const disabled = busy || !hasVisual;
+  const grade = currentGrade(doc);
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+
+  const apply = (look: LookPreset) => {
+    if (disabled) return;
+    onApplyDoc(applyLookPreset(doc, look));
+  };
+  const neutral = isNeutralGrade(grade);
+
+  const families = LOOK_FAMILIES.map((f) => ({
+    ...f,
+    looks: q ? f.looks.filter((l) => l.label.toLowerCase().includes(q)) : f.looks,
+  })).filter((f) => f.looks.length > 0);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] text-faint">
+          Tap a filter to apply it to your footage — instant &amp; undoable. Each tile previews the look on your frame.
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search looks…"
+            aria-label="Search looks"
+            className="w-[130px] rounded-full border border-line bg-elevated px-3 py-1 text-xs text-text placeholder:text-faint"
+          />
+          <button
+            type="button"
+            onClick={() => !disabled && onApplyDoc(clearLook(doc))}
+            disabled={disabled || neutral}
+            className="shrink-0 rounded-full border border-line bg-elevated px-3 py-1 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:opacity-40"
+          >
+            Original
+          </button>
+        </div>
+      </div>
+
+      {!hasVisual && (
+        <p className="rounded-lg border border-line bg-elevated/40 px-3 py-2 text-xs text-faint">
+          Add a video or photo first — then every filter previews on your own frame.
+        </p>
+      )}
+
+      {families.map((fam) => (
+        <section key={fam.key} className="flex flex-col gap-1.5">
+          <h3 className="text-[10px] uppercase tracking-wider text-faint">{fam.label}</h3>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2">
+            {fam.looks.map((look) => {
+              const active = looksActive(look, grade);
+              return (
+                <button
+                  key={look.key}
+                  type="button"
+                  onClick={() => apply(look)}
+                  disabled={disabled}
+                  aria-label={look.label}
+                  aria-pressed={active}
+                  className={[
+                    "group flex flex-col overflow-hidden rounded-lg border text-left transition disabled:opacity-50",
+                    active ? "border-teal/60 ring-1 ring-teal/40" : "border-line hover:border-amber/50",
+                  ].join(" ")}
+                >
+                  <span className="relative block aspect-video w-full overflow-hidden bg-panel">
+                    <LookThumb url={frameUrl} kind={frameKind} filter={cssFilter(look.grade)} />
+                    {active && (
+                      <span className="absolute right-1 top-1 grid h-4 w-4 place-items-center rounded-full bg-teal text-[10px] font-bold text-ink">
+                        ✓
+                      </span>
+                    )}
+                  </span>
+                  <span className="truncate px-1.5 py-1 text-[11px] text-muted group-hover:text-text">
+                    {look.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+      {families.length === 0 && <p className="text-xs text-faint">No looks match “{query}”.</p>}
+    </div>
+  );
+}
+
+/**
+ * The full color-grade controls — brightness/contrast/saturation/warmth/hue
+ * sliders, tone-curve presets + draggable master curve, and the client-only
+ * scopes. Moved verbatim from the old Color room; every control still applies
+ * instantly + undoably through the pure grade fns.
+ */
+function GradeControls({
+  doc,
+  mediaList,
+  urls,
+  busy,
+  timeSec,
+  onApplyDoc,
+}: {
+  doc: EditDoc;
+  mediaList: MediaAsset[];
+  urls: Record<string, string>;
+  busy: boolean;
+  timeSec: number;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+}) {
+  const hasVisual = mediaList.some((m) => m.kind === "video" || m.kind === "image");
   const grade = currentGrade(doc);
   const disabled = busy || !hasVisual;
   const [showScopes, setShowScopes] = useState(false);
 
-  // Merge one field onto the live doc and apply instantly (pure, client-side).
   const set = (partial: Partial<ColorGrade>) => {
     if (!hasVisual) return;
     onApplyDoc(adjustColor(doc, partial), "color");
@@ -831,28 +1130,16 @@ function ColorRoom({
   const hue = grade.hueShift ?? 0;
   const master = grade.curves?.master;
   const masterSig = curveSig(master);
-
-  // The media whose frame the scopes sample: the first loaded visual clip.
   const scopeMedia = mediaList.find((m) => (m.kind === "video" || m.kind === "image") && urls[m.id]);
 
   return (
-    <div aria-label="Color" className="flex max-h-[42vh] flex-col gap-2 overflow-y-auto border-b border-line-soft bg-panel/30 px-4 py-2">
-      {/* Look presets + core grade sliders */}
-      <div className="flex flex-wrap items-center gap-2">
-        {LOOKS.map((l) => {
-          const active = l.key === "none" ? status.look === null : status.look?.toLowerCase() === l.label.toLowerCase();
-          return (
-            <Pill
-              key={l.key}
-              onClick={() => onAction(l.key === "none" ? "remove the color grade" : `give it a ${l.key} look`)}
-              disabled={busy || mediaList.length === 0}
-              active={active}
-            >
-              {l.label}
-            </Pill>
-          );
-        })}
-        <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
+    <div className="flex flex-col gap-3">
+      {!hasVisual && (
+        <p className="rounded-lg border border-line bg-elevated/40 px-3 py-2 text-xs text-faint">
+          Add a video or photo to grade it.
+        </p>
+      )}
+      <div className="flex flex-wrap items-end gap-3">
         <GradeSlider label="Brightness" value={grade.brightness} min={0.5} max={1.5} disabled={disabled} onChange={(v) => set({ brightness: v })} />
         <GradeSlider label="Contrast" value={grade.contrast} min={0.5} max={1.5} disabled={disabled} onChange={(v) => set({ contrast: v })} />
         <GradeSlider label="Saturation" value={grade.saturation} min={0} max={2} disabled={disabled} onChange={(v) => set({ saturation: v })} />
@@ -880,7 +1167,6 @@ function ColorRoom({
         </button>
       </div>
 
-      {/* Tone curve: presets + a draggable master curve (→ adjustCurves) */}
       <Row label="curve">
         {CURVE_PRESETS.map((p) => (
           <Pill
@@ -898,7 +1184,6 @@ function ColorRoom({
         </span>
       </Row>
 
-      {/* Scopes (client-only): histogram + RGB parade from the preview frame */}
       <Row label="scopes">
         <Pill onClick={() => setShowScopes((s) => !s)} disabled={!scopeMedia} active={showScopes}>
           {showScopes ? "Hide scopes" : "Show scopes"}
@@ -908,6 +1193,58 @@ function ColorRoom({
         )}
         {showScopes && !scopeMedia && <span className="text-[11px] text-faint">Load a video or photo to see levels.</span>}
       </Row>
+    </div>
+  );
+}
+
+/**
+ * The background palette — a curated swatch grid. Picking a swatch sets
+ * `meta.background`, the colour shown behind fit-to-frame content and in any
+ * letterbox bars (e.g. after a 2.39:1 reframe). Solid only (no schema change);
+ * gradients are noted as out of scope.
+ */
+function BackgroundsGallery({
+  doc,
+  busy,
+  onApplyDoc,
+}: {
+  doc: EditDoc;
+  busy: boolean;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-[11px] text-faint">
+        Sets the colour behind your frame — it shows in letterbox bars and behind photos that don&apos;t fill the aspect.
+      </p>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-2">
+        {BG_SWATCHES.map((sw) => {
+          const active = backgroundActive(sw, doc);
+          return (
+            <button
+              key={sw.key}
+              type="button"
+              onClick={() => !busy && onApplyDoc(setBackground(doc, sw.color))}
+              disabled={busy}
+              aria-label={`Background ${sw.label}`}
+              aria-pressed={active}
+              className={[
+                "group flex flex-col overflow-hidden rounded-lg border text-left transition disabled:opacity-50",
+                active ? "border-teal/60 ring-1 ring-teal/40" : "border-line hover:border-amber/50",
+              ].join(" ")}
+            >
+              <span className="relative block aspect-video w-full" style={{ backgroundColor: sw.color }}>
+                {active && (
+                  <span className="absolute right-1 top-1 grid h-4 w-4 place-items-center rounded-full bg-teal text-[10px] font-bold text-ink">
+                    ✓
+                  </span>
+                )}
+              </span>
+              <span className="truncate px-1.5 py-1 text-[11px] text-muted group-hover:text-text">{sw.label}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1079,31 +1416,56 @@ const KEY_COLORS: { value: string; label: string }[] = [
 ];
 
 /**
- * VFX room — real, direct controls that apply the PURE compositing/region fns from
- * `@cadence/director` through the editor's undoable commit path (instant preview),
- * plus the existing NL-driven overlays. Chroma / blend / mask composite over the
- * b-roll overlay when present (else the main clip); blur/pixelate hide a region of
- * the MAIN clip — the room states which, so it's never a surprise.
+ * Overlays / FX — the one-click, NL-driven overlay presets (b-roll PiP, punch-in,
+ * kinetic title, fades, vignette, grain, light leak). These are structural edits
+ * the Director composes, so they route through `onAction`; the click still feels
+ * responsive because the Director applies them and commits.
  */
-function VfxRoom({
+function OverlaysSection({
+  mediaList,
+  busy,
+  onAction,
+}: {
+  mediaList: MediaAsset[];
+  busy: boolean;
+  onAction: (prompt: string) => void;
+}) {
+  const noMedia = busy || mediaList.length === 0;
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-[11px] text-faint">One-tap overlays &amp; effects. Titles &amp; b-roll are placed by the Director; everything else previews live.</p>
+      <Row label="effects">
+        <Pill onClick={() => onAction("add b-roll as picture-in-picture")} disabled={noMedia}>+ B-roll</Pill>
+        <Pill onClick={() => onAction("punch in for emphasis at 2s")} disabled={noMedia}>Punch-in</Pill>
+        <Pill onClick={() => onAction('add an animated title that says "Cadence"')} disabled={noMedia}>Kinetic title</Pill>
+        <Pill onClick={() => onAction("add a fade in and out")} disabled={noMedia}>Fade in/out</Pill>
+        <Pill onClick={() => onAction("add a vignette")} disabled={noMedia}>Vignette</Pill>
+        <Pill onClick={() => onAction("add film grain")} disabled={noMedia}>Grain</Pill>
+        <Pill onClick={() => onAction("add a light leak")} disabled={noMedia}>Light leak</Pill>
+      </Row>
+    </div>
+  );
+}
+
+/**
+ * Advanced compositing — the pro controls (chroma key, blend mode, blur/pixelate
+ * region, mask) that apply the PURE compositing/region fns from `@cadence/director`
+ * through the editor's undoable commit path (instant preview). Chroma / blend /
+ * mask composite over the b-roll overlay when present (else the main clip);
+ * blur/pixelate hide a region of the MAIN clip — the room states which.
+ */
+function AdvancedFx({
   doc,
   mediaList,
   busy,
-  timeSec,
-  onAction,
   onApplyDoc,
-  onBeginPlacement,
 }: {
   doc: EditDoc;
   mediaList: MediaAsset[];
   busy: boolean;
-  timeSec: number;
-  onAction: (prompt: string) => void;
   onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
-  onBeginPlacement?: BeginPlacement;
 }) {
   const hasVisual = mediaList.some((m) => m.kind === "video" || m.kind === "image");
-  const noMedia = busy || mediaList.length === 0;
   const disabled = busy || !hasVisual;
 
   const W = doc.meta.width;
@@ -1185,27 +1547,12 @@ function VfxRoom({
   };
 
   return (
-    <div aria-label="VFX" className="flex max-h-[42vh] flex-col gap-2 overflow-y-auto border-b border-line-soft bg-panel/30 px-4 py-2">
-      {/* Existing NL-driven overlays (kept) */}
-      <Row label="effects">
-        <Pill onClick={() => onAction("add b-roll as picture-in-picture")} disabled={noMedia}>+ B-roll</Pill>
-        <Pill onClick={() => onAction("punch in for emphasis at 2s")} disabled={noMedia}>Punch-in</Pill>
-        <Pill onClick={() => onAction('add an animated title that says "Cadence"')} disabled={noMedia}>Kinetic title</Pill>
-        <Pill onClick={() => onAction("add a fade in and out")} disabled={noMedia}>Fade in/out</Pill>
-        <Pill onClick={() => onAction("add a vignette")} disabled={noMedia}>Vignette</Pill>
-        <Pill onClick={() => onAction("add film grain")} disabled={noMedia}>Grain</Pill>
-        <Pill onClick={() => onAction("add a light leak")} disabled={noMedia}>Light leak</Pill>
-      </Row>
-
-      {/* Stickers + one-click text presets (→ insertSticker / TEXT_PRESETS) */}
-      <StickersTextSection
-        doc={doc}
-        disabled={disabled}
-        timeSec={timeSec}
-        onApplyDoc={onApplyDoc}
-        onBeginPlacement={onBeginPlacement}
-      />
-
+    <div aria-label="Advanced FX" className="flex flex-col gap-2">
+      {!hasVisual && (
+        <p className="rounded-lg border border-line bg-elevated/40 px-3 py-2 text-xs text-faint">
+          Add a video or photo to use chroma key, blend, blur and masks.
+        </p>
+      )}
       {/* Chroma key (→ chromaKey / clearChroma) */}
       <Row label="chroma key">
         <Pill onClick={toggleChroma} disabled={disabled} active={!!chroma}>
@@ -1320,35 +1667,37 @@ function VfxRoom({
   );
 }
 
-// ---- Stickers + text presets -----------------------------------------------
+// ---- Text styles + stickers gallery ----------------------------------------
 
 /**
- * A discoverable picker for emoji STICKERS and one-click styled TEXT PRESETS.
- * Every insert reuses the engine's text/title fns (via `@/lib/text-presets`) and
- * applies through the undoable `onApplyDoc` (commit) path. Inserts land centered
- * at the playhead by default; with "Place on preview" armed, the next pick drops
- * where the user clicks on the Stage (reuses `onBeginPlacement`).
+ * The TEXT-styles gallery — a browsable grid of one-click styled TEXT PRESETS
+ * (each rendering a live "Aa" preview in its own style) plus the emoji STICKER
+ * picker. Every insert reuses the engine's text/title fns (via `@/lib/text-presets`)
+ * and applies through the undoable `onApplyDoc` (commit) path. Inserts land
+ * centered at the playhead by default; with "Place on preview" armed, the next
+ * pick drops where the user clicks on the Stage (reuses `onBeginPlacement`).
  */
-function StickersTextSection({
+function TextStylesGallery({
   doc,
-  disabled,
+  mediaList,
+  busy,
   timeSec,
   onApplyDoc,
   onBeginPlacement,
 }: {
   doc: EditDoc;
-  disabled?: boolean;
+  mediaList: MediaAsset[];
+  busy: boolean;
   timeSec: number;
   onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
   onBeginPlacement?: BeginPlacement;
 }) {
+  const disabled = busy || mediaList.length === 0;
   const [draft, setDraft] = useState("");
   const [placeMode, setPlaceMode] = useState(false);
   const startSec = round2(Math.max(0, timeSec));
   const canPlace = !!onBeginPlacement;
 
-  // Resolve placement (if armed), then apply the caller-provided builder. The
-  // builder receives timing + optional placed fractions and returns the new doc.
   const drop = async (build: (opts: PlaceOpts) => EditDoc, text?: string) => {
     if (disabled) return;
     const base: PlaceOpts = { text, startSec };
@@ -1363,24 +1712,8 @@ function StickersTextSection({
   };
 
   return (
-    <>
-      <Row label="stickers">
-        {EMOJI_STICKERS.map((emoji) => (
-          <button
-            key={emoji}
-            type="button"
-            onClick={() => void drop((o) => insertSticker(doc, emoji, o))}
-            disabled={disabled}
-            aria-label={`Add ${emoji} sticker`}
-            title="Preview is exact. Emoji fidelity in the exported .mp4 depends on the render machine's fonts."
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-elevated text-lg leading-none transition hover:border-amber/40 disabled:opacity-40"
-          >
-            {emoji}
-          </button>
-        ))}
-      </Row>
-
-      <Row label="text">
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <input
           type="text"
           value={draft}
@@ -1388,17 +1721,8 @@ function StickersTextSection({
           placeholder="Your text (optional)"
           disabled={disabled}
           aria-label="Text for the preset overlay"
-          className="w-[160px] shrink-0 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-text placeholder:text-faint disabled:opacity-40"
+          className="w-[180px] shrink-0 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-text placeholder:text-faint disabled:opacity-40"
         />
-        {TEXT_PRESETS.map((preset) => (
-          <Pill
-            key={preset.key}
-            onClick={() => void drop((o) => preset.build(doc, o), draft)}
-            disabled={disabled}
-          >
-            {preset.label}
-          </Pill>
-        ))}
         {canPlace && (
           <Pill onClick={() => setPlaceMode((p) => !p)} active={placeMode} disabled={disabled}>
             {placeMode ? "Placing on preview" : "Place on preview"}
@@ -1406,11 +1730,56 @@ function StickersTextSection({
         )}
         <span className="text-[11px] text-faint">
           {placeMode
-            ? "Pick a sticker or preset, then click the preview to drop it."
-            : "Adds centered at the playhead — drag it anywhere on the timeline."}
+            ? "Pick a style, then click the preview to drop it."
+            : "Tap a style — it lands at the playhead. Drag it anywhere on the timeline."}
         </span>
-      </Row>
-    </>
+      </div>
+
+      <section className="flex flex-col gap-1.5">
+        <h3 className="text-[10px] uppercase tracking-wider text-faint">Text styles</h3>
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-2">
+          {TEXT_PRESETS.map((preset) => (
+            <button
+              key={preset.key}
+              type="button"
+              onClick={() => void drop((o) => preset.build(doc, o), draft)}
+              disabled={disabled}
+              aria-label={preset.label}
+              className="group flex flex-col overflow-hidden rounded-lg border border-line text-left transition hover:border-amber/50 disabled:opacity-50"
+            >
+              <span className="grid h-12 w-full place-items-center overflow-hidden bg-[#141821] px-2">
+                <span
+                  className="max-w-full truncate text-lg leading-none"
+                  style={preset.previewStyle}
+                >
+                  {(draft.trim() || preset.sample).slice(0, 14)}
+                </span>
+              </span>
+              <span className="truncate px-1.5 py-1 text-[11px] text-muted group-hover:text-text">{preset.label}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-1.5">
+        <h3 className="text-[10px] uppercase tracking-wider text-faint">Stickers</h3>
+        <div className="flex flex-wrap gap-1.5">
+          {EMOJI_STICKERS.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              onClick={() => void drop((o) => insertSticker(doc, emoji, o))}
+              disabled={disabled}
+              aria-label={`Add ${emoji} sticker`}
+              title="Preview is exact. Emoji fidelity in the exported .mp4 depends on the render machine's fonts."
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-line bg-elevated text-lg leading-none transition hover:border-amber/40 disabled:opacity-40"
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 

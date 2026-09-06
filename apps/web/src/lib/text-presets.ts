@@ -16,6 +16,7 @@
  */
 import { addKineticTitle, addTitle } from "@cadence/director";
 import { parseEditDoc, type EditDoc, type FontWeight } from "@cadence/core";
+import type { CSSProperties } from "react";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
 
@@ -111,6 +112,8 @@ export interface TextPreset {
   label: string;
   /** Placeholder used when the user typed nothing. */
   sample: string;
+  /** Approximate CSS so the Design gallery can render a live "Aa" preview chip. */
+  previewStyle?: CSSProperties;
   build: (doc: EditDoc, opts: PlaceOpts) => EditDoc;
 }
 
@@ -120,6 +123,7 @@ export const TEXT_PRESETS: TextPreset[] = [
     key: "bold-title",
     label: "Bold Title",
     sample: "BOLD TITLE",
+    previewStyle: { fontFamily: "Montserrat, sans-serif", fontWeight: 800, color: "#ffffff", textShadow: "0 1px 2px #000, 0 0 2px #000" },
     build: (doc, o) =>
       insertTextOverlay(doc, {
         text: (o.text && o.text.trim()) || "BOLD TITLE",
@@ -140,6 +144,7 @@ export const TEXT_PRESETS: TextPreset[] = [
     key: "subtitle",
     label: "Subtitle",
     sample: "Subtitle text",
+    previewStyle: { fontFamily: "Inter, sans-serif", fontWeight: 500, color: "#ffffff", background: "#0a0d12cc", padding: "2px 6px", borderRadius: "4px" },
     build: (doc, o) =>
       insertTextOverlay(doc, {
         text: (o.text && o.text.trim()) || "Subtitle text",
@@ -158,6 +163,7 @@ export const TEXT_PRESETS: TextPreset[] = [
     key: "handwritten",
     label: "Handwritten",
     sample: "handwritten",
+    previewStyle: { fontFamily: '"Segoe Script", "Comic Sans MS", cursive', color: "#ffffff" },
     build: (doc, o) =>
       insertTextOverlay(doc, {
         text: (o.text && o.text.trim()) || "handwritten",
@@ -176,6 +182,7 @@ export const TEXT_PRESETS: TextPreset[] = [
     key: "meme",
     label: "Meme",
     sample: "TOP TEXT",
+    previewStyle: { fontFamily: "Impact, sans-serif", fontWeight: 700, color: "#ffffff", textShadow: "0 0 3px #000, 0 1px 2px #000", letterSpacing: "0.02em" },
     build: (doc, o) =>
       insertTextOverlay(doc, {
         text: (o.text && o.text.trim()) || "TOP TEXT",
@@ -188,6 +195,160 @@ export const TEXT_PRESETS: TextPreset[] = [
         outline: { color: "#000000", width: Math.round(doc.meta.height * 0.006) },
         xFrac: o.xFrac,
         yFrac: o.yFrac ?? 0.14,
+      }),
+  },
+  {
+    key: "lower-third",
+    label: "Lower Third",
+    sample: "Name · Title",
+    previewStyle: { fontFamily: "Inter, sans-serif", fontWeight: 600, color: "#0a0d12", background: "#f5b944", padding: "2px 6px", borderRadius: "3px" },
+    build: (doc, o) =>
+      insertTextOverlay(doc, {
+        text: (o.text && o.text.trim()) || "Name · Title",
+        startSec: o.startSec,
+        durationSec: 4,
+        titleStyle: "lower-third",
+        fontFamily: "Inter, sans-serif",
+        fontWeight: "semibold",
+        fontSize: Math.round(doc.meta.height * 0.045),
+        color: "#0a0d12",
+        background: "#f5b944",
+        align: "left",
+        xFrac: o.xFrac ?? 0.28,
+        yFrac: o.yFrac ?? 0.82,
+      }),
+  },
+  {
+    key: "caption-box",
+    label: "Caption Box",
+    sample: "Caption",
+    previewStyle: { fontFamily: "Inter, sans-serif", fontWeight: 600, color: "#ffffff", background: "#000000cc", padding: "2px 6px", borderRadius: "4px" },
+    build: (doc, o) =>
+      insertTextOverlay(doc, {
+        text: (o.text && o.text.trim()) || "Caption",
+        startSec: o.startSec,
+        durationSec: 3,
+        fontFamily: "Inter, sans-serif",
+        fontWeight: "semibold",
+        fontSize: Math.round(doc.meta.height * 0.05),
+        color: "#ffffff",
+        background: "#000000cc",
+        yFrac: o.yFrac ?? 0.86,
+        xFrac: o.xFrac,
+      }),
+  },
+  {
+    key: "big-bold",
+    label: "Big Bold Center",
+    sample: "BIG",
+    previewStyle: { fontFamily: "Montserrat, sans-serif", fontWeight: 800, color: "#ffffff", textTransform: "uppercase", textShadow: "0 2px 6px #000" },
+    build: (doc, o) =>
+      insertTextOverlay(doc, {
+        text: (o.text && o.text.trim()) || "BIG STATEMENT",
+        startSec: o.startSec,
+        durationSec: 3,
+        kinetic: true,
+        animStyle: "bounce",
+        fontFamily: "Montserrat, sans-serif",
+        fontWeight: "bold",
+        fontSize: Math.round(doc.meta.height * 0.16),
+        color: "#ffffff",
+        outline: { color: "#000000", width: Math.round(doc.meta.height * 0.004) },
+        xFrac: o.xFrac,
+        yFrac: o.yFrac,
+      }),
+  },
+  {
+    key: "quote",
+    label: "Quote",
+    sample: "“Quote”",
+    previewStyle: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#ffffff", textShadow: "0 1px 3px #000" },
+    build: (doc, o) =>
+      insertTextOverlay(doc, {
+        text: (o.text && o.text.trim()) ? `“${o.text.trim()}”` : "“A memorable quote”",
+        startSec: o.startSec,
+        durationSec: 4,
+        fontFamily: "Georgia, 'Times New Roman', serif",
+        fontSize: Math.round(doc.meta.height * 0.07),
+        color: "#ffffff",
+        xFrac: o.xFrac,
+        yFrac: o.yFrac,
+      }),
+  },
+  {
+    key: "neon",
+    label: "Neon Glow",
+    sample: "NEON",
+    previewStyle: { fontFamily: "Montserrat, sans-serif", fontWeight: 700, color: "#45d3c4", textShadow: "0 0 6px #45d3c4, 0 0 12px #45d3c4" },
+    build: (doc, o) =>
+      insertTextOverlay(doc, {
+        text: (o.text && o.text.trim()) || "NEON",
+        startSec: o.startSec,
+        durationSec: 3,
+        kinetic: true,
+        animStyle: "pop",
+        fontFamily: "Montserrat, sans-serif",
+        fontWeight: "bold",
+        fontSize: Math.round(doc.meta.height * 0.1),
+        color: "#45d3c4",
+        outline: { color: "#0affea", width: Math.round(doc.meta.height * 0.003) },
+        xFrac: o.xFrac,
+        yFrac: o.yFrac,
+      }),
+  },
+  {
+    key: "typewriter",
+    label: "Typewriter",
+    sample: "type…",
+    previewStyle: { fontFamily: '"Courier New", monospace', fontWeight: 600, color: "#ffffff", letterSpacing: "0.04em" },
+    build: (doc, o) =>
+      insertTextOverlay(doc, {
+        text: (o.text && o.text.trim()) || "typed out",
+        startSec: o.startSec,
+        durationSec: 3,
+        fontFamily: '"Courier New", monospace',
+        fontWeight: "semibold",
+        fontSize: Math.round(doc.meta.height * 0.06),
+        color: "#ffffff",
+        background: "#0a0d12aa",
+        xFrac: o.xFrac,
+        yFrac: o.yFrac,
+      }),
+  },
+  {
+    key: "minimal-serif",
+    label: "Minimal Serif",
+    sample: "Serif",
+    previewStyle: { fontFamily: "Georgia, 'Times New Roman', serif", color: "#ffffff", letterSpacing: "0.02em" },
+    build: (doc, o) =>
+      insertTextOverlay(doc, {
+        text: (o.text && o.text.trim()) || "Minimal",
+        startSec: o.startSec,
+        durationSec: 3,
+        fontFamily: "Georgia, 'Times New Roman', serif",
+        fontSize: Math.round(doc.meta.height * 0.075),
+        color: "#ffffff",
+        xFrac: o.xFrac,
+        yFrac: o.yFrac,
+      }),
+  },
+  {
+    key: "outline",
+    label: "Outline",
+    sample: "Aa",
+    previewStyle: { fontFamily: "Montserrat, sans-serif", fontWeight: 800, color: "transparent", WebkitTextStroke: "1px #ffffff" },
+    build: (doc, o) =>
+      insertTextOverlay(doc, {
+        text: (o.text && o.text.trim()) || "OUTLINE",
+        startSec: o.startSec,
+        durationSec: 3,
+        fontFamily: "Montserrat, sans-serif",
+        fontWeight: "bold",
+        fontSize: Math.round(doc.meta.height * 0.11),
+        color: "#00000000",
+        outline: { color: "#ffffff", width: Math.round(doc.meta.height * 0.004) },
+        xFrac: o.xFrac,
+        yFrac: o.yFrac,
       }),
   },
 ];

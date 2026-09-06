@@ -123,10 +123,16 @@ test("video flow: upload → edits → rooms → mute → applied-status → exp
   await rooms.getByRole("button", { name: "Media" }).click();
   await expect(page.getByRole("button", { name: "+ Add media" })).toBeVisible();
 
-  await rooms.getByRole("button", { name: "Color" }).click();
+  // Color + VFX were merged into one browsable "Design" room with a category
+  // list; the same capabilities live under the Looks and Overlays categories.
+  await rooms.getByRole("button", { name: "Design" }).click();
+  const design = page.getByRole("navigation", { name: "Design categories" });
+  // Looks category (default) shows the thumbnail filter gallery incl. Cinematic.
+  await design.getByRole("button", { name: "Looks" }).click();
   await expect(page.getByRole("button", { name: "Cinematic" })).toBeVisible();
 
-  await rooms.getByRole("button", { name: "VFX" }).click();
+  // Overlays / FX category keeps the b-roll + kinetic-title overlays.
+  await design.getByRole("button", { name: "Overlays" }).click();
   await expect(page.getByRole("button", { name: "+ B-roll" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Kinetic title" })).toBeVisible();
 

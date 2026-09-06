@@ -65,7 +65,7 @@ export function EditorPrefs() {
           </SelectWrap>
         </Field>
 
-        <Field id={`${baseId}-look`} label="Default look" hint="Preselected in the Color room.">
+        <Field id={`${baseId}-look`} label="Default look" hint="Preselected in the Design room.">
           <SelectWrap>
             <select
               id={`${baseId}-look`}

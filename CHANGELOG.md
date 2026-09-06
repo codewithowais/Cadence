@@ -4,6 +4,17 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.13 — UX overhaul wave 2: unified Design room + more presets
+- **Merged Color + VFX into one "Design" room** with a persisted category list (Looks · Color grade · Backgrounds · Text styles · Overlays/FX · Advanced) — every prior capability preserved, re-homed. One rail entry.
+- **Thumbnail preview gallery** — each look/preset previews on the user's OWN frame via `cssFilter` (CapCut-style); background swatches; live "Aa" chips for text styles; searchable.
+- **More presets:** 24 looks in 6 families, a 15-swatch background palette, 9 new text-style presets (`lib/design-presets.ts`).
+- **Instant-apply fix:** looks now apply via a client pure fn + undoable commit (no Director round-trip), matching the sliders.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **15/15** (cadence.spec room-nav updated to the Design IA).
+
+### S4.12 — 55 transitions (full ffmpeg xfade set)
+- Expanded `TransitionType` 7 → **55** in 12 groups (fades/wipes/slides/smooths/covers/reveals/opens-closes/shapes/diagonals/slices/zoom/effects); legacy 7 unchanged + first-class. Each maps to its ffmpeg `xfade=transition=` on export; preview approximates every type by family (opacity/translate/clip-path/scale) with a clean crossfade fallback. Exported `TRANSITION_TYPES` + `TRANSITION_GROUPS` for the UI; `set_transition`/`build_demo` accept all 55.
+- *verified:* typecheck + test:unit 49 + verify **60/60** (+check 60) + evals 5/5.
+
 ### S4.11 — UX overhaul wave 1: collapsible rails · media grid · drag-drop · brand dedupe
 - **Collapse/hide both rails** — chat and code panels each collapse to a slim re-open stub, with `[` / `]` / `\` (focus mode) shortcuts and persisted state (chat open, code closed by default). Chat stub shows an unread dot when the Director spoke while hidden.
 - **Removed the duplicate "C" brand mark** (was rendering in both the rooms rail and the chat header) + the redundant tagline; one brand mark now (rooms-rail, doubles as home).
