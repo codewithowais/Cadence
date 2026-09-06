@@ -201,7 +201,7 @@ export const TEXT_PRESETS: TextPreset[] = [
     key: "lower-third",
     label: "Lower Third",
     sample: "Name · Title",
-    previewStyle: { fontFamily: "Inter, sans-serif", fontWeight: 600, color: "#0a0d12", background: "#f5b944", padding: "2px 6px", borderRadius: "3px" },
+    previewStyle: { fontFamily: "Inter, sans-serif", fontWeight: 600, color: "#0a0d12", background: "#f76f53", padding: "2px 6px", borderRadius: "3px" },
     build: (doc, o) =>
       insertTextOverlay(doc, {
         text: (o.text && o.text.trim()) || "Name · Title",
@@ -212,7 +212,7 @@ export const TEXT_PRESETS: TextPreset[] = [
         fontWeight: "semibold",
         fontSize: Math.round(doc.meta.height * 0.045),
         color: "#0a0d12",
-        background: "#f5b944",
+        background: "#f76f53",
         align: "left",
         xFrac: o.xFrac ?? 0.28,
         yFrac: o.yFrac ?? 0.82,

@@ -38,7 +38,7 @@ export default async function LoginPage() {
           className="pointer-events-none absolute inset-0 opacity-70"
           style={{
             backgroundImage:
-              "radial-gradient(600px 320px at 15% 0%, rgba(245,185,68,0.10), transparent 60%), radial-gradient(520px 360px at 100% 100%, rgba(69,211,196,0.08), transparent 55%)",
+              "radial-gradient(600px 320px at 15% 0%, rgba(247,111,83,0.12), transparent 60%), radial-gradient(520px 360px at 100% 100%, rgba(69,211,196,0.08), transparent 55%)",
           }}
         />
         <div className="relative">

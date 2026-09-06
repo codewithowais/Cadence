@@ -344,7 +344,7 @@ export function TranscriptRoom({
 
 function Wrap({ children }: { children: React.ReactNode }) {
   return (
-    <div aria-label="Words" className="flex max-h-[42vh] flex-col gap-2 overflow-y-auto border-b border-line-soft bg-panel/30 px-4 py-2">
+    <div aria-label="Words" className="flex max-h-full flex-col gap-2 overflow-y-auto border-b border-line-soft bg-panel/30 px-4 py-2">
       {children}
     </div>
   );

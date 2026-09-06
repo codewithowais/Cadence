@@ -41,7 +41,7 @@ export function AppliedStatus({ doc, hasMedia }: AppliedStatusProps) {
       aria-label="Applied edits"
       className="flex items-center gap-2 overflow-x-auto border-b border-line-soft bg-panel/20 px-4 py-1.5"
     >
-      <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint">applied</span>
+      <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted">applied</span>
       {chips.map((c) => (
         <span
           key={c.label}

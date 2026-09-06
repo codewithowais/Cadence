@@ -57,14 +57,16 @@ export function RoomsRail({ room, onRoomChange, backHref }: RoomsRailProps) {
             title={`${r.label} — ${r.hint}`}
             aria-current={active ? "page" : undefined}
             className={[
-              "group flex w-full flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-medium transition",
-              active ? "text-amber" : "text-faint hover:text-muted",
+              "group flex w-full flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] transition",
+              active ? "font-semibold text-amber" : "font-medium text-faint hover:text-muted",
             ].join(" ")}
           >
             <span
               className={[
                 "grid h-9 w-9 place-items-center rounded-xl border transition",
-                active ? "border-amber/40 bg-amber/10" : "border-transparent group-hover:border-line",
+                active
+                  ? "border-amber/50 bg-amber/15 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-amber)_30%,transparent)]"
+                  : "border-transparent group-hover:border-line group-hover:bg-elevated",
               ].join(" ")}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">

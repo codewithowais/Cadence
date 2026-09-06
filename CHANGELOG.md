@@ -4,6 +4,12 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.14 — UX overhaul wave 3: new theme + preview-visibility + prominence
+- **New theme** (drops the yellow): a warm **coral/vermilion** accent (`#f76f53`) on a **warm-charcoal** base, teal kept as a sparing secondary — applied app-wide by retokenizing `globals.css` (AA contrast verified), plus purging every hardcoded brand-yellow. Deliberately not the amber-yellow nor the cliché AI indigo/purple.
+- **Fix "can't see the video":** tall rooms (Demo/Design) no longer push the preview off-screen — the room panel is hard-capped with internal scroll and the Stage keeps a floor; the **preview height is user-adjustable** (new divider, persisted) alongside the existing preview↔timeline divider.
+- **Prominence:** stronger rooms-rail active state + clearer section headers.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **16/16** (no selector changes).
+
 ### S4.13 — UX overhaul wave 2: unified Design room + more presets
 - **Merged Color + VFX into one "Design" room** with a persisted category list (Looks · Color grade · Backgrounds · Text styles · Overlays/FX · Advanced) — every prior capability preserved, re-homed. One rail entry.
 - **Thumbnail preview gallery** — each look/preset previews on the user's OWN frame via `cssFilter` (CapCut-style); background swatches; live "Aa" chips for text styles; searchable.

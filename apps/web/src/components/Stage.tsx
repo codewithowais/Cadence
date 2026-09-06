@@ -202,7 +202,7 @@ export function Stage(props: StageProps) {
   }, [timeSec]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-[180px] flex-1 flex-col">
       <div className="flex min-h-0 flex-1 items-center justify-center p-4 sm:p-6">
         <div
           ref={frameRef}

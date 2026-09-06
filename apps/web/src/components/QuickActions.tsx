@@ -43,7 +43,7 @@ export function QuickActions({ mode, busy, onAction }: QuickActionsProps) {
   const actions = mode === "images" ? IMAGE_ACTIONS : VIDEO_ACTIONS;
   return (
     <div className="flex items-center gap-2 overflow-x-auto border-b border-line-soft bg-panel/30 px-4 py-2">
-      <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint">one-tap</span>
+      <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted">one-tap</span>
       {actions.map((a) => (
         <button
           key={a.label}

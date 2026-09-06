@@ -124,7 +124,7 @@ interface RoomPanelProps {
 function Shell({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2 overflow-x-auto border-b border-line-soft bg-panel/30 px-4 py-2">
-      <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint">{label}</span>
+      <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted">{label}</span>
       {children}
     </div>
   );
@@ -859,7 +859,7 @@ function DesignRoom({
   return (
     <div
       aria-label="Design"
-      className="flex max-h-[52vh] gap-0 overflow-hidden border-b border-line-soft bg-panel/30"
+      className="flex max-h-full gap-0 overflow-hidden border-b border-line-soft bg-panel/30"
     >
       {/* Category list (the "one place" navigation). */}
       <nav
@@ -1324,7 +1324,7 @@ function DeliverRoom({
       aria-label="Deliver"
       className="flex flex-wrap items-center gap-2 border-b border-line-soft bg-panel/30 px-4 py-2"
     >
-      <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint">deliver</span>
+      <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted">deliver</span>
 
       {/* Platform presets — each reframes via the existing reframe tool. */}
       <span className="shrink-0 text-[10px] uppercase tracking-wider text-faint">Platform</span>
@@ -1872,7 +1872,7 @@ function AudioRoom({
   };
 
   return (
-    <div aria-label="Audio" className="flex max-h-[42vh] flex-col gap-2 overflow-y-auto border-b border-line-soft bg-panel/30 px-4 py-2">
+    <div aria-label="Audio" className="flex max-h-full flex-col gap-2 overflow-y-auto border-b border-line-soft bg-panel/30 px-4 py-2">
       {/* Sources + mix + preview (kept) */}
       <div className="flex flex-wrap items-center gap-2">
         <Pill onClick={openPicker} disabled={busy}>+ Add music / audio</Pill>
@@ -2187,7 +2187,7 @@ function MediaGrid({
       onDrop={onDropFiles}
     >
       <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-[11px] uppercase tracking-wider text-faint">media</span>
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">media</span>
         <span className="flex items-center gap-2">
           {mediaList.length > 1 && (
             <span className="hidden text-[11px] text-faint sm:inline">Drag a tile onto a lane · reorder or remove on hover</span>
@@ -2204,7 +2204,7 @@ function MediaGrid({
       </div>
       <div
         className={[
-          "grid max-h-[42vh] grid-cols-[repeat(auto-fill,minmax(128px,1fr))] gap-2 overflow-y-auto rounded-lg pr-0.5 transition",
+          "grid max-h-full grid-cols-[repeat(auto-fill,minmax(128px,1fr))] gap-2 overflow-y-auto rounded-lg pr-0.5 transition",
           dropHot ? "outline-dashed outline-2 outline-offset-2 outline-amber/50" : "",
         ].join(" ")}
       >
@@ -2243,7 +2243,7 @@ function TrackPanel({
   if (doc.tracks.length === 0) {
     return (
       <div className="flex items-center gap-2 border-b border-line-soft bg-panel/20 px-4 py-1.5">
-        <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint">tracks</span>
+        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted">tracks</span>
         <span className="text-xs text-faint">No tracks yet — add media to build your timeline.</span>
       </div>
     );
@@ -2254,7 +2254,7 @@ function TrackPanel({
       aria-label="Tracks"
       className="flex items-center gap-2 overflow-x-auto border-b border-line-soft bg-panel/20 px-4 py-1.5"
     >
-      <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint">tracks</span>
+      <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted">tracks</span>
       {doc.tracks.map((track) => {
         const count = track.clips.length;
         const audioClips = track.clips.filter((c): c is AudioClip => c.kind === "audio");

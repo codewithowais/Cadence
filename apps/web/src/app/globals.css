@@ -5,23 +5,24 @@
   --font-chrome: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
   --font-voice: var(--font-fraunces), Georgia, "Times New Roman", serif;
 
-  /* Graded dark palette */
-  --color-ink: #0a0d12;
-  --color-panel: #10151c;
-  --color-elevated: #161d26;
-  --color-line: #232c38;
-  --color-line-soft: #1a212b;
+  /* Graded dark palette — warm charcoal base (neutral-warm, not navy) */
+  --color-ink: #14110e;
+  --color-panel: #1b1713;
+  --color-elevated: #241f19;
+  --color-line: #362e26;
+  --color-line-soft: #251f1a;
 
-  --color-text: #e9eef5;
-  --color-muted: #98a4b3;
-  --color-faint: #667181;
+  --color-text: #f2ece4;
+  --color-muted: #a89f94;
+  --color-faint: #786f64;
 
-  /* Amber = action / brand */
-  --color-amber: #f5b944;
-  --color-amber-bright: #ffca5f;
-  --color-amber-deep: #b9832a;
+  /* Accent (coral / vermilion) = action / brand. The `amber` token names are
+     kept for zero-churn re-coloring; the accent is now warm coral, not yellow. */
+  --color-amber: #f76f53;
+  --color-amber-bright: #ff8a6b;
+  --color-amber-deep: #c74a34;
 
-  /* Teal = selection */
+  /* Teal = selection / sparing secondary */
   --color-teal: #45d3c4;
   --color-teal-soft: #2b7a73;
 }
@@ -37,9 +38,9 @@ body {
   font-family: var(--font-chrome);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* subtle graded glow, top-left amber whisper */
+  /* subtle graded glow, top-left coral whisper + teal counterpoint */
   background-image:
-    radial-gradient(1200px 600px at 12% -10%, rgba(245, 185, 68, 0.06), transparent 60%),
+    radial-gradient(1200px 600px at 12% -10%, rgba(247, 111, 83, 0.07), transparent 60%),
     radial-gradient(1000px 700px at 110% 10%, rgba(69, 211, 196, 0.05), transparent 55%);
   background-attachment: fixed;
 }

@@ -95,6 +95,11 @@ const CODE_MIN = 320;
 const CODE_MAX = 760;
 const TL_MIN = 90;
 const TL_MAX = 460;
+// The contextual options panel (RoomPanel) height. Capped so it can never grow
+// tall enough to push the video preview off-screen; a CSS `min()` further caps
+// it at ~46vh at render time. Resizable + persisted (cadence:roomH).
+const ROOM_MIN = 140;
+const ROOM_MAX = 520;
 const clampPx = (n: number, lo: number, hi: number): number =>
   Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : lo;
 
@@ -205,6 +210,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const [railWidth, setRailWidth] = useState(380);
   const [codeWidth, setCodeWidth] = useState(440);
   const [timelineHeight, setTimelineHeight] = useState(150);
+  const [roomHeight, setRoomHeight] = useState(300);
 
   const urlsRef = useRef(urls);
   urlsRef.current = urls;
@@ -330,6 +336,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       if (c) setCodeWidth(clampPx(Number(c), CODE_MIN, CODE_MAX));
       const t = localStorage.getItem("cadence:tlH");
       if (t) setTimelineHeight(clampPx(Number(t), TL_MIN, TL_MAX));
+      const rh = localStorage.getItem("cadence:roomH");
+      if (rh) setRoomHeight(clampPx(Number(rh), ROOM_MIN, ROOM_MAX));
       // Panel collapse state (B1). Chat defaults OPEN, code defaults CLOSED.
       const ro = localStorage.getItem("cadence:railOpen");
       if (ro === "0") setRailOpen(false);
@@ -361,6 +369,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   useEffect(() => {
     try { localStorage.setItem("cadence:tlH", String(timelineHeight)); } catch { /* noop */ }
   }, [timelineHeight]);
+  useEffect(() => {
+    try { localStorage.setItem("cadence:roomH", String(roomHeight)); } catch { /* noop */ }
+  }, [roomHeight]);
 
   async function handleFiles(files: File[]) {
     const videos = files.filter((f) => f.type.startsWith("video"));
@@ -1431,6 +1442,14 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         {room === "edit" ? (
           <QuickActions mode={hasMedia ? mode : "none"} busy={busy} onAction={handleSend} />
         ) : (
+          <div
+            // Capped, self-scrolling options panel. `min()` guarantees it can
+            // never exceed ~46vh, so the video preview below always stays on
+            // screen no matter how tall the room's content is. Height is
+            // user-adjustable via the divider beneath it and persisted.
+            className="shrink-0 overflow-y-auto max-h-[46vh] md:max-h-[min(var(--room-h),46vh)]"
+            style={{ "--room-h": `${roomHeight}px` } as CSSProperties}
+          >
           <RoomPanel
             room={room}
             doc={doc}
@@ -1460,6 +1479,15 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onSplitAtBeats={splitAtBeats}
             canDetectBeats={!!beatSource}
             markerCount={markers.length}
+          />
+          </div>
+        )}
+        {room !== "edit" && (
+          <ResizeHandle
+            orientation="horizontal"
+            className="hidden md:block"
+            ariaLabel="Resize the options panel"
+            onDelta={(dy) => setRoomHeight((h) => clampPx(h + dy, ROOM_MIN, ROOM_MAX))}
           />
         )}
         <Stage

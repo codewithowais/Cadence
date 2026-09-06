@@ -178,7 +178,7 @@ export const BG_SWATCHES: Swatch[] = [
   { key: "bone", label: "Bone", color: "#e8e2d4" },
   { key: "paper", label: "Paper White", color: "#f7f5ef" },
   { key: "white", label: "White", color: "#ffffff" },
-  { key: "amber", label: "Amber", color: "#f5b944" },
+  { key: "amber", label: "Vermilion", color: "#f76f53" },
   { key: "teal", label: "Teal", color: "#45d3c4" },
   { key: "coral", label: "Coral", color: "#ff6b6b" },
   { key: "magenta", label: "Magenta", color: "#d63cff" },
