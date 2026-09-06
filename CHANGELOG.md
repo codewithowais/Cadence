@@ -4,6 +4,14 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.11 — Cycle E wave 5 (engine): AI-native edge
+- **Transcript-based editing** (`edit_by_transcript`): remove/keep spans by matching words or whole segments ("cut the sentence about…", "keep only where they mention…", "delete every 'um'"). Word-accurate; rebuilds surviving source spans back-to-back.
+- **Silence / dead-air removal** (`remove_silence`): keeps every segment, drops inter-segment gaps beyond a threshold (default 0.6s). Distinct from filler_cut; "tighten the pauses" / "remove dead air" route here.
+- **Auto-reframe** (`auto_reframe`): FREE centered reframe to any aspect (reuses `reframe`) + optional keyframed settle-pan. `subjectTracking` is **money-gated** (no vision provider wired) — the tool says so and returns the free centered reframe.
+- **TTS voice-over seam** (`generate_voiceover`): pluggable `TtsProvider` (`none` default / `cli` / `api`), free-first + honest gating — fails gracefully with a money-gated message when no provider is configured; adds a full-volume `voiceover` track when one is.
+- **Fix:** made `@cadence/understanding` (whisper-transcriber) fully browser-import-safe — all `node:*` built-ins are now lazy-imported so the barrel, re-exported through `@cadence/director` into the client `RoomPanel`, no longer leaks `node:child_process`/`fs` into the browser bundle (was breaking `next build` / the `/editor` route with a Turbopack "does not support external modules" error). TTS values in `tools.ts` are also lazy-imported.
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify **53/53** + evals 5/5 + `next build` clean (editor route restored).
+
 ### S3.9 — Cycle E wave 4 (engine): VFX + color + audio depth
 - **Chroma key** (green screen, `chromakey`+`despill`), **blend modes** (screen/multiply/overlay/add/soft-light), **blur/pixelate regions** (hide a face/plate), **masks** (rect/ellipse + feather/invert), **color curves + HSL hue-shift**, and **audio depth** (per-clip fade in/out, pan, doc-level LUFS `loudnorm`). Each = schema (optional/defaulted) → Director tool + routing → canvas + ffmpeg → verify. Compositing tools target the overlay/b-roll track.
 - *verified:* typecheck (root+web) + test:unit 44/44 + verify **49/49** + evals 5/5 + `next build` clean. (Hardened `appendVideos` to push minimal input clips so future schema fields never break it.)

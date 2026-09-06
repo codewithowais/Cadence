@@ -1401,6 +1401,387 @@ export function normalizeLoudness(doc: EditDoc, on = true): EditDoc {
   return parseEditDoc(clone);
 }
 
+// ---- Transcript-based (text) editing ---------------------------------------
+
+/** Lowercase alphanumeric+apostrophe tokens of a phrase (for word matching). */
+function tokenizePhrase(phrase: string): string[] {
+  return phrase
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s']/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/** Normalize a single transcript word for comparison (drop punctuation, lowercase). */
+function normWord(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
+}
+
+/** Normalize free text (segment/phrase) to a collapsed, punctuation-free lowercase string. */
+function normText(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Word-accurate matches of `tokens` (a phrase) in a flat word list. Returns
+ * inclusive `[startIdx, endIdx]` index ranges into `words`, non-overlapping.
+ */
+function findWordMatches(words: { text: string }[], tokens: string[]): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  if (tokens.length === 0) return out;
+  let i = 0;
+  while (i <= words.length - tokens.length) {
+    let ok = true;
+    for (let k = 0; k < tokens.length; k++) {
+      if (normWord(words[i + k]!.text) !== tokens[k]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) {
+      out.push([i, i + tokens.length - 1]);
+      i += tokens.length;
+    } else {
+      i++;
+    }
+  }
+  return out;
+}
+
+/** How `edit_by_transcript` selects content. */
+export type TranscriptEditMode = "remove" | "keep";
+export type TranscriptEditUnit = "word" | "segment";
+
+export interface TranscriptEditOptions {
+  /** The phrase / pattern to match in the transcript. */
+  phrase: string;
+  /** "remove" the matched spans (default) or "keep" only them. */
+  mode?: TranscriptEditMode;
+  /**
+   * Granularity: "segment" cuts/keeps whole sentences containing the phrase
+   * (great for "cut the sentence about …" / "keep only where they mention …");
+   * "word" cuts/keeps just the matched word spans (great for "delete every 'um'").
+   */
+  unit?: TranscriptEditUnit;
+  width?: number;
+  height?: number;
+  fps?: number;
+  title?: string;
+}
+
+export interface TranscriptEditResult {
+  doc: EditDoc;
+  /** Number of source spans KEPT (laid as clips). */
+  kept: number;
+  /** Number of spans/segments removed by the edit. */
+  removed: number;
+  /** Seconds of source removed relative to the naive full-segment concat. */
+  removedSec: number;
+  /** Whether the phrase matched anything at all. */
+  matched: boolean;
+}
+
+/**
+ * Content-driven cut: given the source video's transcript, rebuild the timeline
+ * from the SOURCE spans that survive a phrase match — word-accurate, in the same
+ * edits-as-code spirit as highlight/filler but driven by what's SAID.
+ *
+ *  - mode "remove" (default): drop the spans matching `phrase`, concatenate the rest.
+ *  - mode "keep": keep ONLY the spans matching `phrase`.
+ *  - unit "segment" (default): operate on whole sentences (transcript segments)
+ *    whose text contains the phrase.
+ *  - unit "word": operate on the exact matched word spans (e.g. delete every "um"),
+ *    keeping the surrounding words of each segment intact.
+ *
+ * Pure + re-parsed through the schema; the kept spans are laid back-to-back so the
+ * result always renders. Faithful: it only re-sequences existing source, never a
+ * content change.
+ */
+export function editByTranscript(
+  media: MediaAsset,
+  transcript: Transcript,
+  opts: TranscriptEditOptions,
+): TranscriptEditResult {
+  const mode: TranscriptEditMode = opts.mode ?? "remove";
+  const unit: TranscriptEditUnit = opts.unit ?? "segment";
+  const width = opts.width ?? media.width ?? 1920;
+  const height = opts.height ?? media.height ?? 1080;
+  const tokens = tokenizePhrase(opts.phrase);
+  const phraseNorm = normText(opts.phrase);
+
+  // Kept SOURCE spans [start,end] (source seconds), in chronological order.
+  const keptSpans: Array<{ start: number; end: number }> = [];
+  let matched = false;
+  let removed = 0;
+  // Baseline (naive) content seconds = the sum of all segment durations, so
+  // removedSec is meaningful regardless of unit.
+  const baselineSec = transcript.segments.reduce((s, seg) => s + Math.max(0, seg.end - seg.start), 0);
+
+  if (unit === "segment") {
+    for (const seg of transcript.segments) {
+      const contains = phraseNorm.length > 0 && normText(seg.text).includes(phraseNorm);
+      if (contains) matched = true;
+      const keepThis = mode === "keep" ? contains : !contains;
+      if (keepThis) keptSpans.push({ start: seg.start, end: seg.end });
+      else removed++;
+    }
+  } else {
+    // Word unit: match on the flat word list, then rebuild kept runs, breaking at
+    // segment boundaries so we never bridge a natural pause/silence.
+    const matches = findWordMatches(transcript.words, tokens);
+    matched = matches.length > 0;
+    removed = matches.length;
+    const removedIdx = new Set<number>();
+    for (const [a, b] of matches) for (let i = a; i <= b; i++) removedIdx.add(i);
+
+    if (mode === "keep") {
+      // Keep only the matched word spans.
+      for (const [a, b] of matches) {
+        keptSpans.push({ start: transcript.words[a]!.start, end: transcript.words[b]!.end });
+      }
+    } else {
+      // Keep everything EXCEPT the matched words, grouped by segment so a segment's
+      // surviving words become one span (approx — uses segment bounds when the
+      // segment carries no per-word timings).
+      for (const seg of transcript.segments) {
+        const segWords = seg.words ?? [];
+        if (segWords.length === 0) {
+          // No word timings on this segment — keep it whole unless a match falls in it.
+          const hasMatch = matches.some(([a, b]) => {
+            const ms = transcript.words[a]?.start ?? -1;
+            const me = transcript.words[b]?.end ?? -1;
+            return me > seg.start && ms < seg.end;
+          });
+          if (!hasMatch) keptSpans.push({ start: seg.start, end: seg.end });
+          continue;
+        }
+        // Group consecutive non-removed words in this segment into runs.
+        let runStart: number | null = null;
+        let runEnd = 0;
+        for (const w of segWords) {
+          const gi = transcript.words.indexOf(w);
+          const isRemoved = gi >= 0 && removedIdx.has(gi);
+          if (isRemoved) {
+            if (runStart !== null) {
+              keptSpans.push({ start: runStart, end: runEnd });
+              runStart = null;
+            }
+          } else {
+            if (runStart === null) runStart = w.start;
+            runEnd = w.end;
+          }
+        }
+        if (runStart !== null) keptSpans.push({ start: runStart, end: runEnd });
+      }
+    }
+  }
+
+  // Lay the kept source spans back-to-back on the timeline.
+  const clips: Array<Record<string, unknown>> = [];
+  let pos = 0;
+  let kept = 0;
+  let keptSec = 0;
+  for (const span of keptSpans) {
+    const dur = Math.max(0.05, span.end - span.start);
+    clips.push({
+      id: `te${kept}`,
+      kind: "video",
+      start: round(pos),
+      duration: round(dur),
+      mediaId: media.id,
+      sourceIn: round(span.start),
+      transform: { x: width / 2, y: height / 2 },
+    });
+    pos += dur;
+    keptSec += dur;
+    kept++;
+  }
+
+  const doc = parseEditDoc({
+    version: 1,
+    meta: {
+      title: opts.title ?? `${media.label ?? "clip"} (transcript edit)`,
+      width,
+      height,
+      fps: opts.fps ?? 30,
+      background: "#0a0d12",
+    },
+    media: [media],
+    tracks: [{ id: "video", kind: "visual", clips }],
+  });
+
+  return { doc, kept, removed, removedSec: round(Math.max(0, baselineSec - keptSec)), matched };
+}
+
+// ---- Silence / dead-air removal --------------------------------------------
+
+export interface RemoveSilenceOptions {
+  /** Inter-segment gaps LONGER than this (seconds) are removed. Default 0.6s. */
+  thresholdSec?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  title?: string;
+}
+
+export interface RemoveSilenceResult {
+  doc: EditDoc;
+  /** Segments kept (all of them — silence removal drops gaps, not content). */
+  segments: number;
+  /** Number of inter-segment gaps that exceeded the threshold and were dropped. */
+  gapsDropped: number;
+  /** Seconds of dead-air removed. */
+  removedSec: number;
+}
+
+/**
+ * Silence / dead-air removal: keep EVERY spoken segment, but drop the inter-segment
+ * gaps longer than `thresholdSec`, tightening pacing. Distinct from `filler_cut`
+ * (which drops filler-heavy segments) — here no content is cut, only the dead air
+ * between sentences. A gap up to the threshold is preserved IN-SOURCE (natural
+ * rhythm); anything beyond it is removed by concatenating the next segment right
+ * after. Leading dead-air before the first segment is dropped for free (the first
+ * clip starts at the segment). Pure + re-parsed. Faithful: re-sequences source only.
+ */
+export function removeSilence(
+  media: MediaAsset,
+  transcript: Transcript,
+  opts: RemoveSilenceOptions = {},
+): RemoveSilenceResult {
+  const threshold = Math.max(0, opts.thresholdSec ?? 0.6);
+  const width = opts.width ?? media.width ?? 1920;
+  const height = opts.height ?? media.height ?? 1080;
+  const segs = transcript.segments;
+
+  const clips: Array<Record<string, unknown>> = [];
+  let pos = 0;
+  let gapsDropped = 0;
+  let removedSec = 0;
+
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i]!;
+    const speech = Math.max(0.05, seg.end - seg.start);
+    const gapAfter = i < segs.length - 1 ? Math.max(0, segs[i + 1]!.start - seg.end) : 0;
+    // Keep up to `threshold` of the trailing pause IN-SOURCE (natural pacing);
+    // drop the excess dead-air beyond it.
+    const keptGap = Math.min(gapAfter, threshold);
+    if (gapAfter > threshold) {
+      gapsDropped++;
+      removedSec += gapAfter - keptGap;
+    }
+    clips.push({
+      id: `sil${i}`,
+      kind: "video",
+      start: round(pos),
+      duration: round(speech + keptGap),
+      mediaId: media.id,
+      sourceIn: round(seg.start),
+      transform: { x: width / 2, y: height / 2 },
+    });
+    pos += speech + keptGap;
+  }
+
+  const doc = parseEditDoc({
+    version: 1,
+    meta: {
+      title: opts.title ?? `${media.label ?? "clip"} (silence removed)`,
+      width,
+      height,
+      fps: opts.fps ?? 30,
+      background: "#0a0d12",
+    },
+    media: [media],
+    tracks: [{ id: "video", kind: "visual", clips }],
+  });
+
+  return { doc, segments: segs.length, gapsDropped, removedSec: round(removedSec) };
+}
+
+// ---- Auto-reframe (subject-aware, FREE + gated tracking) --------------------
+
+export interface AutoReframeOptions {
+  aspect?: AspectKey;
+  width?: number;
+  height?: number;
+  /** Add a subtle keyframed settle-pan toward frame center (free flourish). */
+  pan?: boolean;
+  /**
+   * MONEY-GATED upgrade. When true a VISION provider would drive a keyframed crop
+   * path that follows the subject; there is none wired here, so this is recorded
+   * as intent only and the free CENTERED reframe is produced. The tool surfaces
+   * the honest "subject tracking is a gated upgrade" message. Off by default.
+   */
+  subjectTracking?: boolean;
+}
+
+/**
+ * Auto-reframe to a target aspect while keeping the subject framed. The FREE path
+ * reuses `reframe`/`reframeTo` (which re-anchors every media clip to the frame
+ * CENTER — the subject stays centered), and can add an optional gentle keyframed
+ * settle-pan toward center. `subjectTracking` is a documented, MONEY-GATED upgrade
+ * (a vision model would keyframe a crop path that follows the speaker) — it is NOT
+ * performed here; the flag is accepted and the free centered reframe is returned.
+ * Pure + re-parsed. Faithful: reframes/centers/eases the existing frame only.
+ */
+export function autoReframe(doc: EditDoc, opts: AutoReframeOptions = {}): EditDoc {
+  const reframed =
+    opts.width !== undefined && opts.height !== undefined
+      ? reframeTo(doc, opts.width, opts.height)
+      : reframe(doc, opts.aspect ?? "9:16");
+  if (!opts.pan) return reframed;
+
+  // Free settle-pan: ease each main video clip's horizontal anchor from a small
+  // offset back to the centered position over the clip, so the subject drifts
+  // toward center (a keyframed approximation of "keep me centered" in motion).
+  const clone: EditDoc = structuredClone(reframed);
+  const cx = clone.meta.width / 2;
+  const offset = round(clone.meta.width * 0.06);
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video") continue;
+      const others = (clip.keyframes ?? []).filter((k) => k.prop !== "x");
+      clip.keyframes = [
+        ...others,
+        { prop: "x", t: 0, value: round(cx - offset), easing: "linear" },
+        { prop: "x", t: 1, value: round(cx), easing: "ease-out" },
+      ];
+    }
+  }
+  return parseEditDoc(clone);
+}
+
+// ---- Voice-over (TTS) audio track ------------------------------------------
+
+/**
+ * Add a generated (or supplied) voice-over as a "voiceover" audio track. Mirrors
+ * `addMusic` (adds the asset to media, one audio clip on a dedicated track), but
+ * the VO plays at full volume by default and is NOT ducked. `carryOverAudio`
+ * already preserves the "voiceover" track across rebuilds. Pure + re-parsed.
+ */
+export function addVoiceover(
+  doc: EditDoc,
+  asset: MediaAsset,
+  opts: { startSec?: number; volume?: number; durationSec?: number } = {},
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  if (!clone.media.some((m) => m.id === asset.id)) clone.media.push(asset);
+  clone.tracks = clone.tracks.filter((t) => t.id !== "voiceover");
+  const startSec = Math.max(0, opts.startSec ?? 0);
+  const duration = Math.max(0.1, opts.durationSec ?? asset.durationSec ?? 3);
+  const clip = {
+    id: `vo-${Date.now()}`,
+    kind: "audio" as const,
+    start: round(startSec),
+    duration: round(duration),
+    mediaId: asset.id,
+    sourceIn: 0,
+    volume: opts.volume ?? 1,
+  };
+  clone.tracks.push({ id: "voiceover", kind: "audio", clips: [clip as never] });
+  return parseEditDoc(clone);
+}
+
 /** Add a fade from black at the start and a fade to black at the end. */
 export function addFades(doc: EditDoc, inSec = 0.6, outSec = 0.6): EditDoc {
   const clone: EditDoc = structuredClone(doc);

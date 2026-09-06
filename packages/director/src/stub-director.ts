@@ -19,16 +19,19 @@ import {
   animateTool,
   audioFadeTool,
   autoMixTool,
+  autoReframeTool,
   blurRegionTool,
   brollTool,
   buildDemoTool,
   captionsTool,
   chromaKeyTool,
   createHighlightTool,
+  editByTranscriptTool,
   emphasisTool,
   fadesTool,
   fillerCutTool,
   freezeFrameTool,
+  generateVoiceoverTool,
   kineticTitleTool,
   lookTool,
   musicTool,
@@ -37,6 +40,7 @@ import {
   platformTool,
   qualityTool,
   reframeTool,
+  removeSilenceTool,
   reverseClipTool,
   setBlendTool,
   setPanTool,
@@ -50,7 +54,7 @@ import {
   type ToolCall,
 } from "./tools";
 import { currentGrade } from "./edits";
-import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle } from "./edits";
+import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle, TranscriptEditMode, TranscriptEditUnit } from "./edits";
 import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
 import type { BlendMode, CurvePoint, KeyframeEasing, KeyframeProp } from "@cadence/core";
 
@@ -512,6 +516,106 @@ function parseLoudness(req: string): boolean {
   return /loudnorm|loudness|normali[sz]e (the )?(audio|loudness|sound|mix)|\blufs\b/.test(req);
 }
 
+/** Extract a phrase after a "say/mention/about/…" keyword (case preserved from original). */
+function extractSpokenPhrase(original: string): string | undefined {
+  const m = original.match(
+    /(?:where they say|they say|say|says|saying|mention(?:s|ing)?|talk(?:s|ing)? about|talked about|about)\s+["'“”]?(.+?)["'“”]?[.?!]*\s*$/i,
+  );
+  return m?.[1]?.trim() || undefined;
+}
+
+/**
+ * Parse a transcript-based (text) edit → { phrase, mode, unit }, or null. Handles:
+ *  - "delete every 'um'" / "cut all the likes"           → remove, word
+ *  - "cut the sentence about pricing"                     → remove, segment
+ *  - "remove the part where they say let's begin"         → remove, segment
+ *  - "keep only where they mention the product"           → keep, segment
+ */
+function parseTranscriptEdit(
+  req: string,
+  original: string,
+): { phrase: string; mode: TranscriptEditMode; unit: TranscriptEditUnit } | null {
+  const quoted =
+    original.match(/["'“”]([^"'“”]{1,80})["'“”]/)?.[1]?.trim() ||
+    original.match(/'([^']{1,80})'/)?.[1]?.trim() ||
+    undefined;
+
+  // Keep only the sentences that mention/say/are about a phrase.
+  if (/\bkeep only\b/.test(req) && /(mention|talk|about|say|where|part|section|moment|bit)/.test(req)) {
+    const phrase = quoted ?? extractSpokenPhrase(original);
+    if (phrase) return { phrase, mode: "keep", unit: "segment" };
+  }
+
+  // Delete every occurrence of a word ("delete every um", "cut all the likes").
+  // Skip words that belong to the silence/filler tools so those intents win.
+  const TE_STOPWORDS = new Set(["filler", "pause", "pauses", "silence", "silences", "gap", "gaps", "dead", "air"]);
+  const everyWord = req.match(
+    /\b(?:delete|remove|cut|strip|drop|get rid of)\s+(?:every|all|each|any)\s+(?:the\s+)?["']?([a-z']{1,20}?)["']?s?\b/,
+  );
+  if (everyWord) {
+    const w = quoted ?? everyWord[1];
+    if (w && !TE_STOPWORDS.has(w.toLowerCase())) return { phrase: w, mode: "remove", unit: "word" };
+  }
+
+  // Cut/remove a whole sentence/part matching a phrase.
+  if (
+    /\b(?:cut|remove|delete|drop)\b/.test(req) &&
+    /(sentence|the part|that part|section|segment|paragraph|bit about|where (?:they|he|she|i) say|part where)/.test(req)
+  ) {
+    const phrase = quoted ?? extractSpokenPhrase(original);
+    if (phrase) return { phrase, mode: "remove", unit: "segment" };
+  }
+
+  return null;
+}
+
+/**
+ * Parse an auto-reframe request → { aspect, pan, subjectTracking }, or null.
+ * Handles "auto-reframe to vertical", "reframe and keep me centered", "smart
+ * reframe". subjectTracking (a gated upgrade) is set only when tracking is asked for.
+ */
+function parseAutoReframe(
+  req: string,
+): { aspect: AspectKey; pan?: boolean; subjectTracking?: boolean } | null {
+  const isAuto =
+    /auto.?reframe|smart reframe|reframe (?:and|&) keep|keep (?:me|him|her|them|us|the subject|the speaker|the face|yourself|myself)\s+(?:centered|centred|in frame|in the frame|framed)/.test(
+      req,
+    );
+  if (!isAuto) return null;
+  const aspect = parseAspect(req) ?? "9:16";
+  const subjectTracking =
+    /subject.?track|track(?:ing)? (?:the )?(?:subject|speaker|face|me)|follow (?:me|the subject|the speaker|the face)/.test(
+      req,
+    ) || undefined;
+  const pan = /\bpan\b|settle|drift|glide/.test(req) || undefined;
+  return { aspect, pan, subjectTracking };
+}
+
+/**
+ * Parse a TTS voice-over request → { text }, or null. Handles "voice this over:
+ * '…'", "read this in a voice", "narrate this", "generate a voice-over". The
+ * actual synthesis is money-gated; when no provider is configured the tool fails
+ * gracefully (surfaced by interpret()).
+ */
+function parseVoiceover(req: string, original: string): { text: string } | null {
+  const isVo =
+    /voice.?over|voice (?:this|it) over|read (?:this|it|the following)(?:\s+(?:out )?(?:loud|aloud|in a voice))?|narrat(?:e|ion)|say this in a voice|generate (?:a )?(?:voice|narration)|add (?:a )?voice/.test(
+      req,
+    );
+  if (!isVo) return null;
+  let text =
+    original.match(/["'“”]([^"'“”]{1,300})["'“”]/)?.[1]?.trim() ||
+    original.match(/'([^']{1,300})'/)?.[1]?.trim() ||
+    "";
+  if (!text) {
+    const m = original.match(
+      /(?:voice this over|voice it over|voice over|read this|read it|read the following|narrate|say)\s*[:,-]?\s+(.+?)[.?!]*\s*$/i,
+    );
+    if (m) text = m[1]!.trim();
+  }
+  return { text: text || "voice-over" };
+}
+
 export class StubDirector {
   readonly mode = "stub" as const;
 
@@ -537,7 +641,16 @@ export class StubDirector {
     // NOT (that's a quality change), so the duration unit is required here.
     const wantsHighlight =
       /highlight|best (parts|bits|moments)|shorten|make it [\d.]+[-\s]*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes)\b|trim to|\bcut\b.*\d/.test(req);
-    const wantsFiller = /filler|remove (the )?(um|uh|ums|uhs|pauses|silence|dead ?air)|tighten|clean ?up|remove pauses/.test(req);
+    // Transcript-based (content-driven) edit — a builder like highlight/filler.
+    const transcriptEdit = parseTranscriptEdit(req, request);
+    // Silence / dead-air removal (drops long inter-segment gaps; keeps all segments).
+    const wantsSilence =
+      /remove (?:the )?(?:silence|silences|dead ?air|pauses|gaps)|dead ?air|tighten (?:the )?(?:pauses?|gaps?|silence|dead ?air)|remove the gaps|cut (?:the )?(?:silence|dead ?air|pauses)/.test(
+        req,
+      );
+    // Filler-word removal (drops filler-heavy segments). Narrowed so silence/pause
+    // phrasing routes to remove_silence instead.
+    const wantsFiller = /filler|remove (?:the )?(?:um|uh|ums|uhs|ers?)\b|clean ?up/.test(req);
 
     if (wantsDemo && hasImages) {
       const login = wantsLoginDemo || /\blog ?in\b|\bsign ?in\b|\blogin\b/.test(req);
@@ -551,6 +664,16 @@ export class StubDirector {
       steps.push({
         run: (p) => slideshowTool.execute({ look }, { project: p }),
         call: { name: slideshowTool.name, input: { look } },
+      });
+    } else if (transcriptEdit) {
+      steps.push({
+        run: (p) => editByTranscriptTool.execute(transcriptEdit, { project: p }),
+        call: { name: editByTranscriptTool.name, input: transcriptEdit },
+      });
+    } else if (wantsSilence) {
+      steps.push({
+        run: (p) => removeSilenceTool.execute({}, { project: p }),
+        call: { name: removeSilenceTool.name, input: {} },
       });
     } else if (wantsHighlight) {
       const targetSec = parseTargetSeconds(req);
@@ -578,16 +701,31 @@ export class StubDirector {
       });
     }
 
+    // Auto-reframe ("auto-reframe to vertical", "keep me centered") — a subject-aware
+    // reframe. Takes precedence over the plain aspect/custom reframe below.
+    const autoReframeReq = !platform ? parseAutoReframe(req) : null;
+    if (autoReframeReq) {
+      const input = {
+        aspect: autoReframeReq.aspect,
+        ...(autoReframeReq.pan ? { pan: true } : {}),
+        ...(autoReframeReq.subjectTracking ? { subjectTracking: true } : {}),
+      };
+      steps.push({
+        run: (p) => autoReframeTool.execute(input, { project: p }),
+        call: { name: autoReframeTool.name, input },
+      });
+    }
+
     // A custom width×height ("reframe to 1600x900") wins over a named aspect.
     const custom = parseCustomReframe(req);
     const aspect = parseAspect(req);
-    if (custom) {
+    if (custom && !autoReframeReq) {
       const input = { width: custom.width, height: custom.height };
       steps.push({
         run: (p) => reframeTool.execute(input, { project: p }),
         call: { name: reframeTool.name, input },
       });
-    } else if (aspect && !platform) {
+    } else if (aspect && !platform && !autoReframeReq) {
       steps.push({
         run: (p) => reframeTool.execute({ aspect }, { project: p }),
         call: { name: reframeTool.name, input: { aspect } },
@@ -825,6 +963,18 @@ export class StubDirector {
       });
     }
 
+    // TTS voice-over ("voice this over: '…'", "read this in a voice"). Money-gated:
+    // when no TTS provider is configured the tool fails gracefully with a clear
+    // message (captured per-step below and surfaced in the summary).
+    const voiceover = parseVoiceover(req, request);
+    if (voiceover) {
+      const input = { text: voiceover.text };
+      steps.push({
+        run: (p) => generateVoiceoverTool.execute(input, { project: p }),
+        call: { name: generateVoiceoverTool.name, input },
+      });
+    }
+
     // Audio fade in/out on the music/VO ("fade the music out") — parsed before the
     // black-fade branch so it doesn't add black solids for an audio-fade request.
     const audioFadeReq = parseAudioFade(req);
@@ -917,6 +1067,6 @@ export class StubDirector {
     if (!hasVideo && !hasImages) return "Add a video or some photos to begin.";
     if (hasImages && !hasVideo)
       return 'Try: "make a slideshow", "make an interactive demo from these screenshots", "type email and password then click login", "highlight the sign-in button", "zoom into the menu", "zoom in over time", "make it 21:9", "golden-hour look", "use dissolve transitions", "export for instagram feed", or "make it high quality".';
-    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "cinematic look", "reframe to 1600x900", "slow motion", "zoom in 1.5x", "zoom in over time", "fade the title in", "reverse the clip", "freeze frame at 3s", "add a marker at 12s", "punch in at 5s", "smooth transitions", "add background music", "export for tiktok", "export for youtube", or "make it 4K".';
+    return 'Try: "cut a 60-second highlight", "remove filler words", "remove dead air", "cut the sentence about pricing", "keep only where they mention the product", "delete every um", "auto-reframe to vertical and keep me centered", "voice this over: \'…\'", "make it vertical with captions", "cinematic look", "reframe to 1600x900", "slow motion", "zoom in over time", "reverse the clip", "freeze frame at 3s", "add background music", "export for tiktok", or "make it 4K".';
   }
 }

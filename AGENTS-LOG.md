@@ -21,3 +21,7 @@ run in parallel on disjoint files (packages/* vs apps/web/*), integrated + gated
 - **Wave 3 (foundations):** keyframe engine (`valueAt`), multi-track compositing, reverse/freeze, delivery presets + SRT/thumbnail.
 - **Wave 4 (VFX/color/audio depth):** chroma-key, masks, blur/pixelate, blend modes; curves/HSL/LUTs/scopes; audible multi-track mixer + fades/EQ/LUFS.
 - **Wave 5 (AI edge):** transcript-based editing, auto-reframe w/ subject tracking, silence removal, TTS voice-over.
+
+## Wave 5 delivered (engine) — S3.11
+- Single expert engine agent (economical, disjoint `packages/**`+`scripts/verify.ts`, no-commit): `edit_by_transcript`, `remove_silence`, `auto_reframe` (free centered + gated subject tracking), `generate_voiceover` (pluggable `TtsProvider` none/cli/api, money-gated + graceful). All pure-fn → Director tool → routing → verify; verify 49→**53**.
+- Orchestrator integration fix: `@cadence/understanding` (whisper-transcriber) made fully browser-import-safe — lazy `node:*` imports so the barrel re-exported through `@cadence/director` into the client `RoomPanel` no longer leaks `node:child_process`/`fs` into the browser bundle (was breaking `next build` + `/editor`). Gated + committed.

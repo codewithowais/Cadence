@@ -36,6 +36,10 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - 🎬 **Background music** (`add_music`) — music track, ducked under speech (audible on export).
 - ✅ **Manual nudge** — trim the ending by ±0.1s from the UI.
 - ✅ **`set_timeline`** — the keystone tool; commits a full, schema-validated edit-doc.
+- ✅ **Transcript-based editing** (`edit_by_transcript`) — remove or keep spans by matching words/segments ("cut the sentence about…", "delete every 'um'").
+- ✅ **Silence / dead-air removal** (`remove_silence`) — drop pauses beyond a threshold while keeping every segment ("tighten the pauses").
+- ✅ **Auto-reframe** (`auto_reframe`) — free centered reframe to any aspect + optional settle-pan; subject tracking is a money-gated upgrade (honest note).
+- 🎬 **AI voice-over** (`generate_voiceover`) — pluggable TTS (`none`/`cli`/`api`); money-gated, fails gracefully when no provider is configured.
 
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.

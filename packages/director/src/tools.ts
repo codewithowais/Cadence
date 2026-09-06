@@ -16,6 +16,11 @@ import {
   type MediaAsset,
   type TransitionType,
 } from "@cadence/core";
+// NOTE: only the TYPE is imported statically. The TTS provider values
+// (selectTtsProvider/ttsConfigFromEnv/estimateSpeechSec) are lazy-imported inside
+// generate_voiceover's execute() so the @cadence/understanding barrel — which
+// eagerly pulls whisper-transcriber's `node:child_process` — never enters the
+// client bundle graph when a browser component imports the director barrel.
 import type { Transcript } from "@cadence/understanding";
 import type { ProjectState } from "./project";
 import { buildHighlightDoc } from "./highlight";
@@ -43,13 +48,17 @@ import {
   applyVfx,
   audioFade,
   autoMix,
+  autoReframe,
+  addVoiceover,
   carryOverAudio,
   chromaKey,
+  editByTranscript,
   freezeFrame,
   normalizeLoudness,
   reframe,
   reframeTo,
   regionBlur,
+  removeSilence,
   reverseClip,
   setBlend,
   setPan,
@@ -69,6 +78,8 @@ import {
   type SpeedTarget,
   type TitleAnimStyle,
   type TitleStyle,
+  type TranscriptEditMode,
+  type TranscriptEditUnit,
 } from "./edits";
 
 const KF_PROPS = ["x", "y", "scale", "rotation", "opacity", "volume"] as const;
@@ -1009,8 +1020,140 @@ export const normalizeLoudnessTool: DirectorTool<{ on?: boolean }> = {
   },
 };
 
+// ---- edit_by_transcript (text-based editing) -------------------------------
+
+export const editByTranscriptTool: DirectorTool<{ phrase: string; mode?: TranscriptEditMode; unit?: TranscriptEditUnit }> = {
+  name: "edit_by_transcript",
+  description:
+    "Content-driven cut from the transcript: remove (or keep only) the spans whose words match a phrase, rebuilding the video from the remaining source spans (word-accurate). mode: remove (default) or keep. unit: segment (whole sentences containing the phrase — 'cut the sentence about …', 'keep only where they mention …') or word (the exact matched words — 'delete every um').",
+  inputSchema: z.object({
+    phrase: z.string().min(1),
+    mode: z.enum(["remove", "keep"]).optional(),
+    unit: z.enum(["word", "segment"]).optional(),
+  }),
+  async execute(input, ctx) {
+    const { media, transcript } = sourceVideo(ctx.project);
+    const res = editByTranscript(media, transcript, {
+      phrase: input.phrase,
+      mode: input.mode,
+      unit: input.unit,
+    });
+    if (!res.matched) {
+      throw new Error(`Couldn't find “${input.phrase}” in the transcript — nothing to ${input.mode === "keep" ? "keep" : "cut"}.`);
+    }
+    const mode = input.mode ?? "remove";
+    const verb = mode === "keep" ? "Kept only" : "Removed";
+    return commit(
+      ctx.project,
+      res.doc,
+      `${verb} “${input.phrase}” — ${res.kept} span${res.kept === 1 ? "" : "s"} remain, ` +
+        `${res.removed} ${input.unit === "word" ? "match" : "segment"}${res.removed === 1 ? "" : "es"} ${mode === "keep" ? "isolated" : "cut"} ` +
+        `(-${Math.round(res.removedSec)}s, now ${Math.round(docDurationSec(res.doc))}s).`,
+    );
+  },
+};
+
+// ---- remove_silence (dead-air removal) -------------------------------------
+
+export const removeSilenceTool: DirectorTool<{ thresholdSec?: number }> = {
+  name: "remove_silence",
+  description:
+    "Remove dead air: keep every spoken segment but drop the inter-segment gaps longer than a threshold (default ~0.6s), tightening pacing. Distinct from filler_cut (which drops filler-heavy segments).",
+  inputSchema: z.object({ thresholdSec: z.number().positive().max(10).optional() }),
+  async execute(input, ctx) {
+    const { media, transcript } = sourceVideo(ctx.project);
+    const res = removeSilence(media, transcript, { thresholdSec: input.thresholdSec });
+    return commit(
+      ctx.project,
+      res.doc,
+      `Removed dead air — dropped ${res.gapsDropped} gap${res.gapsDropped === 1 ? "" : "s"} over ${input.thresholdSec ?? 0.6}s ` +
+        `(-${Math.round(res.removedSec)}s, kept all ${res.segments} segments, now ${Math.round(docDurationSec(res.doc))}s).`,
+    );
+  },
+};
+
+// ---- auto_reframe (subject-aware; free centered + gated tracking) ----------
+
+export const autoReframeTool: DirectorTool<{ aspect?: AspectKey; width?: number; height?: number; pan?: boolean; subjectTracking?: boolean }> = {
+  name: "auto_reframe",
+  description:
+    "Auto-reframe to a target aspect (default 9:16) while keeping the subject framed. FREE: reframes + centers the subject, with an optional gentle keyframed settle-pan (pan). subjectTracking is a MONEY-GATED upgrade (a vision model would keyframe a crop path that follows the speaker) — off by default and NOT performed here; the free centered reframe is produced instead.",
+  inputSchema: z.object({
+    aspect: z.enum(ASPECT_ENUM).optional(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    pan: z.boolean().optional(),
+    subjectTracking: z.boolean().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = autoReframe(ctx.project.doc, {
+      aspect: input.aspect,
+      width: input.width,
+      height: input.height,
+      pan: input.pan,
+      subjectTracking: input.subjectTracking,
+    });
+    const gated = input.subjectTracking
+      ? " (Subject tracking is a gated upgrade — needs a vision provider; used the free centered reframe instead.)"
+      : "";
+    return commit(
+      ctx.project,
+      doc,
+      `Auto-reframed to ${doc.meta.width}×${doc.meta.height}, subject centered${input.pan ? " with a settle-pan" : ""}.${gated}`,
+    );
+  },
+};
+
+// ---- generate_voiceover (TTS; money-gated) ---------------------------------
+
+export const generateVoiceoverTool: DirectorTool<{ text: string; voice?: string; startSec?: number; volume?: number }> = {
+  name: "generate_voiceover",
+  description:
+    "Generate a spoken voice-over from text (TTS) and add it as a 'voiceover' audio track. Requires a configured TTS provider (TTS_PROVIDER=cli|api) — money-gated; when none is configured it fails gracefully with a clear message. Faithful: adds a new audio track, never alters the footage.",
+  inputSchema: z.object({
+    text: z.string().min(1),
+    voice: z.string().optional(),
+    startSec: z.number().nonnegative().optional(),
+    volume: z.number().min(0).max(1).optional(),
+  }),
+  async execute(input, ctx) {
+    // Lazy-imported (server-only) — keeps the understanding barrel out of client bundles.
+    const { selectTtsProvider, ttsConfigFromEnv, estimateSpeechSec } = await import("@cadence/understanding");
+    const provider = selectTtsProvider(ttsConfigFromEnv());
+    if (!(await provider.isAvailable())) {
+      // Graceful, honest gate — surfaced verbatim by the Director.
+      throw new Error(
+        `Can't generate a voice-over: no TTS provider is configured (money-gated). ` +
+          `Set TTS_PROVIDER=cli (TTS_CLI_COMMAND) or TTS_PROVIDER=api (TTS_API_URL + TTS_API_KEY) to enable it.`,
+      );
+    }
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const outputPath = join(tmpdir(), `cadence-vo-${Date.now()}.mp3`);
+    const result = await provider.synthesize({ text: input.text, outputPath, voice: input.voice, format: "mp3" });
+    const durationSec = result.durationSec ?? estimateSpeechSec(input.text);
+    const asset = {
+      id: `vo-${Date.now()}`,
+      kind: "audio" as const,
+      src: result.outputPath,
+      durationSec,
+      label: "voice-over",
+    };
+    const doc = addVoiceover(ctx.project.doc, asset, { startSec: input.startSec, volume: input.volume, durationSec });
+    return commit(
+      ctx.project,
+      doc,
+      `Generated a ${Math.round(durationSec)}s voice-over (${provider.label}) and added it as a voiceover track.`,
+    );
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
+  edit_by_transcript: editByTranscriptTool,
+  remove_silence: removeSilenceTool,
+  auto_reframe: autoReframeTool,
+  generate_voiceover: generateVoiceoverTool,
   create_highlight: createHighlightTool,
   filler_cut: fillerCutTool,
   reframe: reframeTool,

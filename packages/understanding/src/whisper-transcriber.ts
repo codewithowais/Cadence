@@ -17,12 +17,20 @@
  * `parseWhisperJson` is a PURE function (no process, no fs) so the JSON→Transcript
  * mapping is unit-testable without running a model.
  */
-import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
 import type { MediaAsset } from "@cadence/core";
 import type { Transcriber, Transcript, TranscriptSegment, Word } from "./transcript";
+
+// ALL Node built-ins are imported LAZILY (inside the functions that use them)
+// rather than at module top level, so this module is import-safe for the browser
+// bundle. The @cadence/understanding barrel is re-exported through
+// @cadence/director, and a client component (RoomPanel) imports that barrel; a
+// static `import … from "node:*"` here would leak into the client graph and break
+// the Turbopack build ("the chunking context does not support external modules").
+// tts.ts follows the same pattern. Every function below only ever runs
+// server-side (detection / ffmpeg / whisper), so lazy imports cost nothing.
+async function nodeSpawn(): Promise<typeof import("node:child_process").spawn> {
+  return (await import("node:child_process")).spawn;
+}
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
 
@@ -42,10 +50,14 @@ const round = (n: number): number => Math.round(n * 1000) / 1000;
  * UPLOAD_DIR (`<os.tmpdir()>/cadence-uploads`) so both share one trust root, and
  * can be overridden via `CADENCE_MEDIA_DIR`.
  */
-export function mediaBaseDir(
+export async function mediaBaseDir(
   env: Record<string, string | undefined> = process.env,
-): string {
-  return env.CADENCE_MEDIA_DIR?.trim() || join(tmpdir(), "cadence-uploads");
+): Promise<string> {
+  const configured = env.CADENCE_MEDIA_DIR?.trim();
+  if (configured) return configured;
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  return join(tmpdir(), "cadence-uploads");
 }
 
 /**
@@ -97,6 +109,9 @@ export async function assertLocalMediaPath(
     throw new Error("invalid media path: protocol-style prefix is not allowed");
   }
 
+  const { realpath, stat } = await import("node:fs/promises");
+  const { sep } = await import("node:path");
+
   let real: string;
   try {
     real = await realpath(src);
@@ -117,7 +132,7 @@ export async function assertLocalMediaPath(
   // Containment: only enforced when a base dir is itself resolvable.
   let base: string | null = null;
   try {
-    base = await realpath(mediaBaseDir(env));
+    base = await realpath(await mediaBaseDir(env));
   } catch {
     base = null; // no configured/existing base → rely on the checks above.
   }
@@ -289,7 +304,8 @@ export interface WhisperDetection {
 }
 
 /** `which <bin>` — resolves true/false, never throws. */
-function which(bin: string): Promise<boolean> {
+async function which(bin: string): Promise<boolean> {
+  const spawn = await nodeSpawn();
   return new Promise((resolve) => {
     try {
       const p = spawn(process.platform === "win32" ? "where" : "which", [bin], {
@@ -339,7 +355,8 @@ export async function detectWhisper(
 // ---------------------------------------------------------------------------
 
 /** Probe `ffmpeg -version`. Resolves availability; never throws. */
-function ffmpegAvailable(bin = process.env.FFMPEG_PATH || "ffmpeg"): Promise<boolean> {
+async function ffmpegAvailable(bin = process.env.FFMPEG_PATH || "ffmpeg"): Promise<boolean> {
+  const spawn = await nodeSpawn();
   return new Promise((resolve) => {
     try {
       const p = spawn(bin, ["-version"], { stdio: "ignore" });
@@ -368,11 +385,12 @@ export function templateToArgv(
 }
 
 /** Build the concrete `{ bin, args }` to invoke Whisper for the given wav. */
-function buildWhisperCommand(
+async function buildWhisperCommand(
   det: WhisperDetection,
   wavPath: string,
   outDir: string,
-): { bin: string; args: string[] } {
+): Promise<{ bin: string; args: string[] }> {
+  const { join } = await import("node:path");
   const jsonOut = join(outDir, "transcript.json");
   switch (det.kind) {
     case "template": {
@@ -426,7 +444,8 @@ function buildWhisperCommand(
 }
 
 /** Run a process; capture stdout, inherit stderr. Rejects on non-zero exit. */
-function run(bin: string, args: string[]): Promise<string> {
+async function run(bin: string, args: string[]): Promise<string> {
+  const spawn = await nodeSpawn();
   return new Promise((resolve, reject) => {
     let out = "";
     const p = spawn(bin, args, { stdio: ["ignore", "pipe", "inherit"] });
@@ -450,6 +469,8 @@ async function loadWhisperJson(stdout: string, outDir: string): Promise<unknown>
       // fall through to the file scan
     }
   }
+  const { readdir, readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
   const files = await readdir(outDir);
   const jsonFile = files.find((f) => f.toLowerCase().endsWith(".json"));
   if (!jsonFile) throw new Error("Whisper produced no JSON output to parse.");
@@ -484,6 +505,9 @@ export class WhisperTranscriber implements Transcriber {
     // "-flag") would be arbitrary-file-read / SSRF / flag-smuggling.
     const safeSrc = await assertLocalMediaPath(media.src);
 
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
     const workDir = await mkdtemp(join(tmpdir(), "cadence-whisper-"));
     try {
       // 1) Extract audio to a 16 kHz mono wav (Whisper's expected input).
@@ -501,7 +525,7 @@ export class WhisperTranscriber implements Transcriber {
       ]);
 
       // 2) Run Whisper → JSON.
-      const { bin, args } = buildWhisperCommand(det, wav, workDir);
+      const { bin, args } = await buildWhisperCommand(det, wav, workDir);
       const stdout = await run(bin, args);
 
       // 3) Parse into the shared Transcript type.

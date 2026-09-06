@@ -62,6 +62,13 @@ import {
   parseWhisperJson,
   pickTranscriber,
   assertLocalMediaPath,
+  allTtsProviders,
+  buildTtsArgs,
+  estimateSpeechSec,
+  selectTtsProvider,
+  ttsConfigFromEnv,
+  NoneTtsProvider,
+  TTS_UNAVAILABLE_MESSAGE,
   type Transcript,
 } from "@cadence/understanding";
 import { mkdir, writeFile, rm } from "node:fs/promises";
@@ -77,13 +84,18 @@ import {
   addCaptions,
   addMarker,
   addMusic,
+  addVoiceover,
   animate,
   applyVfx,
   audioFade,
+  autoReframe,
+  editByTranscript,
   freezeFrame,
+  generateVoiceoverTool,
   normalizeLoudness,
   reframe,
   reframeTo,
+  removeSilence,
   reverseClip,
   setPan,
   setPlatform,
@@ -1816,6 +1828,252 @@ function audioFadeTargetToMusic(doc: EditDoc): EditDoc {
   return audioFade(doc, { fadeOutSec: 2, track: "music" });
 }
 
+/** Build a Transcript with per-word timings (evenly spread across each segment). */
+function makeWordedTranscript(
+  mediaId: string,
+  segs: { text: string; start: number; end: number }[],
+): Transcript {
+  const segments = segs.map((s, i) => {
+    const toks = s.text.split(/\s+/).filter(Boolean);
+    const per = (s.end - s.start) / Math.max(1, toks.length);
+    const words = toks.map((text, k) => ({ text, start: round3(s.start + k * per), end: round3(s.start + (k + 1) * per) }));
+    return { id: `s${i}`, text: s.text, start: s.start, end: s.end, words };
+  });
+  const words = segments.flatMap((s) => s.words);
+  return { mediaId, durationSec: segs.reduce((m, s) => Math.max(m, s.end), 0), language: "en", segments, words };
+}
+const round3 = (n: number): number => Math.round(n * 1000) / 1000;
+
+async function checkTranscriptEdit(): Promise<void> {
+  const media: MediaAsset = {
+    id: "clip-001", kind: "video", src: "uploads/clip-001.mp4",
+    durationSec: 60, width: 1920, height: 1080, label: "raw.mp4",
+  };
+  const transcript = makeWordedTranscript("clip-001", [
+    { text: "welcome to the show", start: 0, end: 3 },
+    { text: "today we talk about pricing and plans", start: 3.5, end: 8 },
+    { text: "um so anyway", start: 8.5, end: 10 },
+    { text: "thanks for watching", start: 10.5, end: 13 },
+  ]);
+
+  // (a) Remove the sentence about "pricing" (segment unit) → seg1 dropped, 3 remain.
+  const rem = editByTranscript(media, transcript, { phrase: "pricing", mode: "remove", unit: "segment" });
+  assert(rem.matched && rem.removed === 1, `remove-about-pricing should drop 1 segment, got removed=${rem.removed}`);
+  const remVids = rem.doc.tracks.find((t) => t.id === "video")!.clips;
+  assert(remVids.length === 3, `expected 3 clips after removing 1 segment, got ${remVids.length}`);
+  assert(rem.removedSec > 4 && rem.removedSec < 5, `removedSec should reflect seg1 (~4.5s), got ${rem.removedSec}`);
+  const nRem = await renderAndAssert(rem.doc, docDurationSec(rem.doc) / 2, "verify-transcript-remove.png");
+
+  // (b) Keep only the sentences that mention "pricing" → just seg1 remains.
+  const kept = editByTranscript(media, transcript, { phrase: "pricing", mode: "keep", unit: "segment" });
+  const keptVids = kept.doc.tracks.find((t) => t.id === "video")!.clips;
+  assert(keptVids.length === 1, `keep-only-pricing should keep exactly 1 segment, got ${keptVids.length}`);
+  assert(keptVids[0]!.kind === "video" && keptVids[0]!.sourceIn === 3.5, "kept clip should start at the matched segment's source in");
+
+  // (c) Word unit: delete every "um" → the word span is cut, the rest survives, renders.
+  const um = editByTranscript(media, transcript, { phrase: "um", mode: "remove", unit: "word" });
+  assert(um.matched && um.removed === 1, `delete-every-um should match 1 word, got removed=${um.removed}`);
+  assert(docDurationSec(um.doc) < 12.5, `um removal should shorten the timeline, got ${docDurationSec(um.doc)}`);
+  await renderAndAssert(um.doc, docDurationSec(um.doc) / 2, "verify-transcript-word.png");
+
+  // (d) StubDirector routing for the four phrasings (transcript must match so the
+  // builder commits and the tool call is recorded).
+  const mkProject = () => {
+    const p = new ProjectState({ media: [media] });
+    p.setTranscript(transcript);
+    return p;
+  };
+  const rSent = await new StubDirector().interpret("cut the sentence about pricing", mkProject());
+  const sentCall = rSent.toolCalls.find((c) => c.name === "edit_by_transcript");
+  assert(sentCall && (sentCall.input as { mode: string; unit: string }).mode === "remove" && (sentCall.input as { unit: string }).unit === "segment", "expected edit_by_transcript remove/segment from 'cut the sentence about pricing'");
+
+  const rKeep = await new StubDirector().interpret("keep only where they mention pricing", mkProject());
+  const keepCall = rKeep.toolCalls.find((c) => c.name === "edit_by_transcript");
+  assert(keepCall && (keepCall.input as { mode: string }).mode === "keep", "expected edit_by_transcript keep from 'keep only where they mention pricing'");
+
+  const rWord = await new StubDirector().interpret("delete every um", mkProject());
+  const wordCall = rWord.toolCalls.find((c) => c.name === "edit_by_transcript");
+  assert(wordCall && (wordCall.input as { unit: string }).unit === "word", "expected edit_by_transcript word from 'delete every um'");
+
+  const rPart = await new StubDirector().interpret("remove the part where they say thanks for watching", mkProject());
+  assert(rPart.toolCalls.some((c) => c.name === "edit_by_transcript"), "expected edit_by_transcript from 'remove the part where they say …'");
+
+  console.log(`  [32m✔[0m check 50 (transcript edit): remove-segment (3 clips, ${nRem}b) / keep-only (1 clip) / delete-every-um (word) render; 'cut the sentence about'/'keep only where they mention'/'delete every'/'remove the part where they say' route`);
+}
+
+async function checkRemoveSilence(): Promise<void> {
+  const media: MediaAsset = {
+    id: "clip-001", kind: "video", src: "uploads/clip-001.mp4",
+    durationSec: 60, width: 1920, height: 1080, label: "raw.mp4",
+  };
+  // Gaps between segments: 2s (drop), 0.3s (keep), 3s (drop).
+  const transcript = makeWordedTranscript("clip-001", [
+    { text: "first sentence here", start: 0, end: 3 },
+    { text: "second sentence here", start: 5, end: 7 },
+    { text: "third sentence here", start: 7.3, end: 9 },
+    { text: "final sentence here", start: 12, end: 14 },
+  ]);
+
+  const res = removeSilence(media, transcript, { thresholdSec: 0.6 });
+  assert(res.segments === 4, `remove_silence must KEEP all 4 segments, got ${res.segments}`);
+  const clips = res.doc.tracks.find((t) => t.id === "video")!.clips;
+  assert(clips.length === 4, `expected 4 clips (all segments kept), got ${clips.length}`);
+  assert(res.gapsDropped === 2, `expected 2 gaps over 0.6s dropped, got ${res.gapsDropped}`);
+  // removedSec = (2-0.6) + (3-0.6) = 3.8.
+  assert(Math.abs(res.removedSec - 3.8) < 1e-6, `expected 3.8s removed, got ${res.removedSec}`);
+  // The tightened timeline is shorter than the original span (14s).
+  assert(docDurationSec(res.doc) < 11 && docDurationSec(res.doc) > 9, `tightened duration should be ~10.2s, got ${docDurationSec(res.doc)}`);
+  const n = await renderAndAssert(res.doc, docDurationSec(res.doc) / 2, "verify-remove-silence.png");
+
+  // StubDirector routing: silence/dead-air/pauses → remove_silence, NOT filler_cut.
+  const mkProject = () => {
+    const p = new ProjectState({ media: [media] });
+    p.setTranscript(transcript);
+    return p;
+  };
+  for (const phrase of ["remove the silences", "remove dead air", "tighten the pauses"]) {
+    const r = await new StubDirector().interpret(phrase, mkProject());
+    assert(r.toolCalls.some((c) => c.name === "remove_silence"), `expected remove_silence from '${phrase}'`);
+    assert(!r.toolCalls.some((c) => c.name === "filler_cut"), `'${phrase}' should not route to filler_cut`);
+  }
+  // Backward-compat: "filler" still routes to filler_cut (not silence).
+  const rf = await new StubDirector().interpret("remove the filler words and tighten it", mkProject());
+  assert(rf.toolCalls.some((c) => c.name === "filler_cut"), "'remove the filler words' must still route to filler_cut");
+  assert(!rf.toolCalls.some((c) => c.name === "remove_silence"), "'filler words' should not route to remove_silence");
+
+  console.log(`  [32m✔[0m check 51 (silence removal): keeps all 4 segments, drops 2 gaps >0.6s (-3.8s) → ${n}b; 'remove silences/dead air/tighten pauses' → remove_silence; 'filler' still → filler_cut`);
+}
+
+async function checkAutoReframe(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const baseDoc = project.doc;
+
+  // (a) Free auto-reframe to 9:16 centers the subject and renders.
+  const ar = autoReframe(baseDoc, { aspect: "9:16" });
+  assert(ar.meta.width === 1080 && ar.meta.height === 1920, `auto-reframe should be 1080×1920, got ${ar.meta.width}×${ar.meta.height}`);
+  const vc = ar.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(vc && vc.transform.x === 540 && vc.transform.y === 960, `subject should be centered (540,960), got (${vc?.kind === "video" ? `${vc.transform.x},${vc.transform.y}` : "?"})`);
+  const nCenter = await renderAndAssert(ar, docDurationSec(ar) / 2, "verify-auto-reframe.png");
+
+  // (b) The optional settle-pan adds x keyframes that move toward center.
+  const panned = autoReframe(baseDoc, { aspect: "9:16", pan: true });
+  const pvc = panned.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video" && !!c.keyframes);
+  assert(pvc && pvc.keyframes?.some((k) => k.prop === "x"), "settle-pan should add x keyframes");
+  const xEnd = valueAt(pvc!.keyframes, "x", 1, pvc!.transform.x);
+  const xStart = valueAt(pvc!.keyframes, "x", 0, pvc!.transform.x);
+  assert(xEnd === 540 && xStart < xEnd, `settle-pan should end centered (540) from an offset, got ${xStart}→${xEnd}`);
+  await renderAndAssert(panned, docDurationSec(panned) / 2, "verify-auto-reframe-pan.png");
+
+  // (c) subjectTracking (gated) still yields a valid free centered reframe (no vision).
+  const tracked = autoReframe(baseDoc, { aspect: "9:16", subjectTracking: true });
+  assert(tracked.meta.width === 1080 && tracked.meta.height === 1920, "gated subjectTracking should still produce the free centered reframe");
+
+  // (d) StubDirector routing: "auto-reframe to vertical" & "reframe and keep me
+  // centered" → auto_reframe, NOT the plain reframe tool.
+  const r1 = await new StubDirector().interpret("auto-reframe to vertical", project);
+  assert(r1.toolCalls.some((c) => c.name === "auto_reframe"), "expected auto_reframe from 'auto-reframe to vertical'");
+  assert(!r1.toolCalls.some((c) => c.name === "reframe"), "auto-reframe should not also call the plain reframe tool");
+  assert(r1.doc.meta.width === 1080 && r1.doc.meta.height === 1920, "auto-reframe to vertical should be 1080×1920");
+
+  const r2 = await new StubDirector().interpret("reframe and keep me centered", project);
+  assert(r2.toolCalls.some((c) => c.name === "auto_reframe"), "expected auto_reframe from 'reframe and keep me centered'");
+
+  // subjectTracking flag flows through + the gated note is surfaced.
+  const r3 = await new StubDirector().interpret("auto-reframe to vertical and track the speaker", project);
+  const trackCall = r3.toolCalls.find((c) => c.name === "auto_reframe");
+  assert(trackCall && (trackCall.input as { subjectTracking?: boolean }).subjectTracking === true, "tracking phrase should set subjectTracking=true");
+  assert(/gated upgrade/i.test(r3.summary), "gated subject tracking should be surfaced honestly in the summary");
+
+  console.log(`  [32m✔[0m check 52 (auto-reframe): free centered 9:16 (${nCenter}b) + optional settle-pan keyframes; subjectTracking gated → free centered; 'auto-reframe'/'keep me centered' → auto_reframe (not plain reframe)`);
+}
+
+async function checkTts(): Promise<void> {
+  // (a) Provider selection by config — free-first: default is the unavailable "none".
+  const none = selectTtsProvider(ttsConfigFromEnv({}));
+  assert(none.id === "none", `default TTS provider should be none, got ${none.id}`);
+  assert((await none.isAvailable()) === false, "none provider must be unavailable (money-gated)");
+
+  const cli = selectTtsProvider(ttsConfigFromEnv({ TTS_PROVIDER: "cli", TTS_CLI_COMMAND: "piper -o {output} --text {text}" }));
+  assert(cli.id === "cli" && (await cli.isAvailable()) === true, "cli provider should select + be available when configured");
+  const cliUnset = selectTtsProvider(ttsConfigFromEnv({ TTS_PROVIDER: "cli" }));
+  assert((await cliUnset.isAvailable()) === false, "cli provider must be unavailable without TTS_CLI_COMMAND");
+
+  const api = selectTtsProvider(ttsConfigFromEnv({ TTS_PROVIDER: "api", TTS_API_URL: "https://tts.example/v1", TTS_API_KEY: "k" }));
+  assert(api.id === "api" && (await api.isAvailable()) === true, "api provider should select + be available when url+key set");
+  const apiHalf = selectTtsProvider(ttsConfigFromEnv({ TTS_PROVIDER: "api", TTS_API_URL: "https://tts.example/v1" }));
+  assert((await apiHalf.isAvailable()) === false, "api provider must be unavailable without a key");
+
+  // Registry lists all providers; both AI + non-AI options exist.
+  const all = allTtsProviders(ttsConfigFromEnv({}));
+  assert(all.length === 3, `expected 3 TTS providers, got ${all.length}`);
+  assert(all.some((p) => !p.usesAI) && all.some((p) => p.usesAI), "TTS registry should offer both non-AI (none) and AI (cli/api) options");
+
+  // Pure arg templating.
+  const args = buildTtsArgs("piper -o {output} --text {text} --voice {voice}", { output: "vo.mp3", text: "hello world", voice: "en" });
+  assert(JSON.stringify(args) === JSON.stringify(["piper", "-o", "vo.mp3", "--text", "hello world", "--voice", "en"]), `buildTtsArgs wrong: ${JSON.stringify(args)}`);
+  assert(estimateSpeechSec("one two three four five") > 0, "estimateSpeechSec should be positive");
+
+  // (b) NoneTtsProvider.synthesize throws the honest gated message.
+  let threw = false;
+  try {
+    await new NoneTtsProvider().synthesize({ text: "hi", outputPath: "/tmp/x.mp3" });
+  } catch (err) {
+    threw = true;
+    assert((err as Error).message === TTS_UNAVAILABLE_MESSAGE, "none.synthesize should throw the gated message");
+  }
+  assert(threw, "none.synthesize must throw (never a silent fake)");
+
+  // (c) generate_voiceover tool fails GRACEFULLY when no provider is configured.
+  const savedProvider = process.env.TTS_PROVIDER;
+  const savedCli = process.env.TTS_CLI_COMMAND;
+  const savedUrl = process.env.TTS_API_URL;
+  const savedKey = process.env.TTS_API_KEY;
+  process.env.TTS_PROVIDER = "none";
+  delete process.env.TTS_CLI_COMMAND;
+  delete process.env.TTS_API_URL;
+  delete process.env.TTS_API_KEY;
+  try {
+    const project = videoProject();
+    let toolThrew = false;
+    try {
+      await generateVoiceoverTool.execute({ text: "Welcome to Cadence." }, { project });
+    } catch (err) {
+      toolThrew = true;
+      assert(/money-gated/i.test((err as Error).message), "gated voice-over error should say money-gated");
+    }
+    assert(toolThrew, "generate_voiceover should throw when no TTS provider is configured");
+
+    // StubDirector surfaces the graceful message (the tool call isn't recorded since it threw).
+    project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+    const r = await new StubDirector().interpret("voice this over: 'Hello there, welcome back'", project);
+    assert(/money-gated/i.test(r.summary), `'voice this over' should surface the gated message, got: ${r.summary}`);
+  } finally {
+    if (savedProvider === undefined) delete process.env.TTS_PROVIDER; else process.env.TTS_PROVIDER = savedProvider;
+    if (savedCli === undefined) delete process.env.TTS_CLI_COMMAND; else process.env.TTS_CLI_COMMAND = savedCli;
+    if (savedUrl === undefined) delete process.env.TTS_API_URL; else process.env.TTS_API_URL = savedUrl;
+    if (savedKey === undefined) delete process.env.TTS_API_KEY; else process.env.TTS_API_KEY = savedKey;
+  }
+
+  // (d) addVoiceover (pure) adds a full-volume voiceover audio track that exports (amix).
+  const base = parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "v", kind: "video", src: "/media/v.mp4" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 6, mediaId: "v", transform: { x: 960, y: 540 } }] }],
+  });
+  const voAsset: MediaAsset = { id: "vo-1", kind: "audio", src: "/tmp/vo.mp3", durationSec: 4, label: "voice-over" };
+  const withVo = addVoiceover(base, voAsset, {});
+  const voTrack = withVo.tracks.find((t) => t.id === "voiceover");
+  assert(voTrack?.clips[0]?.kind === "audio" && voTrack.clips[0].volume === 1, "voiceover should be a full-volume audio track");
+  assert(withVo.media.some((m) => m.id === "vo-1"), "voiceover asset should be added to media");
+  const plan = buildExportPlan(withVo, (id) => `/media/${id}.mp4`, "/out/vo.mp4");
+  assert(plan.filterComplex.includes("amix="), "voiceover: expected amix on export");
+
+  console.log(`  [32m✔[0m check 53 (TTS voice-over): free-first (none default, unavailable) + cli/api selection & gating; buildTtsArgs pure; graceful "money-gated" via tool + Director; addVoiceover track amixes on export`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -1863,6 +2121,10 @@ async function main(): Promise<void> {
   await checkMask();
   await checkCurvesHsl();
   await checkAudioDepth();
+  await checkTranscriptEdit();
+  await checkRemoveSilence();
+  await checkAutoReframe();
+  await checkTts();
   await checkWhisperParse();
   await checkTranscriberFactory();
   await checkAgenticLoop();
