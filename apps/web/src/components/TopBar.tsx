@@ -122,7 +122,7 @@ function OverflowMenu(props: {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
       </button>
       {open && (
-        <div role="menu" className="absolute right-0 top-full z-40 mt-2 w-52 rounded-2xl border border-line bg-panel p-1.5 shadow-[0_20px_80px_-20px_rgba(0,0,0,0.8)]">
+        <div role="menu" className="absolute right-0 top-full z-40 mt-2 w-52 rounded-2xl border border-line bg-panel p-1.5 shadow-[0_16px_44px_-16px_rgba(41,35,28,0.22)]">
           <button type="button" role="menuitem" className={`${item} text-muted hover:bg-elevated hover:text-text`} onClick={() => { setOpen(false); props.onShowShortcuts(); }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12" /></svg>
             Keyboard shortcuts

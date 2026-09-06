@@ -470,7 +470,7 @@ function VoiceOverComposer({
           type="button"
           onClick={generate}
           disabled={busy || working || !text.trim()}
-          className="shrink-0 rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
+          className="shrink-0 rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-onaccent transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
         >
           {working ? "Generating…" : "Generate voice-over"}
         </button>

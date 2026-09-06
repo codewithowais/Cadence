@@ -4,6 +4,11 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.20 — light theme (modern, soft off-white)
+- Re-themed the whole app dark → **light**: soft warm off-white base (`#f6f3ee`, not pure white), near-white cards, warm hairline borders + soft shadows for elevation, near-black warm text, and the coral accent **deepened to `#bc4029`** so it passes AA both as text and as a button surface (new `--color-onaccent` foreground). Teal secondary deepened for light.
+- Retuned all dark-first surfaces: radial glow, selection, focus ring, scrollbar, range slider, shadows, Stage letterbox, code drawer. Left video *content* colors (chroma, text-preset/demo backgrounds, waveform) dark by design — they render into the export, not the UI.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **18/18**; AA contrast across the app.
+
 ### S4.19 — keyframe export fidelity (x/y/rotation/opacity)
 - x/y/rotation/opacity keyframes now **render on ffmpeg export** for overlay/PiP/title/layer clips (were preview-only) — via one shared `keyframeTransformExpr` helper that emits eased ffmpeg time expressions matching the preview's `valueAt` (x/y → `overlay=x/y(t)`, rotation → `rotate=a(t)` alpha-safe, opacity → `geq` alpha). No-keyframe path byte-identical; scale (zoompan)/volume unchanged. Base full-frame clips keep static x/y/rotation (documented, uncommon).
 - *verified:* typecheck + test:unit 49 + verify **63/63** (+check 63, expr matches `valueAt` to 1e-6) + evals 5/5.

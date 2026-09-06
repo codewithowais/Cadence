@@ -20,7 +20,7 @@ export function FinalCta() {
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
               href="/editor"
-              className="rounded-xl bg-amber px-6 py-3 text-sm font-semibold text-ink transition hover:bg-amber-bright"
+              className="rounded-xl bg-amber px-6 py-3 text-sm font-semibold text-onaccent transition hover:bg-amber-bright"
             >
               Open the editor
             </Link>
@@ -42,7 +42,7 @@ export function SiteFooter() {
     <footer className="border-t border-line-soft">
       <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-10 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="grid h-7 w-7 place-items-center rounded-lg bg-amber font-bold text-ink">
+          <div className="grid h-7 w-7 place-items-center rounded-lg bg-amber font-bold text-onaccent">
             C
           </div>
           <span className="text-sm font-semibold tracking-tight">Cadence</span>

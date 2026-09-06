@@ -75,7 +75,7 @@ export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFi
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              className="mt-4 rounded-lg bg-amber px-4 py-2 text-sm font-semibold text-ink transition hover:bg-amber-bright"
+              className="mt-4 rounded-lg bg-amber px-4 py-2 text-sm font-semibold text-onaccent transition hover:bg-amber-bright"
             >
               Choose video or photos
             </button>
@@ -164,7 +164,7 @@ export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFi
             onClick={submit}
             disabled={busy || !text.trim()}
             aria-label="Send"
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-amber text-ink transition hover:bg-amber-bright disabled:opacity-30"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-amber text-onaccent transition hover:bg-amber-bright disabled:opacity-30"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" /></svg>
           </button>

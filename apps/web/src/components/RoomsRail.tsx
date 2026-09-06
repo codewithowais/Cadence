@@ -34,12 +34,12 @@ export function RoomsRail({ room, onRoomChange, backHref }: RoomsRailProps) {
       href={backHref}
       aria-label="Cadence — back home"
       title="Cadence — back home"
-      className="mb-3 grid h-9 w-9 place-items-center rounded-xl bg-amber font-bold text-ink transition hover:bg-amber-bright"
+      className="mb-3 grid h-9 w-9 place-items-center rounded-xl bg-amber font-bold text-onaccent transition hover:bg-amber-bright"
     >
       C
     </a>
   ) : (
-    <div className="mb-3 grid h-9 w-9 place-items-center rounded-xl bg-amber font-bold text-ink">C</div>
+    <div className="mb-3 grid h-9 w-9 place-items-center rounded-xl bg-amber font-bold text-onaccent">C</div>
   );
   return (
     <nav

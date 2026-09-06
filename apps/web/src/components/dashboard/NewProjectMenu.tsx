@@ -73,7 +73,7 @@ export function NewProjectMenu({
           type="button"
           onClick={() => create("blank", "Untitled project")}
           disabled={anyBusy}
-          className="rounded-l-xl bg-amber px-4 py-2 text-sm font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-l-xl bg-amber px-4 py-2 text-sm font-semibold text-onaccent transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy === "blank" ? "Creating…" : "New project"}
         </button>
@@ -85,7 +85,7 @@ export function NewProjectMenu({
           aria-expanded={open}
           aria-controls={menuId}
           aria-label="Choose a starter template"
-          className="rounded-r-xl border-l border-ink/20 bg-amber px-2.5 py-2 text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-r-xl border-l border-ink/20 bg-amber px-2.5 py-2 text-onaccent transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="m6 9 6 6 6-6" />
@@ -97,7 +97,7 @@ export function NewProjectMenu({
             id={menuId}
             role="menu"
             aria-label="Starter templates"
-            className="absolute right-0 top-full z-20 mt-2 w-72 overflow-hidden rounded-2xl border border-line bg-panel p-1.5 shadow-xl shadow-black/30"
+            className="absolute right-0 top-full z-20 mt-2 w-72 overflow-hidden rounded-2xl border border-line bg-panel p-1.5 shadow-xl shadow-[rgba(41,35,28,0.14)]"
           >
             <p className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-faint">
               Start from a template

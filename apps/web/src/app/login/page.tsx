@@ -43,7 +43,7 @@ export default async function LoginPage() {
         />
         <div className="relative">
           <Link href="/" className="flex items-center gap-2.5">
-            <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-ink">C</div>
+            <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-onaccent">C</div>
             <span className="text-sm font-semibold tracking-tight">Cadence</span>
           </Link>
         </div>
@@ -89,7 +89,7 @@ export default async function LoginPage() {
         <div className="w-full max-w-sm">
           {/* Compact logo — shown only when the hero is hidden (small screens). */}
           <Link href="/" className="mb-8 flex items-center gap-2.5 lg:hidden">
-            <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-ink">C</div>
+            <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-onaccent">C</div>
             <span className="text-sm font-semibold tracking-tight">Cadence</span>
           </Link>
 

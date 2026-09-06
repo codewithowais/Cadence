@@ -1086,7 +1086,7 @@ function LooksGallery({
                   <span className="relative block aspect-video w-full overflow-hidden bg-panel">
                     <LookThumb url={frameUrl} kind={frameKind} filter={cssFilter(look.grade)} />
                     {active && (
-                      <span className="absolute right-1 top-1 grid h-4 w-4 place-items-center rounded-full bg-teal text-[10px] font-bold text-ink">
+                      <span className="absolute right-1 top-1 grid h-4 w-4 place-items-center rounded-full bg-teal text-[10px] font-bold text-onaccent">
                         ✓
                       </span>
                     )}
@@ -1388,7 +1388,7 @@ function AdjustmentControls({
           type="button"
           onClick={add}
           disabled={disabled}
-          className="shrink-0 rounded-full bg-amber px-3 py-1.5 text-xs font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
+          className="shrink-0 rounded-full bg-amber px-3 py-1.5 text-xs font-semibold text-onaccent transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
         >
           + Adjustment layer
         </button>
@@ -1455,7 +1455,7 @@ function BackgroundsGallery({
             >
               <span className="relative block aspect-video w-full" style={{ backgroundColor: sw.color }}>
                 {active && (
-                  <span className="absolute right-1 top-1 grid h-4 w-4 place-items-center rounded-full bg-teal text-[10px] font-bold text-ink">
+                  <span className="absolute right-1 top-1 grid h-4 w-4 place-items-center rounded-full bg-teal text-[10px] font-bold text-onaccent">
                     ✓
                   </span>
                 )}
@@ -1583,7 +1583,7 @@ function DeliverRoom({
         type="button"
         onClick={onExport}
         disabled={!canExport || busy}
-        className="shrink-0 rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
+        className="shrink-0 rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-onaccent transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
       >
         {busy ? "Exporting…" : "Export .mp4"}
       </button>
@@ -2390,7 +2390,7 @@ function MediaGrid({
             type="button"
             onClick={onOpenPicker}
             disabled={busy}
-            className="mt-1 rounded-lg bg-amber px-4 py-2 text-sm font-semibold text-ink transition hover:bg-amber-bright disabled:opacity-50"
+            className="mt-1 rounded-lg bg-amber px-4 py-2 text-sm font-semibold text-onaccent transition hover:bg-amber-bright disabled:opacity-50"
           >
             + Add media
           </button>

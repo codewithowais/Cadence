@@ -94,7 +94,7 @@ export function ProfileForm({
         <button
           type="submit"
           disabled={!canSave}
-          className="rounded-xl bg-amber px-4 py-2 text-sm font-semibold text-ink transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-xl bg-amber px-4 py-2 text-sm font-semibold text-onaccent transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {status.kind === "saving" ? "Saving…" : "Save changes"}
         </button>

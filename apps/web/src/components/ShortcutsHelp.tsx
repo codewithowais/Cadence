@@ -53,7 +53,7 @@ export function ShortcutsHelp({ open, onClose }: ShortcutsHelpProps) {
       onClick={onClose}
     >
       <div
-        className="w-full max-w-sm rounded-2xl border border-line bg-panel p-5 shadow-[0_20px_80px_-20px_rgba(0,0,0,0.8)]"
+        className="w-full max-w-sm rounded-2xl border border-line bg-panel p-5 shadow-[0_16px_44px_-16px_rgba(41,35,28,0.22)]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">

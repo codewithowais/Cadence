@@ -38,7 +38,7 @@ export default function LandingPage() {
       {/* Top bar */}
       <header className="mx-auto flex max-w-6xl items-center gap-3 px-6 py-5">
         <div className="flex items-center gap-2.5">
-          <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-ink">C</div>
+          <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-onaccent">C</div>
           <span className="text-sm font-semibold tracking-tight">Cadence</span>
         </div>
         <nav className="ml-auto flex items-center gap-1 text-sm sm:gap-2">
@@ -95,7 +95,7 @@ export default function LandingPage() {
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Link
               href="/editor"
-              className="rounded-xl bg-amber px-5 py-3 text-sm font-semibold text-ink transition hover:bg-amber-bright"
+              className="rounded-xl bg-amber px-5 py-3 text-sm font-semibold text-onaccent transition hover:bg-amber-bright"
             >
               Open editor
             </Link>

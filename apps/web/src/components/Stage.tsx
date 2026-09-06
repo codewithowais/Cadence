@@ -206,7 +206,7 @@ export function Stage(props: StageProps) {
       <div className="flex min-h-0 flex-1 items-center justify-center p-4 sm:p-6">
         <div
           ref={frameRef}
-          className="relative flex max-h-full items-center justify-center overflow-hidden rounded-2xl border border-line bg-black shadow-[0_20px_80px_-20px_rgba(0,0,0,0.8)]"
+          className="relative flex max-h-full items-center justify-center overflow-hidden rounded-2xl border border-line bg-[#1b1713] shadow-[0_18px_50px_-20px_rgba(41,35,28,0.30)]"
           style={{ aspectRatio: `${doc.meta.width} / ${doc.meta.height}`, maxWidth: "100%", height: "100%" }}
         >
           {!hasMedia && (
@@ -373,7 +373,7 @@ export function Stage(props: StageProps) {
           onClick={props.onTogglePlay}
           disabled={!hasMedia}
           aria-label={playing ? "Pause" : "Play"}
-          className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-amber text-ink transition hover:bg-amber-bright disabled:opacity-40"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-amber text-onaccent transition hover:bg-amber-bright disabled:opacity-40"
         >
           {playing ? (
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
@@ -567,7 +567,7 @@ function PlacementLayer({
               <span
                 key={i}
                 className={[
-                  "pointer-events-none absolute grid -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full text-[9px] font-bold text-ink",
+                  "pointer-events-none absolute grid -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full text-[9px] font-bold text-onaccent",
                   isClick ? "h-5 w-5 bg-amber ring-2 ring-amber/40" : "h-4 w-4 bg-teal",
                 ].join(" ")}
                 style={{ left: pct(p.xFrac), top: pct(p.yFrac) }}
@@ -601,7 +601,7 @@ function PlacementLayer({
             type="button"
             onClick={finishPath}
             disabled={points.length === 0}
-            className="rounded-full bg-amber px-2.5 py-0.5 text-[11px] font-semibold text-ink transition hover:bg-amber-bright disabled:opacity-40"
+            className="rounded-full bg-amber px-2.5 py-0.5 text-[11px] font-semibold text-onaccent transition hover:bg-amber-bright disabled:opacity-40"
           >
             Finish
           </button>

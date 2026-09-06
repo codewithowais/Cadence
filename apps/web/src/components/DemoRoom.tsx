@@ -325,7 +325,7 @@ export function DemoRoom({
           type="button"
           onClick={build}
           disabled={busy || screens.length === 0}
-          className="shrink-0 rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
+          className="shrink-0 rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-onaccent transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
         >
           Build walkthrough
         </button>

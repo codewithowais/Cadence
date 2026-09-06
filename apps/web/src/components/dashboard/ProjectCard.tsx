@@ -96,7 +96,7 @@ export function ProjectCard({
           id={menuId}
           role="menu"
           aria-label={`Actions for ${project.name}`}
-          className="absolute right-0 top-full z-20 mt-1.5 w-44 overflow-hidden rounded-xl border border-line bg-panel p-1 shadow-xl shadow-black/30"
+          className="absolute right-0 top-full z-20 mt-1.5 w-44 overflow-hidden rounded-xl border border-line bg-panel p-1 shadow-xl shadow-[rgba(41,35,28,0.14)]"
         >
           <Link
             href={`/project/${project.id}`}

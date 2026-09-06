@@ -5,26 +5,32 @@
   --font-chrome: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
   --font-voice: var(--font-fraunces), Georgia, "Times New Roman", serif;
 
-  /* Graded dark palette — warm charcoal base (neutral-warm, not navy) */
-  --color-ink: #14110e;
-  --color-panel: #1b1713;
-  --color-elevated: #241f19;
-  --color-line: #362e26;
-  --color-line-soft: #251f1a;
+  /* Graded LIGHT palette — soft warm off-white base (neutral-warm, not white,
+     not gray-blue). Surfaces get lighter/cleaner as they rise; elevation is
+     carried by subtle warm borders + soft shadows rather than dark fills. */
+  --color-ink: #f6f3ee; /* page base — soft warm off-white (never pure white) */
+  --color-panel: #fcfaf7; /* cards / panels — cleaner near-white */
+  --color-elevated: #ffffff; /* raised menus, inputs, popovers */
+  --color-line: #dbd2c4; /* visible warm border (inputs, cards, dividers) */
+  --color-line-soft: #e7dfd3; /* subtle hairline — still readable on the base */
 
-  --color-text: #f2ece4;
-  --color-muted: #a89f94;
-  --color-faint: #786f64;
+  --color-text: #211e1a; /* near-black warm — AA everywhere */
+  --color-muted: #6b6358; /* secondary text — AA on all surfaces */
+  --color-faint: #74695a; /* hints — still AA on the off-white base */
 
-  /* Accent (coral / vermilion) = action / brand. The `amber` token names are
-     kept for zero-churn re-coloring; the accent is now warm coral, not yellow. */
-  --color-amber: #f76f53;
-  --color-amber-bright: #ff8a6b;
-  --color-amber-deep: #c74a34;
+  /* Accent (coral / vermilion) = action / brand. Deepened for a light bg so it
+     passes AA both as text (labels/links) AND as a button surface under the
+     on-accent foreground below. The `amber` token names are kept for
+     zero-churn re-coloring. On light, `bright` is the *hover* and is a touch
+     DEEPER (darkening feedback) so it doubles safely as warning/status text. */
+  --color-amber: #bc4029; /* primary — AA as text (~4.9:1) & button */
+  --color-amber-bright: #a6371f; /* hover (darker) + warning text */
+  --color-amber-deep: #932e19; /* deepest — tints / borders */
+  --color-onaccent: #fff6f2; /* foreground on accent (amber/teal) surfaces */
 
-  /* Teal = selection / sparing secondary */
-  --color-teal: #45d3c4;
-  --color-teal-soft: #2b7a73;
+  /* Teal = selection / sparing secondary — deepened for AA on light */
+  --color-teal: #0f766e;
+  --color-teal-soft: #147d72;
 }
 
 /* ---- Base ------------------------------------------------------------ */
@@ -38,38 +44,43 @@ body {
   font-family: var(--font-chrome);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* subtle graded glow, top-left coral whisper + teal counterpoint */
+  /* subtle graded warmth on the off-white — a faint coral whisper top-left,
+     a teal counterpoint top-right. Kept very low-alpha so the base stays calm. */
   background-image:
-    radial-gradient(1200px 600px at 12% -10%, rgba(247, 111, 83, 0.07), transparent 60%),
-    radial-gradient(1000px 700px at 110% 10%, rgba(69, 211, 196, 0.05), transparent 55%);
+    radial-gradient(1200px 600px at 12% -10%, rgba(188, 64, 41, 0.05), transparent 60%),
+    radial-gradient(1000px 700px at 110% 10%, rgba(15, 118, 110, 0.035), transparent 55%);
   background-attachment: fixed;
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--color-teal) 35%, transparent);
+  background: color-mix(in srgb, var(--color-teal) 22%, transparent);
   color: var(--color-text);
 }
 
-/* Focus ring — amber, accessible */
+/* Focus ring — accent, accessible on light */
 :where(a, button, input, textarea, [tabindex]):focus-visible {
   outline: 2px solid var(--color-amber);
   outline-offset: 2px;
   border-radius: 6px;
 }
 
-/* Custom scrollbars */
+/* Custom scrollbars — soft warm gray thumb that reads on the off-white base */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-line) transparent;
+  scrollbar-color: color-mix(in srgb, var(--color-faint) 55%, transparent) transparent;
 }
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--color-line);
+  background: color-mix(in srgb, var(--color-faint) 55%, transparent);
   border-radius: 999px;
   border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-faint) 80%, transparent);
   background-clip: content-box;
 }
 

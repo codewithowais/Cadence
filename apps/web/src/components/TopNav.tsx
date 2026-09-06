@@ -22,7 +22,7 @@ export function TopNav({ email, active }: { email: string; active: "dashboard" |
     <header className="border-b border-line-soft bg-panel/50">
       <div className="mx-auto flex max-w-6xl items-center gap-2 px-6 py-3">
         <Link href="/dashboard" className="mr-2 flex items-center gap-2.5">
-          <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-ink">C</div>
+          <div className="grid h-8 w-8 place-items-center rounded-lg bg-amber font-bold text-onaccent">C</div>
           <span className="hidden text-sm font-semibold tracking-tight sm:inline">Cadence</span>
         </Link>
         {link("/dashboard", "Projects", "dashboard")}

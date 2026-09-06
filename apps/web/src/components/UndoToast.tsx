@@ -50,7 +50,7 @@ export function UndoToast({ toast, onUndo, onDismiss, durationMs = 6000 }: UndoT
       aria-live="polite"
       className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4"
     >
-      <div className="pointer-events-auto flex max-w-[90vw] items-center gap-3 rounded-full border border-line bg-panel/95 py-2 pl-4 pr-2 text-sm text-text shadow-[0_20px_60px_-20px_rgba(0,0,0,0.85)] backdrop-blur">
+      <div className="pointer-events-auto flex max-w-[90vw] items-center gap-3 rounded-full border border-line bg-panel/95 py-2 pl-4 pr-2 text-sm text-text shadow-[0_16px_44px_-16px_rgba(41,35,28,0.24)] backdrop-blur">
         <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-teal/15 text-teal">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="M20 6 9 17l-5-5" />

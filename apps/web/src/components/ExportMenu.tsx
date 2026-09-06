@@ -103,7 +103,7 @@ export function ExportMenu({ doc, canExport, busy, onExport }: ExportMenuProps) 
         disabled={!canExport}
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="flex items-center gap-1.5 rounded-lg bg-amber px-3 py-1.5 font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
+        className="flex items-center gap-1.5 rounded-lg bg-amber px-3 py-1.5 font-semibold text-onaccent transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
       >
         Export
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
@@ -113,7 +113,7 @@ export function ExportMenu({ doc, canExport, busy, onExport }: ExportMenuProps) 
         <div
           role="dialog"
           aria-label="Export options"
-          className="absolute right-0 top-full z-40 mt-2 w-64 rounded-2xl border border-line bg-panel p-4 text-left shadow-[0_20px_80px_-20px_rgba(0,0,0,0.8)]"
+          className="absolute right-0 top-full z-40 mt-2 w-64 rounded-2xl border border-line bg-panel p-4 text-left shadow-[0_16px_44px_-16px_rgba(41,35,28,0.22)]"
         >
           <div className="space-y-3">
             <div>
@@ -169,7 +169,7 @@ export function ExportMenu({ doc, canExport, busy, onExport }: ExportMenuProps) 
                 setOpen(false);
                 onExport(settings);
               }}
-              className="w-full rounded-lg bg-amber px-3 py-2 text-sm font-semibold text-ink transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
+              className="w-full rounded-lg bg-amber px-3 py-2 text-sm font-semibold text-onaccent transition hover:bg-amber-bright disabled:cursor-not-allowed disabled:opacity-40"
             >
               Export .mp4
             </button>
