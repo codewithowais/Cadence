@@ -36,6 +36,7 @@ import {
   trackFade,
   trackPan,
 } from "@/lib/fx";
+import { EMOJI_STICKERS, TEXT_PRESETS, insertSticker, type PlaceOpts } from "@/lib/text-presets";
 import { fmtTime, download, downloadBlob } from "@/lib/format";
 import { LOOKS, describeDoc } from "@/lib/status";
 import { captionsToSrt, hasCaptions } from "@/lib/srt";
@@ -92,8 +93,16 @@ interface RoomPanelProps {
   onEnsureTranscript: (media: MediaAsset) => void;
   /** Words room: generate an AI (TTS) voice-over; resolves to a message to surface. */
   onGenerateVoiceover: (text: string) => Promise<string>;
-  /** Demo room: arm an on-preview placement gesture (click/drag → composition fractions). */
+  /** Demo/VFX rooms: arm an on-preview placement gesture (click/drag → composition fractions). */
   onBeginPlacement?: BeginPlacement;
+  /** Audio room: detect beats in the music/audio and drop them as markers. */
+  onDetectBeats?: () => void | Promise<void>;
+  /** Audio room: split the clips under every timeline marker (beat-snapped cutting). */
+  onSplitAtBeats?: () => void;
+  /** Audio room: whether a decodable audio source exists for beat detection. */
+  canDetectBeats?: boolean;
+  /** Audio room: number of markers currently on the timeline. */
+  markerCount?: number;
 }
 
 /** Shared wrapper so every room reads as the same contextual strip. */
@@ -195,6 +204,10 @@ export function RoomPanel(props: RoomPanelProps) {
     onEnsureTranscript,
     onGenerateVoiceover,
     onBeginPlacement,
+    onDetectBeats,
+    onSplitAtBeats,
+    canDetectBeats,
+    markerCount,
   } = props;
   const fileRef = useRef<HTMLInputElement>(null);
   const openPicker = () => fileRef.current?.click();
@@ -340,8 +353,10 @@ export function RoomPanel(props: RoomPanelProps) {
         doc={doc}
         mediaList={mediaList}
         busy={busy}
+        timeSec={timeSec}
         onAction={onAction}
         onApplyDoc={onApplyDoc}
+        onBeginPlacement={onBeginPlacement}
       />
     );
   }
@@ -360,6 +375,10 @@ export function RoomPanel(props: RoomPanelProps) {
         onRecordVoiceover={onRecordVoiceover}
         openPicker={openPicker}
         hiddenInput={hiddenInput}
+        onDetectBeats={onDetectBeats}
+        onSplitAtBeats={onSplitAtBeats}
+        canDetectBeats={canDetectBeats}
+        markerCount={markerCount}
       />
     );
   }
@@ -1118,14 +1137,18 @@ function VfxRoom({
   doc,
   mediaList,
   busy,
+  timeSec,
   onAction,
   onApplyDoc,
+  onBeginPlacement,
 }: {
   doc: EditDoc;
   mediaList: MediaAsset[];
   busy: boolean;
+  timeSec: number;
   onAction: (prompt: string) => void;
   onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+  onBeginPlacement?: BeginPlacement;
 }) {
   const hasVisual = mediaList.some((m) => m.kind === "video" || m.kind === "image");
   const noMedia = busy || mediaList.length === 0;
@@ -1221,6 +1244,15 @@ function VfxRoom({
         <Pill onClick={() => onAction("add film grain")} disabled={noMedia}>Grain</Pill>
         <Pill onClick={() => onAction("add a light leak")} disabled={noMedia}>Light leak</Pill>
       </Row>
+
+      {/* Stickers + one-click text presets (→ insertSticker / TEXT_PRESETS) */}
+      <StickersTextSection
+        doc={doc}
+        disabled={disabled}
+        timeSec={timeSec}
+        onApplyDoc={onApplyDoc}
+        onBeginPlacement={onBeginPlacement}
+      />
 
       {/* Chroma key (→ chromaKey / clearChroma) */}
       <Row label="chroma key">
@@ -1336,6 +1368,100 @@ function VfxRoom({
   );
 }
 
+// ---- Stickers + text presets -----------------------------------------------
+
+/**
+ * A discoverable picker for emoji STICKERS and one-click styled TEXT PRESETS.
+ * Every insert reuses the engine's text/title fns (via `@/lib/text-presets`) and
+ * applies through the undoable `onApplyDoc` (commit) path. Inserts land centered
+ * at the playhead by default; with "Place on preview" armed, the next pick drops
+ * where the user clicks on the Stage (reuses `onBeginPlacement`).
+ */
+function StickersTextSection({
+  doc,
+  disabled,
+  timeSec,
+  onApplyDoc,
+  onBeginPlacement,
+}: {
+  doc: EditDoc;
+  disabled?: boolean;
+  timeSec: number;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+  onBeginPlacement?: BeginPlacement;
+}) {
+  const [draft, setDraft] = useState("");
+  const [placeMode, setPlaceMode] = useState(false);
+  const startSec = round2(Math.max(0, timeSec));
+  const canPlace = !!onBeginPlacement;
+
+  // Resolve placement (if armed), then apply the caller-provided builder. The
+  // builder receives timing + optional placed fractions and returns the new doc.
+  const drop = async (build: (opts: PlaceOpts) => EditDoc, text?: string) => {
+    if (disabled) return;
+    const base: PlaceOpts = { text, startSec };
+    if (placeMode && onBeginPlacement) {
+      const res = await onBeginPlacement("point", "Click where it should go on the preview");
+      if (!res || res.points.length === 0) return;
+      const p = res.points[0]!;
+      onApplyDoc(build({ ...base, xFrac: p.xFrac, yFrac: p.yFrac }));
+    } else {
+      onApplyDoc(build(base));
+    }
+  };
+
+  return (
+    <>
+      <Row label="stickers">
+        {EMOJI_STICKERS.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            onClick={() => void drop((o) => insertSticker(doc, emoji, o))}
+            disabled={disabled}
+            aria-label={`Add ${emoji} sticker`}
+            title="Preview is exact. Emoji fidelity in the exported .mp4 depends on the render machine's fonts."
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-elevated text-lg leading-none transition hover:border-amber/40 disabled:opacity-40"
+          >
+            {emoji}
+          </button>
+        ))}
+      </Row>
+
+      <Row label="text">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Your text (optional)"
+          disabled={disabled}
+          aria-label="Text for the preset overlay"
+          className="w-[160px] shrink-0 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-text placeholder:text-faint disabled:opacity-40"
+        />
+        {TEXT_PRESETS.map((preset) => (
+          <Pill
+            key={preset.key}
+            onClick={() => void drop((o) => preset.build(doc, o), draft)}
+            disabled={disabled}
+          >
+            {preset.label}
+          </Pill>
+        ))}
+        {canPlace && (
+          <Pill onClick={() => setPlaceMode((p) => !p)} active={placeMode} disabled={disabled}>
+            {placeMode ? "Placing on preview" : "Place on preview"}
+          </Pill>
+        )}
+        <span className="text-[11px] text-faint">
+          {placeMode
+            ? "Pick a sticker or preset, then click the preview to drop it."
+            : "Adds centered at the playhead — drag it anywhere on the timeline."}
+        </span>
+      </Row>
+    </>
+  );
+}
+
 // ---- Audio room ------------------------------------------------------------
 
 /**
@@ -1356,6 +1482,10 @@ function AudioRoom({
   onRecordVoiceover,
   openPicker,
   hiddenInput,
+  onDetectBeats,
+  onSplitAtBeats,
+  canDetectBeats,
+  markerCount,
 }: {
   doc: EditDoc;
   mediaList: MediaAsset[];
@@ -1368,6 +1498,10 @@ function AudioRoom({
   onRecordVoiceover: (file: File, durationSec: number) => void;
   openPicker: () => void;
   hiddenInput: React.ReactNode;
+  onDetectBeats?: () => void | Promise<void>;
+  onSplitAtBeats?: () => void;
+  canDetectBeats?: boolean;
+  markerCount?: number;
 }) {
   const hasAudioMedia = mediaList.some((m) => m.kind === "audio");
   const musicClip = doc.tracks.find((t) => t.id === "music")?.clips.find((c): c is AudioClip => c.kind === "audio");
@@ -1443,6 +1577,24 @@ function AudioRoom({
           {muted ? "Preview muted" : "Preview sound on"}
         </Pill>
       </div>
+
+      {/* Beat sync (→ detectBeats / splitAtTimes) — beats land as markers, cuts snap. */}
+      <Row label="beat sync">
+        <Pill onClick={() => void onDetectBeats?.()} disabled={busy || !canDetectBeats}>
+          Detect beats
+        </Pill>
+        <Pill onClick={() => onSplitAtBeats?.()} disabled={busy || (markerCount ?? 0) === 0}>
+          Split at beats
+        </Pill>
+        <span className="text-[11px] text-faint">
+          {(markerCount ?? 0) > 0
+            ? `${markerCount} marker${markerCount === 1 ? "" : "s"} on the timeline · `
+            : ""}
+          {canDetectBeats
+            ? "Estimated from the audio — cuts snap to markers. Nudge or right-click any that are off."
+            : "Add music or a video with audio to detect beats."}
+        </span>
+      </Row>
 
       {/* Per-track fades + pan (→ audioFade / setPan) */}
       {musicClip && renderTrack("music", "Music", musicClip)}

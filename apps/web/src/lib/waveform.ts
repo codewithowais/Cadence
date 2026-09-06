@@ -75,6 +75,36 @@ function bucketPeaks(buffer: AudioBuffer, buckets: number): number[] {
 }
 
 /**
+ * Decode a media source (File or object/blob URL) to a raw `AudioBuffer` via the
+ * Web Audio API — the single decode path shared by the waveform strip and beat
+ * detection. Returns `null` when the source has no decodable audio, or when
+ * decoding is unavailable (SSR / unsupported browser). Never throws.
+ */
+export async function decodeAudio(source: File | string): Promise<AudioBuffer | null> {
+  const Ctor = getAudioContextCtor();
+  if (!Ctor) return null;
+  let ctx: AudioContext | null = null;
+  try {
+    const bytes = await readBytes(source);
+    ctx = new Ctor();
+    // Some browsers only support the promise form; others the callback form.
+    const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
+      const p = ctx!.decodeAudioData(bytes, resolve, reject);
+      if (p && typeof p.then === "function") p.then(resolve, reject);
+    });
+    return buffer;
+  } catch {
+    return null; // no audio track / unsupported codec → degrade gracefully
+  } finally {
+    try {
+      await ctx?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/**
  * Compute (or return cached) normalized peaks for a media source.
  * Returns `null` when the source has no decodable audio, or when decoding is
  * unavailable (SSR / unsupported browser) — never throws.
@@ -89,28 +119,10 @@ export async function computeWaveform(
   if (pending) return pending;
 
   const job = (async (): Promise<number[] | null> => {
-    const Ctor = getAudioContextCtor();
-    if (!Ctor) return null;
-    let ctx: AudioContext | null = null;
-    try {
-      const bytes = await readBytes(source);
-      ctx = new Ctor();
-      // Some browsers only support the promise form; others the callback form.
-      const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
-        const p = ctx!.decodeAudioData(bytes, resolve, reject);
-        if (p && typeof p.then === "function") p.then(resolve, reject);
-      });
-      const peaks = bucketPeaks(buffer, buckets);
-      return peaks.length > 0 ? peaks : null;
-    } catch {
-      return null; // no audio track / unsupported codec → degrade gracefully
-    } finally {
-      try {
-        await ctx?.close();
-      } catch {
-        /* already closed */
-      }
-    }
+    const buffer = await decodeAudio(source);
+    if (!buffer) return null;
+    const peaks = bucketPeaks(buffer, buckets);
+    return peaks.length > 0 ? peaks : null;
   })();
 
   inflight.set(mediaId, job);

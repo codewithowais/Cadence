@@ -59,8 +59,13 @@ import {
   duplicateClip,
   setClipVolume,
   setClipFade,
+  addMarkerAt,
+  removeMarkerAt,
+  addMarkersAt,
+  splitAtTimes,
   type TrimEdge,
 } from "@/lib/edit-ops";
+import { detectBeats as detectBeatsLib } from "@/lib/beats";
 import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
 import { useDocHistory } from "@/lib/history";
@@ -173,10 +178,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const [muted, setMuted] = useState(false);
   // Keyboard-shortcuts help popover.
   const [helpOpen, setHelpOpen] = useState(false);
-  // Directly-editable timeline: the selected clip + timeline markers. Markers
-  // are editor-only (there is no schema field for them) — see the report.
+  // Directly-editable timeline: the selected clip. Timeline markers are read
+  // from the PERSISTED `doc.markers` (see `markers` below) so they survive
+  // save/load + undo — they are not editor-only component state.
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-  const [markers, setMarkers] = useState<number[]>([]);
   // On-preview placement (Walkthrough room): the armed gesture + a resolver so the
   // Demo room can `await` the fractions the Stage overlay reports.
   const [placement, setPlacement] = useState<PlacementRequest | null>(null);
@@ -226,6 +231,37 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     }
     if (!mediaId) return null;
     return { mediaId, file: files[mediaId], url: urls[mediaId] };
+  }, [doc, files, urls]);
+  // Timeline markers, derived from the PERSISTED `doc.markers` (the single source
+  // of truth). The CutsStrip consumes plain times; the doc keeps `{ t, label? }`.
+  const markers = useMemo(
+    () => (doc.markers ?? []).map((m) => m.t).sort((a, b) => a - b),
+    [doc.markers],
+  );
+  // Source for BEAT DETECTION: prefer the project's music, then any audio, then
+  // the base video's own audio. We need the raw File (or object URL) to decode.
+  const beatSource = useMemo(() => {
+    let mediaId: string | null = null;
+    const music = doc.tracks.find((t) => t.id === "music");
+    const musicClip = music?.clips.find((c) => c.kind === "audio");
+    if (musicClip) mediaId = musicClip.mediaId;
+    if (!mediaId) {
+      for (const track of doc.tracks) {
+        for (const c of track.clips) if (c.kind === "audio") { mediaId = c.mediaId; break; }
+        if (mediaId) break;
+      }
+    }
+    if (!mediaId) {
+      for (const track of doc.tracks) {
+        if (track.id === "broll") continue;
+        for (const c of track.clips) if (c.kind === "video") { mediaId = c.mediaId; break; }
+        if (mediaId) break;
+      }
+    }
+    if (!mediaId) return null;
+    const source = files[mediaId] ?? urls[mediaId];
+    if (!source) return null;
+    return { mediaId, source };
   }, [doc, files, urls]);
   // The project's full media set = the registry (mediaList) plus anything the doc
   // references that isn't in it (e.g. media restored by undo after a remove). Used
@@ -659,7 +695,6 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setPlaying(false);
     setTimeSec(0);
     setSelectedClipId(null);
-    setMarkers([]);
     reset(emptyDoc());
     say("director", "Cleared the timeline — added media and edits are gone. Add a video or photos to begin again.", "info");
   }
@@ -998,13 +1033,71 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     resolve?.(result);
   }
 
-  /** Add/remove editor-only markers (jump targets) at the playhead. */
+  /**
+   * Add/remove persisted markers (jump targets / beats) at the playhead. Both
+   * route through the pure marker ops → `commit`, so markers live in `doc.markers`
+   * and survive save/load + undo/redo. `addMarkerAt` returns the same doc on a
+   * duplicate, so we skip the no-op commit then.
+   */
   function addMarker() {
-    const t = Math.round(timeSec * 1000) / 1000;
-    setMarkers((ms) => (ms.some((m) => Math.abs(m - t) < 0.02) ? ms : [...ms, t].sort((a, b) => a - b)));
+    const next = addMarkerAt(doc, timeSec);
+    if (next !== doc) commit(next);
   }
   function removeMarker(t: number) {
-    setMarkers((ms) => ms.filter((m) => m !== t));
+    commit(removeMarkerAt(doc, t));
+  }
+
+  /**
+   * Detect beats in the project's music/audio (client-side, dependency-free) and
+   * drop them as timeline markers — cuts then snap to them. Honest: it's an
+   * estimate of the transients, editable like any marker.
+   */
+  async function detectBeats() {
+    if (!beatSource) {
+      say("director", "Add music or a video with audio first — then I can detect its beats.", "info");
+      return;
+    }
+    setBusy(true);
+    setBusyLabel("Detecting beats…");
+    setPlaying(false);
+    try {
+      const res = await detectBeatsLib(beatSource.mediaId, beatSource.source, durationSec || undefined);
+      if (!res || res.times.length === 0) {
+        say("director", "Couldn't find a clear beat in that audio — try a track with a stronger rhythm.", "info");
+        return;
+      }
+      const next = addMarkersAt(doc, res.times, "beat", durationSec || undefined);
+      commit(next);
+      const added = (next.markers?.length ?? 0) - (doc.markers?.length ?? 0);
+      const bpmNote = res.bpm ? ` (~${res.bpm} BPM estimate)` : "";
+      say(
+        "director",
+        `Found ${res.times.length} beat${res.times.length === 1 ? "" : "s"}${bpmNote} and added ${added} as timeline marker${added === 1 ? "" : "s"}. ` +
+          `It's an estimate — nudge or right-click any that are off. Cuts now snap to them; use “Split at beats” to cut on every marker.`,
+        "edit",
+      );
+      showUndoToast(`Added ${added} beat marker${added === 1 ? "" : "s"}`);
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Beat detection failed.", "error");
+    } finally {
+      setBusy(false);
+      setBusyLabel("");
+    }
+  }
+
+  /** Split the clips under every timeline marker (beat-snapped cutting). Undoable. */
+  function splitAtBeats() {
+    const times = (doc.markers ?? []).map((m) => m.t);
+    if (times.length === 0) return;
+    setPlaying(false);
+    const next = splitAtTimes(doc, times);
+    if (next !== doc) {
+      commit(next);
+      say("director", `Split the clips under your ${times.length} marker${times.length === 1 ? "" : "s"}.`, "edit");
+      showUndoToast("Split at markers");
+    } else {
+      say("director", "No clips sit under those markers to split.", "info");
+    }
   }
 
   // Keep the selection valid: if the selected clip vanishes (ripple-delete, a
@@ -1149,6 +1242,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onEnsureTranscript={ensureTranscript}
             onGenerateVoiceover={generateVoiceover}
             onBeginPlacement={beginPlacement}
+            onDetectBeats={detectBeats}
+            onSplitAtBeats={splitAtBeats}
+            canDetectBeats={!!beatSource}
+            markerCount={markers.length}
           />
         )}
         <Stage

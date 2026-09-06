@@ -14,6 +14,7 @@
  * All times are seconds on the project timeline.
  */
 import { parseEditDoc, type Clip, type EditDoc, type Track } from "@cadence/core";
+import { addMarker as addMarkerEngine } from "@cadence/director";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -444,6 +445,95 @@ export function rippleDeleteClip(doc: EditDoc, clipId: string): EditDoc {
     reanchorOverlays(clone, before); // trailing captions/titles close the gap too
   }
   return parseEditDoc(clone);
+}
+
+// ---- Markers (persisted in doc.markers) ------------------------------------
+//
+// Markers live on the PERSISTED `doc.markers` field (`{ t, label? }[]`), so they
+// survive save/load and undo/redo. Add routes through the engine's pure
+// `addMarker`; remove/bulk-add are pure client transforms of the same field.
+// Two markers within `MARKER_EPSILON` seconds are treated as the same marker.
+
+/** Markers this close (seconds) are considered duplicates. */
+export const MARKER_EPSILON = 0.03;
+
+/**
+ * Add a marker at `t` seconds (via the engine's pure `addMarker`), unless one
+ * already sits within `MARKER_EPSILON`. Returns the SAME doc reference when it's a
+ * duplicate, so the caller can skip an empty undo step. Pure.
+ */
+export function addMarkerAt(doc: EditDoc, t: number): EditDoc {
+  const rt = round(Math.max(0, t));
+  if ((doc.markers ?? []).some((m) => Math.abs(m.t - rt) < MARKER_EPSILON)) return doc;
+  return addMarkerEngine(doc, rt);
+}
+
+/** Remove the marker nearest `t` (within `MARKER_EPSILON`). Pure. */
+export function removeMarkerAt(doc: EditDoc, t: number): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  clone.markers = (clone.markers ?? []).filter((m) => Math.abs(m.t - t) >= MARKER_EPSILON);
+  return parseEditDoc(clone);
+}
+
+/**
+ * Bulk-add markers (e.g. detected beats): merge `times` into `doc.markers`,
+ * deduping within `MARKER_EPSILON`, clamping to `[0, limitSec]`, and sorting
+ * ascending. `label` tags the new markers (e.g. "beat"). Pure.
+ */
+export function addMarkersAt(
+  doc: EditDoc,
+  times: number[],
+  label?: string,
+  limitSec?: number,
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const all = [...(clone.markers ?? [])];
+  for (const raw of times) {
+    let t = round(Math.max(0, raw));
+    if (limitSec != null) {
+      if (t > limitSec + 1e-3) continue;
+      t = Math.min(t, round(limitSec));
+    }
+    if (all.some((m) => Math.abs(m.t - t) < MARKER_EPSILON)) continue;
+    all.push(label ? { t, label } : { t });
+  }
+  all.sort((x, y) => x.t - y.t);
+  clone.markers = all;
+  return parseEditDoc(clone);
+}
+
+// ---- Beat-snapped cutting --------------------------------------------------
+
+/**
+ * Split the main-track video/image clip sitting under each of `times` (e.g. beat
+ * markers). Processed left-to-right so each split's second half is what the next
+ * (later) time falls into. A time that lands on a clip edge or would leave a
+ * sub-`MIN_CLIP_SEC` fragment is skipped (via `splitClip`'s own guard). Reuses
+ * the existing `splitClip` op. Returns the SAME doc reference when nothing was
+ * split. Pure.
+ */
+export function splitAtTimes(doc: EditDoc, times: number[]): EditDoc {
+  let out = doc;
+  const sorted = [...new Set(times.map((t) => round(t)))].sort((a, b) => a - b);
+  for (const t of sorted) {
+    let targetId: string | null = null;
+    for (const track of out.tracks) {
+      if (!isMainSequentialTrack(track)) continue;
+      for (const clip of track.clips) {
+        if (
+          (clip.kind === "video" || clip.kind === "image") &&
+          t > clip.start + MIN_CLIP_SEC &&
+          t < clip.start + clip.duration - MIN_CLIP_SEC
+        ) {
+          targetId = clip.id;
+          break;
+        }
+      }
+      if (targetId) break;
+    }
+    if (targetId) out = splitClip(out, targetId, t);
+  }
+  return out;
 }
 
 /**

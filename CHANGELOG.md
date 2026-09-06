@@ -4,6 +4,12 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.6 — Cycle F wave D (web): beat-sync + stickers/text presets + markers persist
+- **Beat detection + beat-snapped cutting:** "Detect beats" (Audio room) decodes the music (shared Web-Audio `decodeAudio`), runs a dependency-free energy/onset beat estimate (low-band emphasis, adaptive peak-pick, ~BPM), and drops **beat markers** into `doc.markers`; cuts snap to them and "Split at beats" cuts on each. Honest "it's an estimate" copy.
+- **Stickers / text presets:** a picker in the VFX room — ~20 emoji stickers + one-click styled text presets (Bold Title / Subtitle / Handwritten / Meme) that insert overlays via the existing title/caption fns; centered by default or "Place on preview" to drop them. (Preview exact; exported-emoji fidelity depends on host fonts — noted.)
+- **Fix (correctness):** markers were kept in local state and ignored `doc.markers` — they now persist through save/load + undo (read from the doc, add/remove via the engine's marker path). Flagged by the UX review.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e 8/8 core.
+
 ### S4.5 — Cycle F wave C (web): keyframe editor + transition chips + fade handles
 - **On-timeline keyframe editor:** select a clip → **⬦ Keyframes** expands a sub-lane per animatable prop (x/y/scale/rotation/opacity; volume for audio) with **draggable diamonds** — add at playhead, drag to retime, per-diamond value input + easing, right-click/Delete to remove (`setKeyframe`/`moveKeyframe`/`removeKeyframe`, coalesced undo).
 - **Per-cut transition chips:** a ◇ on every cut of a main visual track → popover with the 7-type gallery + duration slider + Hard cut (`setTransition({clipId})`/`clearTransition`).
