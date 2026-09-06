@@ -4,6 +4,14 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.1 — Cycle B: engine features + audio waveform + bug fixes
+- **Engine (B1):** **speed-ramp** (`set_speed`, 0.25–4×, slow-mo/fast — canvas source-time mapping + ffmpeg `setpts`/chained `atempo`), **crop/zoom** (`zoom`, static reframe via scale+pan, distinct from animated punch-in + ffmpeg `scale`/`crop`), and a **transitions library** (`set_transition`: crossfade / dip-to-black / slide / wipe → xfade `fade`/`fadeblack`/`slideleft`/`wipeleft`). New core helpers `sourceTimeAt`/`sourceSpanSec`/`transitionMotion`. Verify checks 19–21 (render + export-plan). *verified: verify 21/21, evals 5/5.*
+- **Audio waveform (B3):** the timeline now shows a decoded **audio waveform** (Web Audio `decodeAudioData` → normalized peaks, ~600 buckets, cached per media, off the render path, drawn as a teal SVG envelope). Degrades to nothing when there's no audio; prefers the base video's own audio.
+- **Bug fixes (the "5 issues"):**
+  - **Duplicate React keys** (`m2`/`m4`/…): `say()` called `nextId()` *inside* the `setMessages` updater, so React dev's double-invoke produced colliding message ids. Now the id is generated **outside** the updater with `crypto.randomUUID()`.
+  - **Font preload warnings** (×2): `next/font` emitted `<link rel=preload>` for the CSS-variable fonts that the browser then flagged as unused — set `preload:false` (still `display:swap`), clearing both.
+- *verified:* typecheck + verify 21/21 + `next build` clean.
+
 ### S2.5 — Resizable side panels + timeline; handle polish
 - Draggable `ResizeHandle` dividers adjust the width of the **chat rail** (chat ↔ editor) and the **`{ } code` drawer** (editor ↔ code), and the **height of the timeline** (preview ↔ timeline) via a horizontal variant. Pointer-drag or focus + arrow keys (accessible `role="separator"` with correct `aria-orientation`); clamped (rail 300–620, code 320–760, timeline 90–460) and **persisted per browser** (localStorage, storage-guarded). Below `md` panels go full-width/auto-height and handles hide.
 - **Handle color fix:** suppressed the global amber focus outline on the separators (it rendered as a bright yellow bar) in favor of a subtle **teal hairline** on hover/keyboard-focus (north-star: teal = selection). — *verified in-browser: focused vertical handle outline = none; timeline keyboard nudge 150→278 persists; rail var applies; typecheck + build green.*

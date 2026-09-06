@@ -16,12 +16,14 @@
  */
 import {
   docDurationSec,
+  sourceSpanSec,
   type Clip,
   type ColorGrade,
   type EditDoc,
   type ImageClip,
   type SolidClip,
   type TextClip,
+  type TransitionType,
   type VideoClip,
 } from "@cadence/core";
 
@@ -93,6 +95,92 @@ function lookFilters(look: ColorGrade): string[] {
   const warm = warmColorbalance(look.warmth);
   if (warm) out.push(warm);
   return out;
+}
+
+// --- speed ramp (setpts / atempo) -------------------------------------------
+
+/**
+ * Video setpts for a speed-retimed clip. Standard ffmpeg speed control:
+ * `setpts=PTS/speed` (speed>1 shrinks PTS → faster; <1 stretches → slow-mo),
+ * combined with the per-clip PTS reset. Confirmed against ffmpeg's setpts docs
+ * (ffmpeg.org/ffmpeg-filters.html #setpts). We read `duration*speed` seconds of
+ * SOURCE (see sourceSpanSec) so the output occupies the clip's timeline duration.
+ */
+function speedSetpts(speed: number): string {
+  return speed === 1 ? "setpts=PTS-STARTPTS" : `setpts=(PTS-STARTPTS)/${r3(speed)}`;
+}
+
+/**
+ * atempo chain matching a speed factor. ffmpeg's atempo accepts [0.5, 100.0]; a
+ * factor outside a single step is achieved by daisy-chaining (per the atempo
+ * docs). We keep every step within [0.5, 2.0] — the conservative, universally
+ * supported window — so e.g. 0.25 → atempo=0.5,atempo=0.5 and 4 →
+ * atempo=2.0,atempo=2.0. Faithful: retimes audio, no pitch-correction redraw.
+ */
+export function atempoChain(speed: number): string[] {
+  if (speed === 1) return [];
+  const steps: number[] = [];
+  let remaining = speed;
+  // Bring the factor down into [0.5, 2] by repeatedly pulling out a 2.0 step.
+  while (remaining > 2.0 + 1e-9) {
+    steps.push(2.0);
+    remaining /= 2.0;
+  }
+  // …or up into range by pulling out 0.5 steps.
+  while (remaining < 0.5 - 1e-9) {
+    steps.push(0.5);
+    remaining /= 0.5;
+  }
+  steps.push(r3(remaining));
+  return steps.map((s) => `atempo=${r3(s)}`);
+}
+
+// --- static zoom / crop (manual reframe) ------------------------------------
+
+/**
+ * A static punch-in / reframe from a visual clip's transform: scale the covered
+ * WxH frame up by `transform.scale` and crop back to WxH, offset by the pan
+ * (transform.x/y away from center). Distinct from the animated emphasis pulse —
+ * this is a fixed zoom. Null when there is nothing to do (scale≈1, no pan).
+ * Faithful: scale=lanczos + crop only. Mirrors the canvas transform.scale.
+ */
+function staticZoomFilters(
+  clip: VideoClip | ImageClip,
+  W: number,
+  H: number,
+): string[] {
+  const s = clip.transform.scale;
+  const panX = Math.round(clip.transform.x - W / 2);
+  const panY = Math.round(clip.transform.y - H / 2);
+  if (s <= 1.0001 && panX === 0 && panY === 0) return [];
+  const scale = Math.max(1, s);
+  const sw = Math.max(W, Math.round((W * scale) / 2) * 2);
+  const sh = Math.max(H, Math.round((H * scale) / 2) * 2);
+  // Centered crop, shifted by the pan; clamp so the window stays inside the frame.
+  const cx = clamp(Math.round((sw - W) / 2 - panX), 0, sw - W);
+  const cy = clamp(Math.round((sh - H) / 2 - panY), 0, sh - H);
+  return [`scale=${sw}:${sh}:flags=lanczos`, `crop=${W}:${H}:${cx}:${cy}`];
+}
+
+// --- transition library (xfade names) ---------------------------------------
+
+/**
+ * Map an EditDoc transitionType to the ffmpeg xfade `transition` name. Names
+ * verified against the xfade filter docs (fade / fadeblack / slideleft /
+ * wipeleft all valid transitions). Faithful: xfade blends existing frames.
+ */
+export function xfadeTransition(type: TransitionType): string {
+  switch (type) {
+    case "dip-to-black":
+      return "fadeblack";
+    case "slide":
+      return "slideleft";
+    case "wipe":
+      return "wipeleft";
+    case "crossfade":
+    default:
+      return "fade";
+  }
 }
 
 // --- drawtext ---------------------------------------------------------------
@@ -302,18 +390,24 @@ export function buildExportPlan(
     const segLabels: string[] = [];
     base.forEach((clip, i) => {
       const c = clip as VideoClip;
-      const idx = addInput(["-ss", String(r3(c.sourceIn)), "-t", String(r3(c.duration))], resolveMediaPath(c.mediaId));
+      // Speed retime: consume `duration*speed` seconds of source, then setpts
+      // (and atempo) map it back onto the clip's timeline duration.
+      const idx = addInput(
+        ["-ss", String(r3(c.sourceIn)), "-t", String(r3(sourceSpanSec(c)))],
+        resolveMediaPath(c.mediaId),
+      );
       const emph = emphasisZoompan(c, W, H, fps);
       const vChain = [
-        "setpts=PTS-STARTPTS",
+        speedSetpts(c.speed),
         `scale=${W}:${H}:force_original_aspect_ratio=increase`,
         `crop=${W}:${H}`,
+        ...staticZoomFilters(c, W, H),
         ...(emph ? [emph] : []),
         ...lookFilters(c.look),
         "format=yuv420p",
       ];
       filters.push(`[${idx}:v]${vChain.join(",")}[v${i}]`);
-      const aChain = ["asetpts=PTS-STARTPTS", `volume=${r3(c.volume)}`];
+      const aChain = ["asetpts=PTS-STARTPTS", `volume=${r3(c.volume)}`, ...atempoChain(c.speed)];
       filters.push(`[${idx}:a]${aChain.join(",")}[a${i}]`);
       segLabels.push(`[v${i}][a${i}]`);
     });
@@ -341,16 +435,20 @@ export function buildExportPlan(
       ];
       filters.push(`[${idx}:v]${vChain.join(",")}[v${i}]`);
     });
-    // Chain xfades, accumulating offsets.
+    // Chain xfades, accumulating offsets. Each transition's TYPE comes from the
+    // incoming clip (crossfade→fade, dip-to-black→fadeblack, slide→slideleft,
+    // wipe→wipeleft), so the transition library is honored on export.
     let prev = "v0";
     let acc = base[0]!.duration;
     for (let i = 1; i < base.length; i++) {
-      const xf = r3(base[i]!.transitionInSec || 0.5);
+      const inClip = base[i]!;
+      const xf = r3(inClip.transitionInSec || 0.5);
       const offset = r3(acc - xf);
+      const name = xfadeTransition(inClip.transitionType);
       const out = i === base.length - 1 ? "vxf" : `vxf${i}`;
-      filters.push(`[${prev}][v${i}]xfade=transition=fade:duration=${xf}:offset=${offset}[${out}]`);
+      filters.push(`[${prev}][v${i}]xfade=transition=${name}:duration=${xf}:offset=${offset}[${out}]`);
       prev = out;
-      acc = r3(acc - xf + base[i]!.duration);
+      acc = r3(acc - xf + inClip.duration);
     }
     videoLabel = "vxf";
   } else if (base.length > 0) {
@@ -362,14 +460,15 @@ export function buildExportPlan(
         c.kind === "image"
           ? addInput(["-loop", "1", "-t", String(r3(c.duration))], resolveMediaPath(c.mediaId))
           : addInput(
-              ["-ss", String(r3((c as VideoClip).sourceIn)), "-t", String(r3(c.duration))],
+              ["-ss", String(r3((c as VideoClip).sourceIn)), "-t", String(r3(sourceSpanSec(c as VideoClip)))],
               resolveMediaPath(c.mediaId),
             );
       const emph = c.kind === "video" ? emphasisZoompan(c, W, H, fps) : null;
       const vChain = [
-        "setpts=PTS-STARTPTS",
+        c.kind === "video" ? speedSetpts((c as VideoClip).speed) : "setpts=PTS-STARTPTS",
         `scale=${W}:${H}:force_original_aspect_ratio=increase`,
         `crop=${W}:${H}`,
+        ...staticZoomFilters(c, W, H),
         ...(emph ? [emph] : []),
         ...lookFilters(c.look),
         "format=yuv420p",

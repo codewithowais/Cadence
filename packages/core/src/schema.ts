@@ -116,6 +116,22 @@ const clipBase = {
 const transitionInSec = z.number().nonnegative().default(0);
 const transitionOutSec = z.number().nonnegative().default(0);
 
+/**
+ * How a visual clip transitions in/out over its in/out ramp. All faithful — no
+ * content change, only how the existing frames reveal/leave:
+ *  - "crossfade"    — opacity ramp (the default; how every clip behaved before).
+ *  - "dip-to-black" — fade out then in THROUGH black (opacity ramp against the
+ *                     black composition background), i.e. a dip.
+ *  - "slide"        — the frame slides in from the right / out to the left.
+ *  - "wipe"         — the frame is revealed left-to-right (a hard-edged wipe).
+ * Resolved by PURE helpers in grade.ts (transitionMotion) so canvas, Stage and
+ * the ffmpeg xfade map (crossfade→fade, dip-to-black→fadeblack, slide→slideleft,
+ * wipe→wipeleft) all agree.
+ */
+export const TransitionType = z.enum(["crossfade", "dip-to-black", "slide", "wipe"]);
+export type TransitionType = z.infer<typeof TransitionType>;
+const transitionType = TransitionType.default("crossfade");
+
 /** A clip that plays a slice of a video asset. */
 export const VideoClip = z.object({
   ...clipBase,
@@ -123,11 +139,19 @@ export const VideoClip = z.object({
   mediaId: z.string().min(1),
   /** Offset into the source media where this clip starts, in seconds. */
   sourceIn: z.number().nonnegative().default(0),
+  /**
+   * Playback-speed multiplier (1 = real time). <1 is slow-motion, >1 is fast.
+   * The clip still occupies `duration` seconds of the TIMELINE; speed only
+   * changes how much SOURCE it consumes: source spans `duration * speed`
+   * seconds (see sourceTimeAt in engine.ts). Faithful — retimes, no new frames.
+   */
+  speed: z.number().min(0.25).max(4).default(1),
   transform: Transform.prefault({}),
   volume: z.number().min(0).max(1).default(1),
   look: ColorGrade.prefault({}),
   transitionInSec,
   transitionOutSec,
+  transitionType,
   /** Optional punch-in emphasis (scale pulse over a timeline sub-range). */
   emphasis: Emphasis.optional(),
 });
@@ -143,6 +167,7 @@ export const ImageClip = z.object({
   motion: KenBurns.prefault({}),
   transitionInSec,
   transitionOutSec,
+  transitionType,
 });
 export type ImageClip = z.infer<typeof ImageClip>;
 
@@ -158,6 +183,7 @@ export const TextClip = z.object({
   transform: Transform.prefault({}),
   transitionInSec,
   transitionOutSec,
+  transitionType,
   /** Optional pill background behind the text (used by captions). */
   background: HexColor.optional(),
   /** Kinetic intro animation (slide + scale in); "none" by default. */
@@ -183,6 +209,7 @@ export const SolidClip = z.object({
   transform: Transform.prefault({}),
   transitionInSec,
   transitionOutSec,
+  transitionType,
 });
 export type SolidClip = z.infer<typeof SolidClip>;
 

@@ -92,6 +92,51 @@ export function textKinetic(clip: TextClip, timeSec: number): KineticState {
 }
 
 /**
+ * Slide/wipe transition motion for a visual clip at `timeSec`, resolved purely
+ * so canvas + Stage animate identically (the ffmpeg export uses the equivalent
+ * xfade names). Faithful: only translates / reveals the existing frame.
+ *
+ *  - dx/dy    : composition-px offset (slide). "slide" enters from the right on
+ *               the in-ramp and exits to the left on the out-ramp; 0 otherwise.
+ *  - wipeFrac : 0..1 fraction of the frame revealed from the left ("wipe"); 1
+ *               means fully shown (crossfade / dip-to-black never clip).
+ *  - fadeOpacity: whether opacity should ramp for this transition. crossfade and
+ *               dip-to-black fade (opacity); slide/wipe keep full opacity so the
+ *               motion reads as a slide/wipe rather than a dissolve.
+ */
+export interface TransitionMotion {
+  dx: number;
+  dy: number;
+  wipeFrac: number;
+  fadeOpacity: boolean;
+}
+
+export function transitionMotion(
+  clip: VideoClip | ImageClip | TextClip | SolidClip,
+  timeSec: number,
+  frameW: number,
+  frameH: number,
+): TransitionMotion {
+  const type = clip.transitionType ?? "crossfade";
+  const inP = clip.transitionInSec > 0 ? clamp01((timeSec - clip.start) / clip.transitionInSec) : 1;
+  const end = clip.start + clip.duration;
+  const outP = clip.transitionOutSec > 0 ? clamp01((end - timeSec) / clip.transitionOutSec) : 1;
+  if (type === "crossfade" || type === "dip-to-black") {
+    return { dx: 0, dy: 0, wipeFrac: 1, fadeOpacity: true };
+  }
+  if (type === "slide") {
+    // Enter from the right (in-ramp), exit to the left (out-ramp), eased.
+    let dx = 0;
+    if (inP < 1) dx = (1 - easeOutCubic(inP)) * frameW;
+    else if (outP < 1) dx = -(1 - easeOutCubic(outP)) * frameW;
+    void frameH;
+    return { dx, dy: 0, wipeFrac: 1, fadeOpacity: false };
+  }
+  // wipe: reveal from the left; hardest edge is the smaller of the two ramps.
+  return { dx: 0, dy: 0, wipeFrac: Math.min(inP, outP), fadeOpacity: false };
+}
+
+/**
  * Punch-in emphasis scale for a video clip at `timeSec`. Returns a multiplier
  * that pulses from 1 up to `emphasis.zoom` at the center of the window
  * [atSec, atSec+durationSec] and back to 1 (sine pulse), and 1 outside it.

@@ -13,6 +13,9 @@
  *   12 b-roll: add_broll picture-in-picture → overlay clip renders + overlay on export
  *   13 kinetic title: add_kinetic_title → mid-animation frame + slide expr on export
  *   14 punch-in emphasis: add_emphasis → increased scale in-window + zoompan on export
+ *   19 speed ramp: set_speed slow-mo/fast → sourceTimeAt mapping + setpts/atempo on export
+ *   20 zoom (manual reframe): zoom → transform.scale on clips + scale/crop on export
+ *   21 transitions: set_transition dip-to-black/slide/wipe → xfade name on slideshow export
  *   15 whisper parse: parseWhisperJson (OpenAI + whisper.cpp shapes) → valid Transcript
  *   16 transcriber factory: real Whisper when available, else graceful StubTranscriber
  *   17 agentic loop: runDirectorLoop (plan→act→verify→correct) verifies + renders,
@@ -26,6 +29,7 @@ import {
   parseEditDoc,
   docDurationSec,
   emphasisScale,
+  sourceTimeAt,
   textKinetic,
   type EditDoc,
   type MediaAsset,
@@ -53,9 +57,11 @@ import {
 } from "@cadence/director";
 import { allProviders, buildCliArgs, configFromEnv, selectProvider } from "@cadence/enhance";
 import {
+  atempoChain,
   buildExportPlan,
   detectFfmpeg,
   runExport,
+  xfadeTransition,
   FfmpegNotFoundError,
   FFMPEG_MISSING_MESSAGE,
 } from "@cadence/render-ffmpeg";
@@ -525,6 +531,96 @@ async function checkEmphasis(): Promise<void> {
   console.log(`  [32m✔[0m check 14 (punch-in): mid-window scale ${Math.round(s * 100) / 100}× renders (${n}b) + zoompan pulse on export`);
 }
 
+async function checkSpeedRamp(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 30 second highlight", project);
+  const r = await new StubDirector().interpret("make it slow motion", project);
+  assert(r.toolCalls.some((c) => c.name === "set_speed"), "expected set_speed");
+
+  const slow = r.doc.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(slow && slow.speed === 0.5, `expected 0.5× slow-mo, got ${slow?.kind === "video" ? slow.speed : "?"}`);
+
+  // Pure source mapping: at the clip midpoint, source advanced by local*speed.
+  const midLocal = slow!.duration / 2;
+  const st = sourceTimeAt(slow!, slow!.start + midLocal);
+  assert(
+    Math.abs(st - (slow!.sourceIn + midLocal * 0.5)) < 1e-6,
+    `sourceTimeAt should apply speed (got ${st})`,
+  );
+  const n = await renderAndAssert(r.doc, slow!.start + midLocal, "verify-speed.png");
+
+  // Export: setpts=PTS/speed + an atempo chain on the audio.
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/speed.mp4");
+  assert(plan.filterComplex.includes("setpts=(PTS-STARTPTS)/0.5"), "speed: expected setpts=PTS/0.5 (slow-mo)");
+  assert(plan.filterComplex.includes("atempo=0.5"), "speed: expected atempo on the audio");
+  // Slow-mo reads LESS source than the timeline duration (duration*speed via -ss/-t).
+  assert(plan.args.includes("-t") && plan.args.some((a) => a === String(Math.round(slow!.duration * 0.5 * 1000) / 1000)), "speed: -t should be duration*speed");
+
+  // atempo daisy-chaining for factors outside a single step [0.5, 2].
+  assert(JSON.stringify(atempoChain(0.25)) === JSON.stringify(["atempo=0.5", "atempo=0.5"]), "speed: 0.25× should chain two atempo=0.5");
+  assert(JSON.stringify(atempoChain(4)) === JSON.stringify(["atempo=2", "atempo=2"]), "speed: 4× should chain two atempo=2");
+  console.log(`  [32m✔[0m check 19 (speed ramp): 0.5× slow-mo — sourceTimeAt mapping + frame (${n}b) + setpts/atempo on export; out-of-range atempo chained`);
+}
+
+async function checkZoom(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const r = await new StubDirector().interpret("zoom in 1.5x", project);
+  assert(r.toolCalls.some((c) => c.name === "zoom"), "expected zoom tool");
+  // Must NOT be routed to the animated emphasis or to speed.
+  assert(!r.toolCalls.some((c) => c.name === "add_emphasis"), "zoom should not trigger emphasis");
+  assert(!r.toolCalls.some((c) => c.name === "set_speed"), "zoom should not trigger speed");
+
+  const zc = r.doc.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video" && c.transform.scale > 1);
+  assert(zc && zc.transform.scale === 1.5, `expected a 1.5× static zoom, got ${zc?.kind === "video" ? zc.transform.scale : "?"}`);
+  const n = await renderAndAssert(r.doc, docDurationSec(r.doc) / 2, "verify-zoom.png");
+
+  // Export: matching static scale (lanczos) + centered crop back to WxH.
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/zoom.mp4");
+  assert(plan.filterComplex.includes("scale=2880:1620:flags=lanczos"), "zoom: expected 1.5× lanczos upscale (2880×1620)");
+  assert(plan.filterComplex.includes("crop=1920:1080:480:270"), "zoom: expected centered crop back to 1920×1080");
+  console.log(`  [32m✔[0m check 20 (zoom/reframe): 1.5× static zoom on clips renders (${n}b) + scale/crop on export (distinct from emphasis)`);
+}
+
+async function checkTransitions(): Promise<void> {
+  const imgs: MediaAsset[] = Array.from({ length: 4 }, (_, i) => ({
+    id: `photo-${i}`, kind: "image" as const, src: `/media/p${i}.jpg`, width: 1920, height: 1080, label: `p${i}.jpg`,
+  }));
+  const project = new ProjectState({ media: imgs });
+
+  // Slideshow + dip-to-black in one instruction (builder then transition).
+  const r = await new StubDirector().interpret(
+    "make a slideshow from my photos with dip-to-black transitions",
+    project,
+  );
+  const names = r.toolCalls.map((c) => c.name);
+  assert(names.includes("make_slideshow"), "expected make_slideshow");
+  assert(names.includes("set_transition"), "expected set_transition");
+  const photos = r.doc.tracks.find((t) => t.id === "photos");
+  assert(photos?.clips.every((c) => (c.kind === "image" ? c.transitionType === "dip-to-black" : true)), "photos should be dip-to-black");
+  const n = await renderAndAssert(r.doc, docDurationSec(r.doc) / 2, "verify-transition.png");
+
+  const dip = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/dip.mp4");
+  assert(dip.filterComplex.includes("xfade=transition=fadeblack"), "transition: dip-to-black should map to xfade fadeblack");
+
+  // slide + wipe on the same slideshow map to their xfade names.
+  const rs = await new StubDirector().interpret("use slide transitions", project);
+  assert(rs.toolCalls.some((c) => c.name === "set_transition"), "expected set_transition for slide");
+  const slide = buildExportPlan(rs.doc, (id) => `/media/${id}.mp4`, "/out/slide.mp4");
+  assert(slide.filterComplex.includes("xfade=transition=slideleft"), "transition: slide should map to xfade slideleft");
+
+  const rw = await new StubDirector().interpret("use wipe transitions", project);
+  const wipe = buildExportPlan(rw.doc, (id) => `/media/${id}.mp4`, "/out/wipe.mp4");
+  assert(wipe.filterComplex.includes("xfade=transition=wipeleft"), "transition: wipe should map to xfade wipeleft");
+
+  // enum → xfade name mapping is exact.
+  assert(xfadeTransition("crossfade") === "fade", "crossfade → fade");
+  assert(xfadeTransition("dip-to-black") === "fadeblack", "dip-to-black → fadeblack");
+  console.log(`  [32m✔[0m check 21 (transitions): dip-to-black/slide/wipe → xfade fadeblack/slideleft/wipeleft on slideshow export; frame ${n}b`);
+}
+
 async function checkWhisperParse(): Promise<void> {
   // (a) OpenAI whisper / faster-whisper shape: seconds + word probabilities.
   const openai = {
@@ -701,6 +797,9 @@ async function main(): Promise<void> {
   await checkBroll();
   await checkKineticTitle();
   await checkEmphasis();
+  await checkSpeedRamp();
+  await checkZoom();
+  await checkTransitions();
   await checkWhisperParse();
   await checkTranscriberFactory();
   await checkAgenticLoop();

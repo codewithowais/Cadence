@@ -6,7 +6,7 @@
  * browser will preview with Omniclip/WebCodecs; a future worker may swap in
  * MLT/ffmpeg. None of those changes touch this interface or the edit-doc.
  */
-import type { Clip, EditDoc, Track } from "./schema";
+import type { Clip, EditDoc, Track, VideoClip } from "./schema";
 
 /** A rendered still frame. `data` is the encoded image bytes. */
 export interface RenderedFrame {
@@ -61,4 +61,28 @@ export function docDurationSec(doc: EditDoc): number {
 /** Convert a frame index to a timestamp in seconds for this doc's fps. */
 export function frameToSec(doc: EditDoc, frame: number): number {
   return frame / doc.meta.fps;
+}
+
+/**
+ * Which point of the SOURCE media a video clip shows at timeline time `timeSec`.
+ * The clip occupies [start, start+duration) on the timeline; `speed` (1 = real
+ * time) maps timeline progress onto the source:
+ *
+ *   sourceTime = sourceIn + (timeSec - start) * speed
+ *
+ * So a clip playing at 0.5× (slow-mo) advances through source half as fast, and
+ * 2× twice as fast. This is the single pure mapping every surface shares — the
+ * browser Stage seeks here, and the ffmpeg export derives its per-clip source
+ * window (`-t = duration * speed`) and `setpts=PTS/speed` from the same rule —
+ * so preview and export always agree. Clamped to the clip's timeline range.
+ */
+export function sourceTimeAt(clip: VideoClip, timeSec: number): number {
+  const local = Math.max(0, Math.min(clip.duration, timeSec - clip.start));
+  const speed = clip.speed ?? 1;
+  return clip.sourceIn + local * speed;
+}
+
+/** Seconds of SOURCE a video clip consumes given its timeline duration + speed. */
+export function sourceSpanSec(clip: VideoClip): number {
+  return clip.duration * (clip.speed ?? 1);
 }

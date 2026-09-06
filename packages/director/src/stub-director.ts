@@ -8,6 +8,7 @@
  */
 import { docDurationSec, type EditDoc } from "@cadence/core";
 import type { ProjectState } from "./project";
+import type { TransitionType } from "@cadence/core";
 import {
   autoMixTool,
   brollTool,
@@ -22,7 +23,10 @@ import {
   qualityTool,
   reframeTool,
   slideshowTool,
+  speedTool,
   titleTool,
+  transitionTool,
+  zoomTool,
   type ToolCall,
 } from "./tools";
 import type { BrollCorner, TitleStyle } from "./edits";
@@ -122,6 +126,66 @@ function parseZoom(req: string): number | undefined {
   return undefined;
 }
 
+/** Parse a bare speed factor like "2x", "0.5 x", "0.25x". */
+function parseSpeedFactor(req: string): number | undefined {
+  const x = req.match(/(\d+(?:\.\d+)?)\s*x\b/);
+  if (x) return parseFloat(x[1]!);
+  if (/half speed/.test(req)) return 0.5;
+  if (/double speed|twice as fast/.test(req)) return 2;
+  return undefined;
+}
+
+/**
+ * Parse a speed-ramp request → a multiplier. Handles "slow motion / slow it
+ * down / speed up / 2x / 0.5x". Returns null when the request isn't about speed.
+ * A bare "Nx" only counts as speed when no punch-in/zoom context is present
+ * (those own the zoom factor).
+ */
+function parseSpeed(req: string): number | undefined {
+  if (/slow ?mo(tion)?|slo-?mo|slow it down|slow down|half speed/.test(req)) {
+    return parseSpeedFactor(req) ?? 0.5;
+  }
+  if (/speed (it |the )?up|speed up|fast ?forward|faster|double speed|twice as fast/.test(req)) {
+    return parseSpeedFactor(req) ?? 2;
+  }
+  if (/\bspeed\b/.test(req)) {
+    return parseSpeedFactor(req); // "set speed to 1.5x"; undefined ⇒ skip (ambiguous)
+  }
+  // A bare factor ("make it 2x", "0.5x") means speed only if not a zoom/punch cmd.
+  if (!/punch|zoom|emphasi|reframe|crop/.test(req)) return parseSpeedFactor(req);
+  return undefined;
+}
+
+/**
+ * Parse a manual (static) zoom/reframe → { scale, pan }. Handles "zoom in 1.5x",
+ * "zoom to 2x", "crop to the center", "reframe". Distinct from the animated
+ * punch-in emphasis ("punch in"). Returns null when not a reframe request.
+ */
+function parseZoomReframe(req: string): { scale?: number; panXFrac?: number; panYFrac?: number } | null {
+  // "zoom in/to" or "crop" (a static reframe). NOT bare "reframe"/"resize" —
+  // those mean an aspect-ratio change (parseAspect owns them).
+  const isReframe = /zoom (in|to)|\bcrop\b/.test(req);
+  if (!isReframe) return null;
+  const scale = parseZoom(req);
+  let panXFrac = 0;
+  let panYFrac = 0;
+  if (/\bleft\b/.test(req)) panXFrac = -0.18;
+  if (/\bright\b/.test(req)) panXFrac = 0.18;
+  if (/\btop\b|\bup\b/.test(req)) panYFrac = -0.18;
+  if (/\bbottom\b|\bdown\b/.test(req)) panYFrac = 0.18;
+  return { scale, panXFrac: panXFrac || undefined, panYFrac: panYFrac || undefined };
+}
+
+/** Parse a transition style ("dip to black / slide / wipe transitions"). */
+function parseTransition(req: string): TransitionType | null {
+  if (/dip.?to.?black|dip to black|fade through black/.test(req)) return "dip-to-black";
+  if (/wipe/.test(req)) return "wipe";
+  if (/slide (transition|between)|sliding transition|slide transitions?/.test(req)) return "slide";
+  if (/cross.?fade|dissolve/.test(req)) return "crossfade";
+  if (/transition/.test(req)) return "crossfade";
+  return null;
+}
+
 function parseQuality(req: string): { preset: QualityKey; aiUpscale: boolean } | null {
   const aiUpscale = /\bai\b.*upscal|upscale.*\bai\b|super.?resolution|super.?res/.test(req);
   if (/4k|ultra|2160/.test(req)) return { preset: "ultra", aiUpscale };
@@ -217,12 +281,43 @@ export class StubDirector {
       });
     }
 
-    // Punch-in emphasis (scale pulse on the video).
-    if (/punch.?in|\bpunch\b|emphasi[sz]|zoom in|push in/.test(req)) {
+    // Manual static zoom / reframe (fixed punch-in) — checked before the
+    // animated emphasis so "zoom in 1.5x" reframes instead of pulsing.
+    const zoomReframe = parseZoomReframe(req);
+    if (zoomReframe) {
+      const input = { ...zoomReframe, atSec: parseAtSeconds(req) };
+      steps.push({
+        run: (p) => zoomTool.execute(input, { project: p }),
+        call: { name: zoomTool.name, input },
+      });
+    }
+
+    // Punch-in emphasis (animated scale pulse on the video).
+    if (/punch.?in|\bpunch\b|emphasi[sz]|push in/.test(req) && !zoomReframe) {
       const input = { atSec: parseAtSeconds(req), zoom: parseZoom(req) };
       steps.push({
         run: (p) => emphasisTool.execute(input, { project: p }),
         call: { name: emphasisTool.name, input },
+      });
+    }
+
+    // Speed ramp (slow motion / speed up).
+    const speed = parseSpeed(req);
+    if (speed !== undefined) {
+      const input = { speed, atSec: parseAtSeconds(req) };
+      steps.push({
+        run: (p) => speedTool.execute(input, { project: p }),
+        call: { name: speedTool.name, input },
+      });
+    }
+
+    // Transition style between clips/photos (crossfade/dip-to-black/slide/wipe).
+    const transition = parseTransition(req);
+    if (transition) {
+      const input = { type: transition };
+      steps.push({
+        run: (p) => transitionTool.execute(input, { project: p }),
+        call: { name: transitionTool.name, input },
       });
     }
 
@@ -290,7 +385,7 @@ export class StubDirector {
     const hasImages = project.media.some((m) => m.kind === "image");
     if (!hasVideo && !hasImages) return "Add a video or some photos to begin.";
     if (hasImages && !hasVideo)
-      return 'Try: "make a slideshow", "make it vertical", "warm look", or "make it high quality".';
-    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "cinematic look", "punch in at 5s", "add b-roll", "an animated title that says …", "add background music", or "make it 4K".';
+      return 'Try: "make a slideshow", "make it vertical", "warm look", "use dip-to-black transitions", or "make it high quality".';
+    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "cinematic look", "slow motion", "zoom in 1.5x", "punch in at 5s", "wipe transitions", "add b-roll", "an animated title that says …", "add background music", or "make it 4K".';
   }
 }

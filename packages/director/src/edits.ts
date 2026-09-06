@@ -4,10 +4,26 @@
  * schema so the result is always valid. Tools (tools.ts) wrap these; the real
  * Claude Director will call the same operations.
  */
-import { docDurationSec, parseEditDoc, type ColorGrade, type EditDoc, type MediaAsset } from "@cadence/core";
+import {
+  docDurationSec,
+  parseEditDoc,
+  type ColorGrade,
+  type EditDoc,
+  type MediaAsset,
+  type TransitionType,
+} from "@cadence/core";
 import type { Transcript } from "@cadence/understanding";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
+const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
+
+/**
+ * Track ids that carry the MAIN footage/photos (as opposed to overlays like
+ * titles, captions, b-roll PiP, fades or music). Speed / zoom / transition edits
+ * apply to these, never to the overlays.
+ */
+const OVERLAY_TRACK_IDS = new Set(["titles", "captions", "broll", "fades", "music"]);
+const isMainVisualTrack = (id: string): boolean => !OVERLAY_TRACK_IDS.has(id);
 
 // ---- Aspect ratios ---------------------------------------------------------
 
@@ -382,6 +398,108 @@ export function addEmphasis(
   const winStart = Math.max(atSec, target.start);
   const winEnd = Math.min(winStart + durationSec, target.start + target.duration);
   target.emphasis = { atSec: round(winStart), durationSec: round(Math.max(0.2, winEnd - winStart)), zoom: round(zoom) };
+  return parseEditDoc(clone);
+}
+
+// ---- Speed ramp ------------------------------------------------------------
+
+export type SpeedTarget = "slow" | "fast" | "normal";
+
+const SPEED_TARGETS: Record<SpeedTarget, number> = { slow: 0.5, fast: 2, normal: 1 };
+
+/** Resolve a raw speed number and/or a named target into a clamped multiplier. */
+export function resolveSpeed(opts: { speed?: number; target?: SpeedTarget }): number {
+  const raw = opts.speed ?? (opts.target ? SPEED_TARGETS[opts.target] : 1);
+  return round(clamp(raw, 0.25, 4));
+}
+
+/**
+ * Set the playback speed of the main video clip(s). <1 is slow-motion, >1 is
+ * fast. The clip keeps its TIMELINE duration; only how much source it consumes
+ * changes (see sourceTimeAt in core). If `atSec` is given, only the clip active
+ * there is retimed; otherwise every main video clip is. Faithful: retime only.
+ */
+export function setSpeed(
+  doc: EditDoc,
+  opts: { speed?: number; target?: SpeedTarget; atSec?: number } = {},
+): EditDoc {
+  const speed = resolveSpeed(opts);
+  const clone: EditDoc = structuredClone(doc);
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video") continue;
+      if (opts.atSec !== undefined && !(opts.atSec >= clip.start && opts.atSec < clip.start + clip.duration)) {
+        continue;
+      }
+      clip.speed = speed;
+      changed++;
+    }
+  }
+  if (changed === 0) throw new Error("Add a video first — speed changes need footage.");
+  return parseEditDoc(clone);
+}
+
+// ---- Zoom / crop (manual static reframe) -----------------------------------
+
+/**
+ * Statically zoom / reframe the main visual clip(s): set transform.scale (punch
+ * in) and an optional pan (fraction of the frame from center). Distinct from the
+ * animated punch-in emphasis — this is a fixed reframe honored by canvas
+ * (transform.scale) and the ffmpeg plan (scale+crop). Faithful: crop/scale only.
+ */
+export function setZoom(
+  doc: EditDoc,
+  opts: { scale?: number; panXFrac?: number; panYFrac?: number; atSec?: number } = {},
+): EditDoc {
+  const scale = round(clamp(opts.scale ?? 1.3, 1, 4));
+  const panXFrac = clamp(opts.panXFrac ?? 0, -0.5, 0.5);
+  const panYFrac = clamp(opts.panYFrac ?? 0, -0.5, 0.5);
+  const clone: EditDoc = structuredClone(doc);
+  const W = clone.meta.width;
+  const H = clone.meta.height;
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video" && clip.kind !== "image") continue;
+      if (opts.atSec !== undefined && !(opts.atSec >= clip.start && opts.atSec < clip.start + clip.duration)) {
+        continue;
+      }
+      clip.transform.scale = scale;
+      clip.transform.x = round(W / 2 + panXFrac * W);
+      clip.transform.y = round(H / 2 + panYFrac * H);
+      changed++;
+    }
+  }
+  if (changed === 0) throw new Error("Add a video or photos first — zoom needs a visual clip.");
+  return parseEditDoc(clone);
+}
+
+// ---- Transition library ----------------------------------------------------
+
+/**
+ * Set the transition style of the main visual clips (slideshow photos / cut
+ * clips): "crossfade" | "dip-to-black" | "slide" | "wipe". Non-first clips get a
+ * default transition duration if they were hard cuts, so the effect is visible
+ * (and triggers xfade on slideshow export). Faithful: reveal style only.
+ */
+export function setTransition(doc: EditDoc, type: TransitionType, transitionSec = 0.6): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    const visual = track.clips.filter((c) => c.kind === "video" || c.kind === "image");
+    visual.forEach((clip, i) => {
+      if (clip.kind !== "video" && clip.kind !== "image") return;
+      clip.transitionType = type;
+      // First clip has no incoming transition; give the rest one if hard-cut.
+      if (i > 0 && clip.transitionInSec <= 0) clip.transitionInSec = transitionSec;
+      changed++;
+    });
+  }
+  if (changed === 0) throw new Error("Add a slideshow or video first — transitions need clips.");
   return parseEditDoc(clone);
 }
 

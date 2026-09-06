@@ -17,7 +17,9 @@ import {
   cssFilter,
   emphasisScale,
   imageMotion,
+  sourceTimeAt,
   textKinetic,
+  transitionMotion,
   transitionOpacity,
   type EditDoc,
   type ImageClip,
@@ -72,8 +74,11 @@ function drawMedia(
   frameW: number,
   frameH: number,
 ): void {
-  const op = transitionOpacity(clip, clipTimeCache);
-  if (op <= 0) return;
+  // Transition motion (slide/wipe) + whether opacity should ramp (crossfade /
+  // dip-to-black do; slide/wipe stay opaque) — shared core helper.
+  const tm = transitionMotion(clip, clipTimeCache, frameW, frameH);
+  const op = tm.fadeOpacity ? transitionOpacity(clip, clipTimeCache) : clip.transform.opacity;
+  if (op <= 0 || tm.wipeFrac <= 0) return;
 
   const motion = clip.kind === "image" ? imageMotion(clip, clipTimeCache) : null;
   // Punch-in emphasis pulses a video clip's scale up over a sub-range (core helper).
@@ -83,10 +88,18 @@ function drawMedia(
   const panY = motion ? motion.panYFrac * frameH : 0;
 
   ctx.save();
-  ctx.translate(clip.transform.x + panX, clip.transform.y + panY);
+  // Slide transition offsets the whole frame (composition px, pre-scale).
+  ctx.translate(clip.transform.x + panX + tm.dx, clip.transform.y + panY + tm.dy);
   if (clip.transform.rotation !== 0) ctx.rotate(degToRad(clip.transform.rotation));
   if (effScale !== 1) ctx.scale(effScale, effScale);
   ctx.globalAlpha = op;
+
+  // Wipe transition: reveal the frame left→right by clipping to a growing rect.
+  if (tm.wipeFrac < 1) {
+    ctx.beginPath();
+    ctx.rect(-frameW / 2, -frameH / 2, frameW * tm.wipeFrac, frameH);
+    ctx.clip();
+  }
 
   // Look / color grade — applies to the tile now, to real pixels later.
   ctx.filter = cssFilter(clip.look);
@@ -111,6 +124,16 @@ function drawMedia(
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(label, 0, 0);
+  // Speed retime: show which SOURCE moment maps here (pure sourceTimeAt), so the
+  // placeholder tile agrees with the Stage's seek and the export's setpts.
+  if (clip.kind === "video" && (clip.speed ?? 1) !== 1) {
+    ctx.font = "26px sans-serif";
+    ctx.fillText(
+      `${clip.speed}× · src ${sourceTimeAt(clip, clipTimeCache).toFixed(2)}s`,
+      0,
+      44,
+    );
+  }
   ctx.restore();
 }
 

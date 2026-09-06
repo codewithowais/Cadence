@@ -19,7 +19,13 @@ import { download, downloadBlob } from "@/lib/format";
 import type { Message } from "@/lib/types";
 
 let msgSeq = 0;
-const nextId = () => `m${++msgSeq}`;
+// Collision-proof message id. MUST be generated OUTSIDE a setState updater —
+// React dev (StrictMode) double-invokes updaters, so a counter bump inside one
+// yields duplicate ids (and duplicate React keys). Prefer crypto.randomUUID.
+const nextId = (): string =>
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `m${Date.now()}-${++msgSeq}`;
 
 // Side-panel width bounds (px).
 const RAIL_MIN = 300;
@@ -117,14 +123,32 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     () => doc.tracks.some((t) => t.clips.some((c) => c.kind === "video")),
     [doc],
   );
+  // Source for the timeline audio waveform: the base (full-frame) video's own
+  // audio — same media the Stage previews, so peaks line up with the cuts. We
+  // deliberately prefer this over any separate music track. `null` when there's
+  // no video (e.g. a photo slideshow) → the waveform simply isn't drawn.
+  const waveformSource = useMemo(() => {
+    let mediaId: string | null = null;
+    for (const track of doc.tracks) {
+      if (track.id === "broll") continue;
+      for (const c of track.clips) {
+        if (c.kind === "video") { mediaId = c.mediaId; break; }
+      }
+      if (mediaId) break;
+    }
+    if (!mediaId) return null;
+    return { mediaId, file: files[mediaId], url: urls[mediaId] };
+  }, [doc, files, urls]);
   const mode: "video" | "images" | "none" = mediaList.some((m) => m.kind === "video")
     ? "video"
     : mediaList.some((m) => m.kind === "image")
       ? "images"
       : "none";
 
-  const say = (role: Message["role"], text: string, tone?: Message["tone"]) =>
-    setMessages((m) => [...m, { id: nextId(), role, text, tone }]);
+  const say = (role: Message["role"], text: string, tone?: Message["tone"]) => {
+    const id = nextId(); // outside the updater → stable under StrictMode double-invoke
+    setMessages((m) => [...m, { id, role, text, tone }]);
+  };
 
   useEffect(() => {
     if (!playing) return;
@@ -439,7 +463,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           className="shrink-0 overflow-y-auto md:h-[var(--tl-h)]"
           style={{ "--tl-h": `${timelineHeight}px` } as CSSProperties}
         >
-          <CutsStrip doc={doc} timeSec={timeSec} durationSec={durationSec} onSeek={seek} />
+          <CutsStrip doc={doc} timeSec={timeSec} durationSec={durationSec} onSeek={seek} waveform={waveformSource} />
         </div>
       </main>
       {codeOpen && (

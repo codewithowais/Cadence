@@ -10,6 +10,7 @@ import {
   EditDoc,
   type EditDoc as EditDocT,
   type MediaAsset,
+  type TransitionType,
 } from "@cadence/core";
 import type { Transcript } from "@cadence/understanding";
 import type { ProjectState } from "./project";
@@ -28,10 +29,14 @@ import {
   autoMix,
   reframe,
   setQuality,
+  setSpeed,
+  setTransition,
+  setZoom,
   type AspectKey,
   type BrollCorner,
   type LookKey,
   type QualityKey,
+  type SpeedTarget,
   type TitleStyle,
 } from "./edits";
 
@@ -350,6 +355,63 @@ export const qualityTool: DirectorTool<{ preset: QualityKey; aiUpscale?: boolean
   },
 };
 
+// ---- set_speed -------------------------------------------------------------
+
+export const speedTool: DirectorTool<{ speed?: number; target?: SpeedTarget; atSec?: number }> = {
+  name: "set_speed",
+  description:
+    "Retime the video: slow-motion (<1) or fast (>1). Pass a numeric `speed` (0.25–4) or a `target` (slow=0.5, fast=2, normal=1).",
+  inputSchema: z
+    .object({
+      speed: z.number().min(0.25).max(4).optional(),
+      target: z.enum(["slow", "fast", "normal"]).optional(),
+      atSec: z.number().nonnegative().optional(),
+    })
+    .refine((v) => v.speed !== undefined || v.target !== undefined, {
+      message: "provide a speed or a target",
+    }),
+  async execute(input, ctx) {
+    const doc = setSpeed(ctx.project.doc, input);
+    const applied = doc.tracks
+      .flatMap((t) => t.clips)
+      .find((c) => c.kind === "video" && (c.speed ?? 1) !== 1);
+    const speed = applied && applied.kind === "video" ? applied.speed : (input.speed ?? 1);
+    const label = speed < 1 ? "slow-motion" : speed > 1 ? "sped up" : "normal speed";
+    return commit(ctx.project, doc, `Set speed to ${speed}× (${label}).`);
+  },
+};
+
+// ---- zoom (manual static reframe) ------------------------------------------
+
+export const zoomTool: DirectorTool<{ scale?: number; panXFrac?: number; panYFrac?: number; atSec?: number }> = {
+  name: "zoom",
+  description:
+    "Statically punch in / reframe the shot: set a zoom `scale` (1–4, e.g. 1.5) and optional pan (panXFrac/panYFrac, fraction of frame from center). Distinct from the animated emphasis punch-in.",
+  inputSchema: z.object({
+    scale: z.number().min(1).max(4).optional(),
+    panXFrac: z.number().min(-0.5).max(0.5).optional(),
+    panYFrac: z.number().min(-0.5).max(0.5).optional(),
+    atSec: z.number().nonnegative().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = setZoom(ctx.project.doc, input);
+    return commit(ctx.project, doc, `Reframed with a ${input.scale ?? 1.3}× static zoom.`);
+  },
+};
+
+// ---- set_transition --------------------------------------------------------
+
+export const transitionTool: DirectorTool<{ type: TransitionType }> = {
+  name: "set_transition",
+  description:
+    "Set the transition style between clips/photos: crossfade, dip-to-black, slide, or wipe.",
+  inputSchema: z.object({ type: z.enum(["crossfade", "dip-to-black", "slide", "wipe"]) }),
+  async execute(input, ctx) {
+    const doc = setTransition(ctx.project.doc, input.type);
+    return commit(ctx.project, doc, `Set ${input.type} transitions between clips.`);
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
   create_highlight: createHighlightTool,
@@ -366,4 +428,7 @@ export const DIRECTOR_TOOLS = {
   add_broll: brollTool,
   add_kinetic_title: kineticTitleTool,
   add_emphasis: emphasisTool,
+  set_speed: speedTool,
+  zoom: zoomTool,
+  set_transition: transitionTool,
 } as const;
