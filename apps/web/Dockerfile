@@ -33,6 +33,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
+# Real video export needs the system ffmpeg; drawtext (captions/titles) and the
+# @napi-rs/canvas text renderer need a font + fontconfig. This is what makes
+# high-quality .mp4 export work in the container even when the host can't install
+# ffmpeg (e.g. Homebrew dropped Intel-macOS support).
+RUN apk add --no-cache ffmpeg fontconfig ttf-dejavu
 # DATABASE_URL / SESSION_SECRET are injected at runtime by docker-compose.
 COPY --from=build /app ./
 EXPOSE 3000

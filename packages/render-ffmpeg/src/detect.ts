@@ -13,8 +13,14 @@ export interface FfmpegInfo {
   bin: string;
 }
 
-/** The message shown wherever ffmpeg is required but missing. */
-export const FFMPEG_MISSING_MESSAGE = "ffmpeg not found — run: brew install ffmpeg";
+/**
+ * The message shown wherever ffmpeg is required but missing. Homebrew has dropped
+ * Intel-macOS support, so we point at the portable options instead of only brew.
+ */
+export const FFMPEG_MISSING_MESSAGE =
+  "ffmpeg not found. Options: run the app via Docker (`docker compose up`, ffmpeg is baked in), " +
+  "set FFMPEG_PATH to an ffmpeg binary, or install ffmpeg (macOS: `brew install ffmpeg`, " +
+  "or on Intel Macs MacPorts `sudo port install ffmpeg`).";
 
 /**
  * Probe `ffmpeg -version`. Resolves (never rejects) with availability + version.
