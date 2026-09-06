@@ -26,6 +26,8 @@ const RAIL_MIN = 300;
 const RAIL_MAX = 620;
 const CODE_MIN = 320;
 const CODE_MAX = 760;
+const TL_MIN = 90;
+const TL_MAX = 460;
 const clampPx = (n: number, lo: number, hi: number): number =>
   Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : lo;
 
@@ -98,6 +100,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // Resizable side panels (persisted per browser).
   const [railWidth, setRailWidth] = useState(380);
   const [codeWidth, setCodeWidth] = useState(440);
+  const [timelineHeight, setTimelineHeight] = useState(150);
 
   const urlsRef = useRef(urls);
   urlsRef.current = urls;
@@ -150,6 +153,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       if (r) setRailWidth(clampPx(Number(r), RAIL_MIN, RAIL_MAX));
       const c = localStorage.getItem("cadence:codeW");
       if (c) setCodeWidth(clampPx(Number(c), CODE_MIN, CODE_MAX));
+      const t = localStorage.getItem("cadence:tlH");
+      if (t) setTimelineHeight(clampPx(Number(t), TL_MIN, TL_MAX));
     } catch {
       /* storage unavailable — keep defaults */
     }
@@ -160,6 +165,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   useEffect(() => {
     try { localStorage.setItem("cadence:codeW", String(codeWidth)); } catch { /* noop */ }
   }, [codeWidth]);
+  useEffect(() => {
+    try { localStorage.setItem("cadence:tlH", String(timelineHeight)); } catch { /* noop */ }
+  }, [timelineHeight]);
 
   async function handleFiles(files: File[]) {
     const videos = files.filter((f) => f.type.startsWith("video"));
@@ -421,7 +429,18 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           muted={muted}
           onToggleMute={() => setMuted((m) => !m)}
         />
-        <CutsStrip doc={doc} timeSec={timeSec} durationSec={durationSec} onSeek={seek} />
+        <ResizeHandle
+          orientation="horizontal"
+          className="hidden md:block"
+          ariaLabel="Resize the timeline"
+          onDelta={(dy) => setTimelineHeight((h) => clampPx(h - dy, TL_MIN, TL_MAX))}
+        />
+        <div
+          className="shrink-0 overflow-y-auto md:h-[var(--tl-h)]"
+          style={{ "--tl-h": `${timelineHeight}px` } as CSSProperties}
+        >
+          <CutsStrip doc={doc} timeSec={timeSec} durationSec={durationSec} onSeek={seek} />
+        </div>
       </main>
       {codeOpen && (
         <>

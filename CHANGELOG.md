@@ -4,8 +4,9 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
-### S2.5 — Resizable side panels
-- Draggable `ResizeHandle` dividers let you adjust the width of the **chat rail** (chat ↔ editor) and the **`{ } code` drawer** (editor ↔ code). Pointer-drag or focus + arrow keys (accessible `role="separator"`); widths clamped (rail 300–620, code 320–760) and **persisted per browser** (localStorage, storage-guarded). Below `md` the panels go full-width and the handles hide. — *verified in-browser: width var applies (380px), keyboard nudge 380→540 persists; typecheck + build green.*
+### S2.5 — Resizable side panels + timeline; handle polish
+- Draggable `ResizeHandle` dividers adjust the width of the **chat rail** (chat ↔ editor) and the **`{ } code` drawer** (editor ↔ code), and the **height of the timeline** (preview ↔ timeline) via a horizontal variant. Pointer-drag or focus + arrow keys (accessible `role="separator"` with correct `aria-orientation`); clamped (rail 300–620, code 320–760, timeline 90–460) and **persisted per browser** (localStorage, storage-guarded). Below `md` panels go full-width/auto-height and handles hide.
+- **Handle color fix:** suppressed the global amber focus outline on the separators (it rendered as a bright yellow bar) in favor of a subtle **teal hairline** on hover/keyboard-focus (north-star: teal = selection). — *verified in-browser: focused vertical handle outline = none; timeline keyboard nudge 150→278 persists; rail var applies; typecheck + build green.*
 
 ### QA1 — End-to-end browser test (Playwright) driving the real app with real media
 - **New E2E suite** (`apps/web/e2e/`, `@playwright/test`) — drives the running app at `localhost:3000` in headless Chromium. `test:e2e` script at repo root (`npm run test:e2e`) and in `@cadence/web`; `test:e2e:install` installs the Chromium browser for CI. Playwright config reuses an already-running dev server locally and boots one in CI (`reuseExistingServer: !CI`). Screenshots of every step → `test-artifacts/` (gitignored); generated fixtures → `test-artifacts/fixtures/`.
