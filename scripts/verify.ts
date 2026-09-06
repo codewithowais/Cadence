@@ -42,9 +42,14 @@ import {
   cursorRipples,
   calloutScreenRect,
   calloutTransform,
+  valueAt,
+  toSrt,
+  toVtt,
+  formatTimestamp,
   type CalloutClip,
   type CursorClip,
   type EditDoc,
+  type Keyframe,
   type MediaAsset,
   type TextClip,
   type VideoClip,
@@ -67,10 +72,15 @@ import {
   runDirectorLoop,
   adjustColor,
   addCaptions,
+  addMarker,
   addMusic,
+  animate,
   applyVfx,
+  freezeFrame,
   reframe,
   reframeTo,
+  reverseClip,
+  setPlatform,
   setQuality,
   setSpeed,
   setTransition,
@@ -1355,6 +1365,197 @@ async function checkSlideshowKeepsMusic(): Promise<void> {
   console.log(`  [32m✔[0m check 37 (slideshow keeps audio): rebuilding a slideshow preserves the attached music track (+ amix on export)`);
 }
 
+async function checkKeyframes(): Promise<void> {
+  // (a) PURE valueAt: linear + eased interpolation, holds, and no-keyframe base.
+  const scaleKfs: Keyframe[] = [
+    { prop: "scale", t: 0, value: 1, easing: "linear" },
+    { prop: "scale", t: 1, value: 2, easing: "linear" },
+  ];
+  assert(Math.abs(valueAt(scaleKfs, "scale", 0.5, 1) - 1.5) < 1e-9, "valueAt linear midpoint should be 1.5");
+  assert(valueAt(undefined, "scale", 0.5, 7) === 7, "valueAt with no keyframes returns the base");
+  assert(valueAt(scaleKfs, "rotation", 0.5, 42) === 42, "valueAt returns base for an unkeyed prop");
+  assert(valueAt(scaleKfs, "scale", 0, 1) === 1 && valueAt(scaleKfs, "scale", 1, 1) === 2, "valueAt holds the endpoints");
+  const easeKfs: Keyframe[] = [
+    { prop: "opacity", t: 0, value: 0, easing: "linear" },
+    { prop: "opacity", t: 1, value: 1, easing: "ease-in" },
+  ];
+  // ease-in cubic at p=0.5 → 0.5^3 = 0.125.
+  assert(Math.abs(valueAt(easeKfs, "opacity", 0.5, 1) - 0.125) < 1e-9, "valueAt ease-in midpoint should be 0.125");
+
+  // (b) animate (pure) sets keyframes; the doc renders and differs mid-anim from base.
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const animated = animate(project.doc, { prop: "scale", from: 1, to: 1.8, atSec: 1 });
+  const vc = animated.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video" && !!c.keyframes);
+  assert(vc && vc.keyframes?.some((k) => k.prop === "scale"), "animate should add scale keyframes to a video clip");
+  const midProg = 0.5;
+  const sc = valueAt(vc!.keyframes, "scale", midProg, 1);
+  assert(sc > 1.05 && sc < 1.8, `mid-animation scale should interpolate strictly between, got ${sc}`);
+  const mid = vc!.start + vc!.duration / 2;
+  const withKf = await renderBytes(animated, mid);
+  writeFileSync(resolve(OUT_DIR, "verify-keyframe-scale.png"), withKf);
+  const baseDoc = structuredCloneDoc(animated);
+  for (const t of baseDoc.tracks) for (const c of t.clips) delete (c as { keyframes?: unknown }).keyframes;
+  const withoutKf = await renderBytes(parseEditDoc(baseDoc), mid);
+  assert(withKf.subarray(0, 4).equals(PNG_MAGIC), "keyframe frame should be a real PNG");
+  assert(!withKf.equals(withoutKf), "the keyframed scale should change the rendered frame");
+
+  // (c) StubDirector routing: "zoom over time" → animate (scale), NOT static zoom/
+  // speed/emphasis; "fade the title" → animate opacity on an EXISTING title.
+  const zt = await new StubDirector().interpret("zoom in over time", project);
+  assert(zt.toolCalls.some((c) => c.name === "animate"), "expected animate from 'zoom in over time'");
+  assert(
+    !zt.toolCalls.some((c) => c.name === "zoom" || c.name === "set_speed" || c.name === "add_emphasis"),
+    "'over time' should not trigger the static zoom / speed / emphasis tools",
+  );
+  const tp = videoProject();
+  tp.setTranscript(await new StubTranscriber().transcribe(tp.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", tp);
+  await new StubDirector().interpret('add a title that says "Hello"', tp);
+  const ft = await new StubDirector().interpret("fade the title in", tp);
+  assert(ft.toolCalls.some((c) => c.name === "animate"), "expected animate for 'fade the title'");
+  assert(
+    !ft.toolCalls.some((c) => c.name === "add_title" || c.name === "add_fades"),
+    "'fade the title' should animate the existing title, not add a title or black fades",
+  );
+  const titleClip = ft.doc.tracks.find((t) => t.id === "titles")?.clips.find((c): c is TextClip => c.kind === "text" && !!c.keyframes);
+  assert(titleClip?.keyframes?.some((k) => k.prop === "opacity"), "the title should get opacity keyframes");
+
+  // (d) Export: scale keyframes → zoompan interpolation expr; volume keyframes →
+  // a time-expression volume (volume=…:eval=frame).
+  const plan = buildExportPlan(animated, (id) => `/media/${id}.mp4`, "/out/kf.mp4");
+  assert(plan.filterComplex.includes("zoompan=") && plan.filterComplex.includes("if(lt(on"), "keyframe scale: expected a zoompan interpolation expr on export");
+  const song: MediaAsset = { id: "song", kind: "audio", src: "s.mp3", durationSec: 60, label: "bed.mp3" };
+  const ducked = animate(addMusic(animated, song), { prop: "volume", from: 0.6, to: 0.1, track: "music" });
+  const mplan = buildExportPlan(ducked, (id) => `/media/${id}.mp4`, "/out/kfvol.mp4");
+  assert(mplan.filterComplex.includes("volume='") && mplan.filterComplex.includes(":eval=frame"), "keyframe volume: expected a volume time-expr (eval=frame) on export");
+  console.log(`  [32m✔[0m check 38 (keyframes): valueAt lin/ease/holds; animate scale renders (${withKf.length}b) & changes the frame; 'over time'/'fade the title' → animate; zoompan expr + volume eval=frame on export`);
+}
+
+async function checkReverse(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const r = await new StubDirector().interpret("reverse the clip", project);
+  assert(r.toolCalls.some((c) => c.name === "reverse_clip"), "expected reverse_clip");
+  const rc = r.doc.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(rc && rc.reversed === true, "the clip should be marked reversed");
+
+  // Reversed source mapping: local 0 shows the END of the window; local end shows sourceIn.
+  const span = rc!.duration * (rc!.speed ?? 1);
+  assert(Math.abs(sourceTimeAt(rc!, rc!.start) - (rc!.sourceIn + span)) < 1e-6, "reversed start should show the window end");
+  assert(Math.abs(sourceTimeAt(rc!, rc!.start + rc!.duration) - rc!.sourceIn) < 1e-6, "reversed end should show sourceIn");
+  const n = await renderAndAssert(r.doc, rc!.start + rc!.duration / 2, "verify-reverse.png");
+
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/rev.mp4");
+  assert(plan.filterComplex.includes("v]reverse"), "reverse: expected the video `reverse` filter on export");
+  assert(plan.filterComplex.includes("areverse"), "reverse: expected the audio `areverse` filter on export");
+  console.log(`  [32m✔[0m check 39 (reverse): reversed flag + backwards sourceTimeAt mapping + frame (${n}b) + reverse/areverse on export`);
+}
+
+async function checkFreeze(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const r = await new StubDirector().interpret("freeze frame at 2s", project);
+  assert(r.toolCalls.some((c) => c.name === "freeze_frame"), "expected freeze_frame");
+  const fc = r.doc.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video" && c.freezeAtSec !== undefined);
+  assert(fc && fc.freezeAtSec !== undefined, "a video clip should carry freezeAtSec");
+
+  // sourceTimeAt holds that one source frame regardless of local time.
+  assert(sourceTimeAt(fc!, fc!.start) === fc!.freezeAtSec, "freeze should hold one source time at the head");
+  assert(sourceTimeAt(fc!, fc!.start + fc!.duration) === fc!.freezeAtSec, "freeze should hold the same source time at the tail");
+  const n = await renderAndAssert(r.doc, fc!.start + fc!.duration / 2, "verify-freeze.png");
+
+  const plan = buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/freeze.mp4");
+  assert(plan.filterComplex.includes("tpad=stop_mode=clone"), "freeze: expected tpad clone-hold on export");
+  assert(plan.filterComplex.includes("trim=end_frame=1"), "freeze: expected a single-frame trim on export");
+  assert(plan.args.some((a) => a.startsWith("anullsrc=")), "freeze: expected synthesized silence for the frozen (audio-less) clip");
+  console.log(`  [32m✔[0m check 40 (freeze-frame): freezeAtSec holds one source frame + frame (${n}b) + trim/tpad clone + anullsrc silence on export`);
+}
+
+async function checkMarkers(): Promise<void> {
+  // Default empty + pure addMarker (sorted, labels kept) + JSON round-trip.
+  const base = parseEditDoc({ version: 1, meta: { width: 1280, height: 720 }, tracks: [] });
+  assert(Array.isArray(base.markers) && base.markers.length === 0, "markers should default to []");
+  const withMarkers = addMarker(addMarker(base, 12, "Intro"), 3.5);
+  assert(withMarkers.markers.length === 2, "expected 2 markers");
+  assert(withMarkers.markers[0]!.t === 3.5, "markers should be sorted by time");
+  assert(withMarkers.markers[1]!.t === 12 && withMarkers.markers[1]!.label === "Intro", "marker label should be preserved");
+  const round = parseEditDoc(JSON.parse(JSON.stringify(withMarkers)));
+  assert(round.markers.length === 2 && round.markers[1]!.label === "Intro", "markers should survive a JSON round-trip through parseEditDoc");
+
+  // StubDirector phrase.
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const r = await new StubDirector().interpret("add a marker at 8s", project);
+  assert(r.toolCalls.some((c) => c.name === "add_marker"), "expected add_marker");
+  assert(r.doc.markers.some((m) => m.t === 8), "marker should land at 8s");
+  console.log(`  [32m✔[0m check 41 (markers): default []; addMarker sorts + keeps labels + round-trips; 'add a marker at 8s' → add_marker`);
+}
+
+async function checkCaptionSidecar(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+  const r = await new StubDirector().interpret("add captions", project);
+  const capTrack = r.doc.tracks.find((t) => t.id === "captions");
+  assert((capTrack?.clips.length ?? 0) > 0, "need captions to serialize");
+
+  const srt = toSrt(r.doc);
+  const vtt = toVtt(r.doc);
+  // SRT: cue 1 numbered, hh:mm:ss,mmm --> hh:mm:ss,mmm.
+  assert(/^1\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n/.test(srt), `SRT format wrong:\n${srt.slice(0, 90)}`);
+  assert(srt.includes(" --> ") && srt.includes(","), "SRT should use comma milliseconds");
+  // VTT: WEBVTT header + hh:mm:ss.mmm.
+  assert(vtt.startsWith("WEBVTT\n\n"), "VTT should start with the WEBVTT header");
+  assert(/\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}/.test(vtt), "VTT should use dot milliseconds");
+  // formatTimestamp exactness for both separators.
+  assert(formatTimestamp(3661.5, ",") === "01:01:01,500", `SRT timestamp wrong: ${formatTimestamp(3661.5, ",")}`);
+  assert(formatTimestamp(3661.5, ".") === "01:01:01.500", `VTT timestamp wrong: ${formatTimestamp(3661.5, ".")}`);
+  // Cue count matches the caption clips.
+  const cues = (srt.match(/ --> /g) ?? []).length;
+  assert(cues === capTrack!.clips.length, `SRT cue count ${cues} should equal caption clips ${capTrack!.clips.length}`);
+  console.log(`  [32m✔[0m check 42 (SRT/VTT sidecar): ${cues} cues; hh:mm:ss,mmm (SRT) + WEBVTT hh:mm:ss.mmm (VTT); formatTimestamp exact`);
+}
+
+async function checkPlatform(): Promise<void> {
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 20 second highlight", project);
+
+  // Pure setPlatform: aspect + quality + fps per platform.
+  const tk = setPlatform(project.doc, "tiktok");
+  assert(tk.meta.width === 1080 && tk.meta.height === 1920, `tiktok should be 1080×1920, got ${tk.meta.width}×${tk.meta.height}`);
+  assert(tk.quality.preset === "high", `tiktok quality should be high, got ${tk.quality.preset}`);
+  assert(tk.meta.fps === 30 && tk.quality.fps === 30, "tiktok fps should be 30 on meta + quality");
+  const yt = setPlatform(project.doc, "youtube");
+  assert(yt.meta.width === 1920 && yt.meta.height === 1080, `youtube should be 1920×1080, got ${yt.meta.width}×${yt.meta.height}`);
+  const ig = setPlatform(project.doc, "instagram-feed");
+  assert(ig.meta.width === 1080 && ig.meta.height === 1350, `ig-feed should be 1080×1350, got ${ig.meta.width}×${ig.meta.height}`);
+
+  // StubDirector: "export for tiktok" → set_platform (tiktok), reframing itself.
+  const r = await new StubDirector().interpret("export this for tiktok", project);
+  const call = r.toolCalls.find((c) => c.name === "set_platform");
+  assert(call, "expected set_platform from 'export for tiktok'");
+  assert((call!.input as { platform: string }).platform === "tiktok", "platform should be tiktok");
+  assert(!r.toolCalls.some((c) => c.name === "reframe"), "platform should reframe itself, not via a separate reframe call");
+  assert(r.doc.meta.width === 1080 && r.doc.meta.height === 1920, "tiktok export should be vertical");
+
+  const ry = await new StubDirector().interpret("render it for youtube", project);
+  assert(ry.toolCalls.some((c) => c.name === "set_platform" && (c.input as { platform: string }).platform === "youtube"), "expected the youtube platform");
+  const rr = await new StubDirector().interpret("make it for reels", project);
+  assert(rr.toolCalls.some((c) => c.name === "set_platform" && (c.input as { platform: string }).platform === "reels"), "expected the reels platform");
+
+  // The platform doc renders + carries the fps into the export.
+  const n = await renderAndAssert(rr.doc, docDurationSec(rr.doc) / 2, "verify-platform.png");
+  const plan = buildExportPlan(rr.doc, (id) => `/media/${id}.mp4`, "/out/tt.mp4");
+  assert(plan.args.includes("-r") && plan.args[plan.args.indexOf("-r") + 1] === "30", "platform export should set 30fps (-r 30)");
+  console.log(`  [32m✔[0m check 43 (platform presets): tiktok 1080×1920/high/30 · youtube 1920×1080 · ig-feed 1080×1350; 'export for tiktok/youtube/reels' → set_platform (frame ${n}b)`);
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -1390,6 +1591,12 @@ async function main(): Promise<void> {
   await checkSpeedGuard();
   await checkMusicDuration();
   await checkSlideshowKeepsMusic();
+  await checkKeyframes();
+  await checkReverse();
+  await checkFreeze();
+  await checkMarkers();
+  await checkCaptionSidecar();
+  await checkPlatform();
   await checkWhisperParse();
   await checkTranscriberFactory();
   await checkAgenticLoop();

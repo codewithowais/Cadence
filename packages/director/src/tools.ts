@@ -9,6 +9,8 @@ import {
   docDurationSec,
   EditDoc,
   type EditDoc as EditDocT,
+  type KeyframeEasing,
+  type KeyframeProp,
   type MediaAsset,
   type TransitionType,
 } from "@cadence/core";
@@ -25,16 +27,22 @@ import {
   addCursor,
   addEmphasis,
   addFades,
+  addKeyframe,
   addKineticTitle,
+  addMarker,
   addMusic,
   addTitle,
   adjustColor,
+  animate,
   applyLook,
   applyVfx,
   autoMix,
   carryOverAudio,
+  freezeFrame,
   reframe,
   reframeTo,
+  reverseClip,
+  setPlatform,
   setQuality,
   setSpeed,
   setTransition,
@@ -45,11 +53,18 @@ import {
   type BrollCorner,
   type CaptionStyleOpts,
   type LookKey,
+  type PlatformKey,
   type QualityKey,
   type SpeedTarget,
   type TitleAnimStyle,
   type TitleStyle,
 } from "./edits";
+
+const KF_PROPS = ["x", "y", "scale", "rotation", "opacity", "volume"] as const;
+const KF_EASINGS = ["linear", "ease-in", "ease-out", "ease-in-out"] as const;
+const PLATFORM_ENUM = [
+  "youtube", "youtube-shorts", "tiktok", "reels", "instagram-feed", "instagram-story",
+] as const;
 
 const LOOK_KEYS = [
   "warm", "cool", "vivid", "bw", "cinematic", "vintage", "noir", "vibrant",
@@ -672,6 +687,118 @@ export const addCalloutTool: DirectorTool<{
   },
 };
 
+// ---- animate (keyframes) ---------------------------------------------------
+
+export const animateTool: DirectorTool<{
+  prop: KeyframeProp;
+  to: number;
+  from?: number;
+  easing?: KeyframeEasing;
+  atSec?: number;
+  track?: string;
+}> = {
+  name: "animate",
+  description:
+    "Animate a property over the whole clip with keyframes: prop (x|y|scale|rotation|opacity|volume) eases from an optional `from` (default: current value) to `to`, with `easing` (linear/ease-in/ease-out/ease-in-out). Optionally target the clip at `atSec` or a specific `track` (e.g. titles). Use for a zoom/push over time (scale) or fading a title in (opacity).",
+  inputSchema: z.object({
+    prop: z.enum(KF_PROPS),
+    to: z.number(),
+    from: z.number().optional(),
+    easing: z.enum(KF_EASINGS).optional(),
+    atSec: z.number().nonnegative().optional(),
+    track: z.string().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = animate(ctx.project.doc, input);
+    return commit(
+      ctx.project,
+      doc,
+      `Animated ${input.prop}${input.from !== undefined ? ` from ${input.from}` : ""} to ${input.to} (${input.easing ?? "ease-in-out"}).`,
+    );
+  },
+};
+
+// ---- add_keyframe ----------------------------------------------------------
+
+export const addKeyframeTool: DirectorTool<{
+  prop: KeyframeProp;
+  t: number;
+  value: number;
+  easing?: KeyframeEasing;
+  atSec?: number;
+  track?: string;
+}> = {
+  name: "add_keyframe",
+  description:
+    "Add one animation keyframe to a clip: prop (x|y|scale|rotation|opacity|volume), t (0..1 clip-progress), value, and easing. Optionally target the clip at `atSec` or a specific `track`.",
+  inputSchema: z.object({
+    prop: z.enum(KF_PROPS),
+    t: z.number().min(0).max(1),
+    value: z.number(),
+    easing: z.enum(KF_EASINGS).optional(),
+    atSec: z.number().nonnegative().optional(),
+    track: z.string().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = addKeyframe(ctx.project.doc, input);
+    return commit(ctx.project, doc, `Added a ${input.prop} keyframe (t=${input.t} → ${input.value}).`);
+  },
+};
+
+// ---- reverse_clip ----------------------------------------------------------
+
+export const reverseClipTool: DirectorTool<{ atSec?: number }> = {
+  name: "reverse_clip",
+  description: "Play the video backwards (all main clips, or the one active at `atSec`).",
+  inputSchema: z.object({ atSec: z.number().nonnegative().optional() }),
+  async execute(input, ctx) {
+    const doc = reverseClip(ctx.project.doc, input);
+    return commit(ctx.project, doc, "Reversed the clip (plays backwards).");
+  },
+};
+
+// ---- freeze_frame ----------------------------------------------------------
+
+export const freezeFrameTool: DirectorTool<{ atSec?: number }> = {
+  name: "freeze_frame",
+  description:
+    "Freeze-frame: hold the frame shown at `atSec` (or the clip's start) for the whole clip — a still hold for emphasis or titles-over-freeze.",
+  inputSchema: z.object({ atSec: z.number().nonnegative().optional() }),
+  async execute(input, ctx) {
+    const doc = freezeFrame(ctx.project.doc, input);
+    return commit(ctx.project, doc, `Froze the frame${input.atSec !== undefined ? ` at ${input.atSec}s` : ""}.`);
+  },
+};
+
+// ---- add_marker ------------------------------------------------------------
+
+export const addMarkerTool: DirectorTool<{ t: number; label?: string }> = {
+  name: "add_marker",
+  description: "Add a timeline marker (chapter point / beat / note) at `t` seconds, with an optional label.",
+  inputSchema: z.object({ t: z.number().nonnegative(), label: z.string().optional() }),
+  async execute(input, ctx) {
+    const doc = addMarker(ctx.project.doc, input.t, input.label);
+    return commit(ctx.project, doc, `Added a marker at ${input.t}s${input.label ? ` — “${input.label}”` : ""}.`);
+  },
+};
+
+// ---- set_platform (delivery presets) ---------------------------------------
+
+export const platformTool: DirectorTool<{ platform: PlatformKey }> = {
+  name: "set_platform",
+  description:
+    "Configure delivery for a platform (youtube, youtube-shorts, tiktok, reels, instagram-feed, instagram-story): reframes to the platform aspect, sets the quality preset, and sets the output fps.",
+  inputSchema: z.object({ platform: z.enum(PLATFORM_ENUM) }),
+  async execute(input, ctx) {
+    const doc = setPlatform(ctx.project.doc, input.platform);
+    return commit(
+      ctx.project,
+      doc,
+      `Set delivery for ${input.platform}: ${doc.meta.width}×${doc.meta.height} @ ${doc.meta.fps}fps, ${doc.quality.preset} quality.`,
+    );
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
   create_highlight: createHighlightTool,
@@ -698,4 +825,10 @@ export const DIRECTOR_TOOLS = {
   add_cursor: addCursorTool,
   type_text: typeTextTool,
   add_callout: addCalloutTool,
+  animate: animateTool,
+  add_keyframe: addKeyframeTool,
+  reverse_clip: reverseClipTool,
+  freeze_frame: freezeFrameTool,
+  add_marker: addMarkerTool,
+  set_platform: platformTool,
 } as const;

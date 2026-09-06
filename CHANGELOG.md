@@ -4,6 +4,13 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.8 — Cycle E wave 3: craft foundations (keyframes, delivery, subtitles)
+- **Keyframe engine:** animate `x/y/scale/rotation/opacity` (+ `volume`) via `{prop,t,value,easing}` + a pure `valueAt()` (linear/ease-in/out/in-out); canvas + Stage full support, ffmpeg for scale (`zoompan`) + volume (`volume:eval=frame`) (x/y/rotation/opacity keyframes are preview-only on export, documented). Tools `animate`/`add_keyframe`.
+- **Reverse** clips (`reverse`/`areverse`), **freeze-frame** (`trim`+`tpad`), **markers** (`EditDoc.markers`, add via UI/tool).
+- **Subtitles export:** `toSrt`/`toVtt` in core + a client `srt.ts`; **Download .srt** in the Deliver room.
+- **Delivery:** platform presets (`set_platform`: YouTube/Shorts/TikTok/Reels/IG feed+story → aspect+quality+fps) and a real **Deliver room** (preset buttons, quality summary, **thumbnail** + **.srt** downloads) + a **track panel** (per-track mute).
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify **43/43** + evals 5/5 + `next build` clean. (Integration fix: `appendVideos` clip literal now sets `reversed`.)
+
 ### S3.7 — Cycle E wave 2: P0 fixes + audible audio (expert-review driven)
 - **Audible preview (P0-3):** music & voice-over now **play in the browser preview** (hidden `<audio>` per audio clip, synced to the transport/scrub/mute/volume) — not just on export. Music **auto-attaches on upload** (works on photo slideshows), shows on the timeline + "Music on" chip, with an Undo toast.
 - **Transitions export for real (P0-1):** video-cut transitions now lay a proper **overlap** and render as an **A→B dissolve** + **audio crossfade** (`xfade`/`acrossfade`) on export and in preview — not a fade-from-black or a hard cut.

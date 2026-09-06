@@ -364,21 +364,67 @@ function calloutFilters(clip: CalloutClip, W: number, H: number): string[] {
  * `if()`/`between()` calls are escaped for the filtergraph. (The canvas/Stage use
  * the eased `cursorPositionAt`; the export approximates with linear segments.)
  */
-function cursorAxisExpr(wps: { atSec: number; v: number }[]): string {
-  const pts = [...wps].sort((a, b) => a.atSec - b.atSec);
+/**
+ * A piecewise-LINEAR ffmpeg time expression through `points` (each {at, v}) in the
+ * variable `varName` (e.g. `t` for seconds, `on` for output-frame index): before
+ * the first point it holds the first value, after the last it holds the last, and
+ * between each pair it interpolates linearly. Commas inside if()/lt() are escaped
+ * for the filtergraph. This is the shared building block behind the cursor path
+ * AND the keyframe approximations — the eased `valueAt` curve (canvas/Stage) is
+ * approximated here as linear segments (a documented export limit).
+ */
+function piecewiseLinearExpr(points: { at: number; v: number }[], varName: string): string {
+  const pts = [...points].sort((a, b) => a.at - b.at);
   const last = pts[pts.length - 1]!;
   let expr = `${r3(last.v)}`;
   // Build from the last segment backwards so the nesting reads first-to-last.
   for (let i = pts.length - 2; i >= 0; i--) {
     const a = pts[i]!;
     const b = pts[i + 1]!;
-    const span = Math.max(1e-6, b.atSec - a.atSec);
-    const seg = `${r3(a.v)}+(${r3(b.v - a.v)})*(t-${r3(a.atSec)})/${r3(span)}`;
-    expr = `if(lt(t\\,${r3(b.atSec)})\\,${seg}\\,${expr})`;
+    const span = Math.max(1e-6, b.at - a.at);
+    const seg = `${r3(a.v)}+(${r3(b.v - a.v)})*(${varName}-${r3(a.at)})/${r3(span)}`;
+    expr = `if(lt(${varName}\\,${r3(b.at)})\\,${seg}\\,${expr})`;
   }
-  // Before the first waypoint, hold the first value.
+  // Before the first point, hold the first value.
   const first = pts[0]!;
-  return `if(lt(t\\,${r3(first.atSec)})\\,${r3(first.v)}\\,${expr})`;
+  return `if(lt(${varName}\\,${r3(first.at)})\\,${r3(first.v)}\\,${expr})`;
+}
+
+function cursorAxisExpr(wps: { atSec: number; v: number }[]): string {
+  return piecewiseLinearExpr(wps.map((w) => ({ at: w.atSec, v: w.v })), "t");
+}
+
+// --- keyframe approximation (scale zoompan + volume expression) --------------
+
+/**
+ * Zoompan approximating a clip's SCALE keyframes over its lifetime. Keyframe `t`
+ * (0..1 clip-progress) maps to the output-frame index `on` over the clip's frame
+ * count; the z expression is piecewise-linear through the keyframe values (mirrors
+ * `valueAt` for scale, linearized for export — the same trade-off as the cursor
+ * path). Centered, so it zooms about the frame center. Null when the clip has no
+ * scale keyframes. Faithful: scales the existing frame only.
+ */
+function keyframeScaleZoompan(clip: VideoClip | ImageClip, W: number, H: number, fps: number): string | null {
+  const scaleKfs = (clip.keyframes ?? []).filter((k) => k.prop === "scale");
+  if (scaleKfs.length === 0) return null;
+  const d = Math.max(1, Math.round(clip.duration * fps));
+  const points = scaleKfs.map((k) => ({ at: Math.round(k.t * d), v: Math.max(0.01, k.value) }));
+  const zExpr = piecewiseLinearExpr(points, "on");
+  return `zoompan=z='${zExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${fps}`;
+}
+
+/**
+ * The `volume` filter segment for an audio chain. When the clip has VOLUME
+ * keyframes, emit a time-expression volume (`volume='<expr>':eval=frame`, the
+ * documented way to ride volume over time) whose `t` is clip-local seconds
+ * (keyframe `t` 0..1 → t·duration). Otherwise a constant volume. Faithful: levels
+ * only.
+ */
+function keyframeVolumeFilter(clip: VideoClip | Extract<Clip, { kind: "audio" }>): string {
+  const volKfs = (clip.keyframes ?? []).filter((k) => k.prop === "volume");
+  if (volKfs.length === 0) return `volume=${r3(clip.volume)}`;
+  const points = volKfs.map((k) => ({ at: r3(k.t * clip.duration), v: clamp(k.value, 0, 1) }));
+  return `volume='${piecewiseLinearExpr(points, "t")}':eval=frame`;
 }
 
 /**
@@ -585,7 +631,9 @@ export function buildExportPlan(
    */
   const audioSegmentFilter = (c: VideoClip, srcIdx: number, i: number): string => {
     const asset = doc.media.find((m) => m.id === c.mediaId);
-    if (asset?.hasAudio === false) {
+    // A frozen frame carries no audio, so synthesize silence for its duration —
+    // same path as a source with no audio stream.
+    if (c.freezeAtSec !== undefined || asset?.hasAudio === false) {
       const silIdx = addInput(
         ["-f", "lavfi", "-t", String(r3(c.duration))],
         `anullsrc=channel_layout=stereo:sample_rate=44100`,
@@ -593,8 +641,53 @@ export function buildExportPlan(
       );
       return `[${silIdx}:a]asetpts=PTS-STARTPTS,${AUDIO_FORMAT}[a${i}]`;
     }
-    const aChain = ["asetpts=PTS-STARTPTS", `volume=${r3(c.volume)}`, ...atempoChain(c.speed), AUDIO_FORMAT];
+    const aChain = [
+      "asetpts=PTS-STARTPTS",
+      // Reversed clip → reverse its audio too (areverse), keeping A/V locked.
+      ...(c.reversed ? ["areverse"] : []),
+      // Constant volume, or a keyframed volume expression (volume=…:eval=frame).
+      keyframeVolumeFilter(c),
+      ...atempoChain(c.speed),
+      AUDIO_FORMAT,
+    ];
     return `[${srcIdx}:a]${aChain.join(",")}[a${i}]`;
+  };
+
+  /**
+   * The ffmpeg input for a video clip: a normal clip trims a source window
+   * (-ss/-t = duration*speed); a freeze clip seeks to the freeze source time
+   * (-ss) and holds one frame in the graph (see videoClipVChain).
+   */
+  const videoClipInput = (c: VideoClip): number =>
+    c.freezeAtSec !== undefined
+      ? addInput(["-ss", String(r3(c.freezeAtSec))], resolveMediaPath(c.mediaId))
+      : addInput(["-ss", String(r3(c.sourceIn)), "-t", String(r3(sourceSpanSec(c)))], resolveMediaPath(c.mediaId));
+
+  /**
+   * The video filter chain for a video clip. Freeze → grab one frame (trim) and
+   * clone it for the clip duration (tpad=stop_mode=clone). Otherwise → optional
+   * reverse, speed setpts, scale/crop, static zoom, emphasis pulse, and any
+   * keyframed scale (zoompan). `appendFps` adds a trailing fps= (needed by xfade
+   * and the generic concat path).
+   */
+  const videoClipVChain = (c: VideoClip, appendFps: boolean): string[] => {
+    const emph = emphasisZoompan(c, W, H, fps);
+    const kfZoom = keyframeScaleZoompan(c, W, H, fps);
+    const head =
+      c.freezeAtSec !== undefined
+        ? ["trim=end_frame=1", "setpts=PTS-STARTPTS", `tpad=stop_mode=clone:stop_duration=${r3(c.duration)}`]
+        : [...(c.reversed ? ["reverse"] : []), speedSetpts(c.speed)];
+    return [
+      ...head,
+      `scale=${W}:${H}:force_original_aspect_ratio=increase`,
+      `crop=${W}:${H}`,
+      ...staticZoomFilters(c, W, H),
+      ...(emph ? [emph] : []),
+      ...(kfZoom ? [kfZoom] : []),
+      ...lookFilters(c.look),
+      "format=yuv420p",
+      ...(appendFps ? [`fps=${fps}`] : []),
+    ];
   };
 
   let videoLabel = "";
@@ -611,24 +704,11 @@ export function buildExportPlan(
     const useXfade = base.length > 1 && base.slice(1).every((c) => (c as VideoClip).transitionInSec > 0);
     base.forEach((clip, i) => {
       const c = clip as VideoClip;
-      // Speed retime: consume `duration*speed` seconds of source, then setpts
-      // (and atempo) map it back onto the clip's timeline duration.
-      const idx = addInput(
-        ["-ss", String(r3(c.sourceIn)), "-t", String(r3(sourceSpanSec(c)))],
-        resolveMediaPath(c.mediaId),
-      );
-      const emph = emphasisZoompan(c, W, H, fps);
-      const vChain = [
-        speedSetpts(c.speed),
-        `scale=${W}:${H}:force_original_aspect_ratio=increase`,
-        `crop=${W}:${H}`,
-        ...staticZoomFilters(c, W, H),
-        ...(emph ? [emph] : []),
-        ...lookFilters(c.look),
-        "format=yuv420p",
-        // xfade needs both inputs on the same timebase/framerate to blend cleanly.
-        ...(useXfade ? [`fps=${fps}`] : []),
-      ];
+      // Speed retime, reverse, freeze, static zoom, emphasis, and scale keyframes
+      // are all resolved by the shared helpers (used by the generic path too).
+      // xfade needs both inputs on the same timebase/framerate to blend cleanly.
+      const idx = videoClipInput(c);
+      const vChain = videoClipVChain(c, useXfade);
       filters.push(`[${idx}:v]${vChain.join(",")}[v${i}]`);
       filters.push(audioSegmentFilter(c, idx, i));
     });
@@ -705,20 +785,22 @@ export function buildExportPlan(
     const segLabels: string[] = [];
     base.forEach((clip, i) => {
       const c = clip;
-      const idx =
-        c.kind === "image"
-          ? addInput(["-loop", "1", "-t", String(r3(c.duration))], resolveMediaPath(c.mediaId))
-          : addInput(
-              ["-ss", String(r3((c as VideoClip).sourceIn)), "-t", String(r3(sourceSpanSec(c as VideoClip)))],
-              resolveMediaPath(c.mediaId),
-            );
-      const emph = c.kind === "video" ? emphasisZoompan(c, W, H, fps) : null;
+      if (c.kind === "video") {
+        // Video: reuse the shared helpers (reverse/freeze/speed/zoom/keyframes).
+        const idx = videoClipInput(c);
+        filters.push(`[${idx}:v]${videoClipVChain(c, true).join(",")}[v${i}]`);
+        segLabels.push(`[v${i}]`);
+        return;
+      }
+      // Image: looped still + optional scale keyframes (Ken Burns keyframed zoom).
+      const idx = addInput(["-loop", "1", "-t", String(r3(c.duration))], resolveMediaPath(c.mediaId));
+      const kfZoom = keyframeScaleZoompan(c, W, H, fps);
       const vChain = [
-        c.kind === "video" ? speedSetpts((c as VideoClip).speed) : "setpts=PTS-STARTPTS",
+        "setpts=PTS-STARTPTS",
         `scale=${W}:${H}:force_original_aspect_ratio=increase`,
         `crop=${W}:${H}`,
         ...staticZoomFilters(c, W, H),
-        ...(emph ? [emph] : []),
+        ...(kfZoom ? [kfZoom] : []),
         ...lookFilters(c.look),
         "format=yuv420p",
         `fps=${fps}`,
@@ -879,10 +961,11 @@ export function buildExportPlan(
       resolveMediaPath(clip.mediaId),
     );
     const delayMs = Math.round(clip.start * 1000);
-    // Music ducks under speech (auto-mix already sets volume in the doc).
+    // Music ducks under speech (auto-mix already sets volume in the doc); a
+    // keyframed volume rides the level over time (volume=…:eval=frame).
     const chain = [
       "asetpts=PTS-STARTPTS",
-      `volume=${r3(clip.volume)}`,
+      keyframeVolumeFilter(clip),
       `adelay=${delayMs}|${delayMs}`,
     ];
     filters.push(`[${idx}:a]${chain.join(",")}[m${i}]`);

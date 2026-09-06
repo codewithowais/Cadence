@@ -16,6 +16,7 @@ import {
   activeClipsAt,
   calloutScreenRect,
   calloutTransform,
+  clipProgress,
   cssFilter,
   cursorPositionAt,
   cursorRipples,
@@ -27,6 +28,7 @@ import {
   transitionMotion,
   transitionOpacity,
   typewriterText,
+  valueAt,
   type CalloutClip,
   type Clip,
   type CursorClip,
@@ -42,16 +44,41 @@ import {
 
 const degToRad = (deg: number): number => (deg * Math.PI) / 180;
 
+/**
+ * Resolve a visual clip's keyframed transform at the active time via the shared
+ * PURE `valueAt` helper (so canvas, Stage, and export agree). Each field falls
+ * back to the clip's static transform value when it has no keyframe for that
+ * prop, so this is always safe to call. `opacityMul` is the keyframed opacity as
+ * a MULTIPLIER on the base opacity, so it composes with the transition ramps.
+ */
+function keyframeTransformState(
+  clip: VideoClip | ImageClip | TextClip | SolidClip,
+): { x: number; y: number; scale: number; rotation: number; opacityMul: number } {
+  const kf = clip.keyframes;
+  const prog = clipProgress(clip, clipTimeCache);
+  const base = clip.transform.opacity || 1;
+  return {
+    x: valueAt(kf, "x", prog, clip.transform.x),
+    y: valueAt(kf, "y", prog, clip.transform.y),
+    scale: valueAt(kf, "scale", prog, clip.transform.scale),
+    rotation: valueAt(kf, "rotation", prog, clip.transform.rotation),
+    opacityMul: valueAt(kf, "opacity", prog, clip.transform.opacity) / base,
+  };
+}
+
 function drawText(ctx: SKRSContext2D, clip: TextClip): void {
-  const op = transitionOpacity(clip, clipTimeCache);
+  // Keyframes (if any) override the static transform; opacity keyframes multiply
+  // the transition ramp — all resolved by the shared PURE valueAt helper.
+  const kfs = keyframeTransformState(clip);
+  const op = transitionOpacity(clip, clipTimeCache) * kfs.opacityMul;
   if (op <= 0) return;
   // Kinetic intro: slide from an offset and scale up, resolved by core (shared
   // with the Stage preview + export so all three agree).
   const kin = textKinetic(clip, clipTimeCache);
-  const effScale = clip.transform.scale * kin.scaleMul;
+  const effScale = kfs.scale * kin.scaleMul;
   ctx.save();
-  ctx.translate(clip.transform.x + kin.dx, clip.transform.y + kin.dy);
-  if (clip.transform.rotation !== 0) ctx.rotate(degToRad(clip.transform.rotation));
+  ctx.translate(kfs.x + kin.dx, kfs.y + kin.dy);
+  if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
   if (effScale !== 1) ctx.scale(effScale, effScale);
   ctx.globalAlpha = op;
   ctx.font = `${fontWeightToCss(clip.fontWeight)} ${clip.fontSize}px ${clip.fontFamily}`;
@@ -202,21 +229,24 @@ function drawMedia(
   // Transition motion (slide/wipe) + whether opacity should ramp (crossfade /
   // dip-to-black do; slide/wipe stay opaque) — shared core helper.
   const tm = transitionMotion(clip, clipTimeCache, frameW, frameH);
-  const op = tm.fadeOpacity ? transitionOpacity(clip, clipTimeCache) : clip.transform.opacity;
+  // Keyframes (if any) override the static transform; opacity keyframes multiply
+  // the transition ramp — all resolved by the shared PURE valueAt helper.
+  const kfs = keyframeTransformState(clip);
+  const op = (tm.fadeOpacity ? transitionOpacity(clip, clipTimeCache) : clip.transform.opacity) * kfs.opacityMul;
   if (op <= 0 || tm.wipeFrac <= 0) return;
 
   const motion = clip.kind === "image" ? imageMotion(clip, clipTimeCache) : null;
   // Punch-in emphasis pulses a video clip's scale up over a sub-range (core helper).
   const emphasis = clip.kind === "video" ? emphasisScale(clip, clipTimeCache) : 1;
   // tm.scaleMul carries the "zoom" transition's scale-in (1 for every other type).
-  const effScale = clip.transform.scale * (motion ? motion.scale : 1) * emphasis * tm.scaleMul;
+  const effScale = kfs.scale * (motion ? motion.scale : 1) * emphasis * tm.scaleMul;
   const panX = motion ? motion.panXFrac * frameW : 0;
   const panY = motion ? motion.panYFrac * frameH : 0;
 
   ctx.save();
   // Slide transition offsets the whole frame (composition px, pre-scale).
-  ctx.translate(clip.transform.x + panX + tm.dx, clip.transform.y + panY + tm.dy);
-  if (clip.transform.rotation !== 0) ctx.rotate(degToRad(clip.transform.rotation));
+  ctx.translate(kfs.x + panX + tm.dx, kfs.y + panY + tm.dy);
+  if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
   if (effScale !== 1) ctx.scale(effScale, effScale);
   ctx.globalAlpha = op;
 
@@ -264,7 +294,8 @@ function drawMedia(
 }
 
 function drawSolid(ctx: SKRSContext2D, clip: SolidClip, frameW: number, frameH: number): void {
-  const op = transitionOpacity(clip, clipTimeCache);
+  // A solid fills the frame, so only its (keyframed) opacity is meaningful here.
+  const op = transitionOpacity(clip, clipTimeCache) * keyframeTransformState(clip).opacityMul;
   if (op <= 0) return;
   ctx.save();
   ctx.globalAlpha = op;

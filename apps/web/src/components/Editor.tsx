@@ -877,6 +877,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onFiles={handleFiles}
             onExport={exportDoc}
             canExport={hasMedia && durationSec > 0}
+            timeSec={timeSec}
             muted={muted}
             onToggleMute={() => setMuted((m) => !m)}
             onReorderMedia={reorderMedia}

@@ -77,8 +77,13 @@ export function frameToSec(doc: EditDoc, frame: number): number {
  * so preview and export always agree. Clamped to the clip's timeline range.
  */
 export function sourceTimeAt(clip: VideoClip, timeSec: number): number {
+  // Freeze-frame: hold one source frame for the whole clip, regardless of local time.
+  if (clip.freezeAtSec !== undefined) return clip.freezeAtSec;
   const local = Math.max(0, Math.min(clip.duration, timeSec - clip.start));
   const speed = clip.speed ?? 1;
+  // Reversed: play the source window backwards — local 0 shows the END of the
+  // window [sourceIn, sourceIn + duration*speed), local duration shows sourceIn.
+  if (clip.reversed) return clip.sourceIn + clip.duration * speed - local * speed;
   return clip.sourceIn + local * speed;
 }
 

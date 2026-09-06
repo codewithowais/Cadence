@@ -8,8 +8,11 @@ import {
   docDurationSec,
   parseEditDoc,
   sourceSpanSec,
+  sourceTimeAt,
   type ColorGrade,
   type EditDoc,
+  type KeyframeEasing,
+  type KeyframeProp,
   type MediaAsset,
   type TransitionType,
 } from "@cadence/core";
@@ -904,6 +907,224 @@ export function addCallout(doc: EditDoc, opts: AddCalloutOpts): EditDoc {
     clone.tracks.push(track);
   }
   (track.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+// ---- Keyframe animation ----------------------------------------------------
+
+/** Any clip carrying a `keyframes` array (mutable during a structuredClone edit). */
+type AnimatableClip = {
+  kind: string;
+  start: number;
+  duration: number;
+  volume?: number;
+  transform?: { x: number; y: number; scale: number; rotation: number; opacity: number };
+  keyframes?: { prop: KeyframeProp; t: number; value: number; easing: KeyframeEasing }[];
+};
+
+/** Whether a clip kind can carry a keyframe for `prop`. */
+function clipSupportsProp(clip: AnimatableClip, prop: KeyframeProp): boolean {
+  if (prop === "volume") return clip.kind === "video" || clip.kind === "audio";
+  return clip.kind === "video" || clip.kind === "image" || clip.kind === "text" || clip.kind === "solid";
+}
+
+/** The clip's current static value for `prop` (the keyframe `from` fallback). */
+function baseValueFor(clip: AnimatableClip, prop: KeyframeProp): number {
+  if (prop === "volume") return typeof clip.volume === "number" ? clip.volume : 1;
+  const t = clip.transform;
+  const dflt = prop === "scale" || prop === "opacity" ? 1 : 0;
+  return t ? (t[prop] ?? dflt) : dflt;
+}
+
+export interface AnimTargetOpts {
+  prop: KeyframeProp;
+  atSec?: number;
+  /** Restrict to a track id (e.g. "titles"); otherwise pick a sensible default. */
+  track?: string;
+}
+
+/**
+ * Pick the clip to animate (a reference INSIDE `clone`, safe to mutate). Prefers a
+ * clip active at `atSec`, then any clip supporting the prop. For volume it prefers
+ * audio tracks; for visual props it prefers the MAIN visual track; a `track`
+ * filter overrides both. Returns null when nothing suitable exists.
+ */
+function findAnimTarget(clone: EditDoc, opts: AnimTargetOpts): AnimatableClip | null {
+  const activeAt = (clip: AnimatableClip): boolean =>
+    opts.atSec === undefined || (opts.atSec >= clip.start && opts.atSec < clip.start + clip.duration);
+  const tracks = opts.track ? clone.tracks.filter((t) => t.id === opts.track) : clone.tracks;
+  const rank = (trackId: string, kind: string): number => {
+    if (opts.track) return 0;
+    if (opts.prop === "volume") return kind === "audio" ? 0 : 1;
+    return isMainVisualTrack(trackId) ? 0 : 1;
+  };
+  const ordered = [...tracks].sort((a, b) => rank(a.id, a.kind) - rank(b.id, b.kind));
+  for (const wantActive of [true, false]) {
+    for (const track of ordered) {
+      for (const clip of track.clips as unknown as AnimatableClip[]) {
+        if (!clipSupportsProp(clip, opts.prop)) continue;
+        if (wantActive && !activeAt(clip)) continue;
+        return clip;
+      }
+    }
+  }
+  return null;
+}
+
+export interface AnimateOpts {
+  prop: KeyframeProp;
+  to: number;
+  /** Start value; defaults to the clip's current static value for the prop. */
+  from?: number;
+  easing?: KeyframeEasing;
+  atSec?: number;
+  track?: string;
+}
+
+/**
+ * Animate a property from `from` (default: its current value) to `to` over the
+ * whole target clip — two keyframes at t=0 and t=1, resolved by core's PURE
+ * `valueAt`. Replaces any existing keyframes for that prop on the clip. Faithful:
+ * moves/scales/rotates/fades or re-levels the existing clip only.
+ */
+export function animate(doc: EditDoc, opts: AnimateOpts): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const clip = findAnimTarget(clone, { prop: opts.prop, atSec: opts.atSec, track: opts.track });
+  if (!clip) {
+    throw new Error(
+      `Nothing to animate — add ${opts.prop === "volume" ? "audio" : "a clip"} first${opts.track ? ` on the ${opts.track} track` : ""}.`,
+    );
+  }
+  const from = opts.from ?? baseValueFor(clip, opts.prop);
+  const easing = opts.easing ?? "ease-in-out";
+  const others = (clip.keyframes ?? []).filter((k) => k.prop !== opts.prop);
+  clip.keyframes = [
+    ...others,
+    { prop: opts.prop, t: 0, value: round(from), easing: "linear" },
+    { prop: opts.prop, t: 1, value: round(opts.to), easing },
+  ];
+  return parseEditDoc(clone);
+}
+
+export interface AddKeyframeOpts {
+  prop: KeyframeProp;
+  /** Clip-progress 0..1. */
+  t: number;
+  value: number;
+  easing?: KeyframeEasing;
+  atSec?: number;
+  track?: string;
+}
+
+/** Add a single keyframe to the target clip (merged with any existing ones). */
+export function addKeyframe(doc: EditDoc, opts: AddKeyframeOpts): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const clip = findAnimTarget(clone, { prop: opts.prop, atSec: opts.atSec, track: opts.track });
+  if (!clip) throw new Error(`Nothing to keyframe — add ${opts.prop === "volume" ? "audio" : "a clip"} first.`);
+  const kf = {
+    prop: opts.prop,
+    t: clamp(opts.t, 0, 1),
+    value: round(opts.value),
+    easing: opts.easing ?? ("linear" as KeyframeEasing),
+  };
+  clip.keyframes = [...(clip.keyframes ?? []), kf].sort((a, b) => a.t - b.t);
+  return parseEditDoc(clone);
+}
+
+// ---- Reverse / freeze-frame ------------------------------------------------
+
+/**
+ * Play the main video clip(s) backwards. If `atSec` is given, only the clip active
+ * there is reversed; otherwise every main video clip is. The source-time mapping
+ * reverses in core's `sourceTimeAt`; the ffmpeg export adds reverse/areverse.
+ */
+export function reverseClip(doc: EditDoc, opts: { atSec?: number } = {}): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video") continue;
+      if (opts.atSec !== undefined && !(opts.atSec >= clip.start && opts.atSec < clip.start + clip.duration)) continue;
+      clip.reversed = true;
+      changed++;
+    }
+  }
+  if (changed === 0) throw new Error("Add a video first — reverse needs footage.");
+  return parseEditDoc(clone);
+}
+
+/**
+ * Freeze-frame: hold the SOURCE frame shown at `atSec` (or the clip's head) for the
+ * whole clip. Sets `freezeAtSec` on the video clip active at `atSec` (else the
+ * first video clip). Held in preview via `sourceTimeAt`; exported via tpad clone.
+ */
+export function freezeFrame(doc: EditDoc, opts: { atSec?: number } = {}): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  let target: import("@cadence/core").VideoClip | null = null;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video") continue;
+      if (opts.atSec !== undefined && opts.atSec >= clip.start && opts.atSec < clip.start + clip.duration) {
+        target = clip;
+        break;
+      }
+      if (!target) target = clip;
+    }
+    if (target && opts.atSec !== undefined && opts.atSec >= target.start && opts.atSec < target.start + target.duration) break;
+  }
+  if (!target) throw new Error("Add a video first — freeze-frame needs footage.");
+  const at = opts.atSec !== undefined ? opts.atSec : target.start;
+  target.freezeAtSec = round(sourceTimeAt(target, at));
+  return parseEditDoc(clone);
+}
+
+// ---- Markers ---------------------------------------------------------------
+
+/** Add a timeline marker (chapter point / beat / note) at `t` seconds. */
+export function addMarker(doc: EditDoc, t: number, label?: string): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const marker = label ? { t: round(Math.max(0, t)), label } : { t: round(Math.max(0, t)) };
+  clone.markers = [...(clone.markers ?? []), marker].sort((a, b) => a.t - b.t);
+  return parseEditDoc(clone);
+}
+
+// ---- Platform delivery presets ---------------------------------------------
+
+export type PlatformKey =
+  | "youtube" | "youtube-shorts" | "tiktok" | "reels" | "instagram-feed" | "instagram-story";
+
+/**
+ * Delivery presets → aspect + quality + fps. Reuses `reframe` (aspect) and
+ * `setQuality` (upscale/sharpen) so a platform export is just those two, one fps.
+ */
+export const PLATFORM_PRESETS: Record<
+  PlatformKey,
+  { aspect: AspectKey; quality: QualityKey; fps: number; label: string }
+> = {
+  youtube: { aspect: "16:9", quality: "high", fps: 30, label: "YouTube (16:9)" },
+  "youtube-shorts": { aspect: "9:16", quality: "high", fps: 30, label: "YouTube Shorts (9:16)" },
+  tiktok: { aspect: "9:16", quality: "high", fps: 30, label: "TikTok (9:16)" },
+  reels: { aspect: "9:16", quality: "high", fps: 30, label: "Instagram Reels (9:16)" },
+  "instagram-feed": { aspect: "4:5", quality: "high", fps: 30, label: "Instagram Feed (4:5)" },
+  "instagram-story": { aspect: "9:16", quality: "high", fps: 30, label: "Instagram Story (9:16)" },
+};
+
+export const PLATFORM_KEYS = Object.keys(PLATFORM_PRESETS) as PlatformKey[];
+
+/**
+ * Configure the doc for a delivery platform: reframe to the platform aspect, set
+ * the quality preset, and set the output fps (meta + quality). Reuses reframe +
+ * setQuality so preview and export agree. Pure + re-parsed through the schema.
+ */
+export function setPlatform(doc: EditDoc, platform: PlatformKey): EditDoc {
+  const preset = PLATFORM_PRESETS[platform];
+  const reframed = reframe(doc, preset.aspect);
+  const graded = setQuality(reframed, preset.quality);
+  const clone: EditDoc = structuredClone(graded);
+  clone.meta.fps = preset.fps;
+  clone.quality.fps = preset.fps;
   return parseEditDoc(clone);
 }
 

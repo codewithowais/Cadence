@@ -11,6 +11,9 @@ import type {
   CursorClip,
   FontWeight,
   ImageClip,
+  Keyframe,
+  KeyframeEasing,
+  KeyframeProp,
   SolidClip,
   TextClip,
   VideoClip,
@@ -20,6 +23,9 @@ const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 
 /** Ease-out cubic — fast start, gentle settle. Deterministic; p is 0..1. */
 const easeOutCubic = (p: number): number => 1 - Math.pow(1 - clamp01(p), 3);
+
+/** Ease-in cubic — gentle start, fast finish. Deterministic; p is 0..1. */
+const easeInCubic = (p: number): number => Math.pow(clamp01(p), 3);
 
 /**
  * Ease-out-back — overshoots past 1 then settles, giving a "pop". Deterministic;
@@ -82,6 +88,63 @@ export function cssFilter(look: ColorGrade): string {
   if (look.saturation !== 1) parts.push(`saturate(${round(look.saturation)})`);
   if (look.warmth > 0) parts.push(`sepia(${round(look.warmth * 0.45)})`);
   return parts.length ? parts.join(" ") : "none";
+}
+
+/** Resolve a keyframe segment easing to its 0..1 curve. Pure + deterministic. */
+function keyframeEase(easing: KeyframeEasing, p: number): number {
+  switch (easing) {
+    case "ease-in":
+      return easeInCubic(p);
+    case "ease-out":
+      return easeOutCubic(p);
+    case "ease-in-out":
+      return easeInOutCubic(p);
+    case "linear":
+    default:
+      return clamp01(p);
+  }
+}
+
+/**
+ * THE keyframe resolver — the single PURE mapping every surface shares. Returns
+ * the interpolated value of `prop` at `progress` (0..1 clip-progress) given a
+ * clip's `keyframes`, falling back to `base` when the clip has no keyframes for
+ * that prop:
+ *
+ *  - no keyframes for `prop`     → `base` (so it is always safe to call).
+ *  - before the first keyframe   → the first keyframe's value (hold).
+ *  - after the last keyframe     → the last keyframe's value (hold).
+ *  - between two keyframes a→b   → a.value + (b.value - a.value) * ease(b.easing),
+ *                                  i.e. the easing belongs to the INCOMING keyframe.
+ *
+ * The canvas + Stage call this directly (eased); the ffmpeg export mirrors it with
+ * a piecewise-LINEAR time expression (documented approximation in plan.ts).
+ * Deterministic, mirroring cursorPositionAt.
+ */
+export function valueAt(
+  keyframes: Keyframe[] | undefined,
+  prop: KeyframeProp,
+  progress: number,
+  base: number,
+): number {
+  if (!keyframes || keyframes.length === 0) return base;
+  const kf = keyframes.filter((k) => k.prop === prop).sort((a, b) => a.t - b.t);
+  if (kf.length === 0) return base;
+  const p = clamp01(progress);
+  const first = kf[0]!;
+  if (p <= first.t) return first.value;
+  const last = kf[kf.length - 1]!;
+  if (p >= last.t) return last.value;
+  for (let i = 0; i < kf.length - 1; i++) {
+    const a = kf[i]!;
+    const b = kf[i + 1]!;
+    if (p >= a.t && p <= b.t) {
+      const span = Math.max(1e-6, b.t - a.t);
+      const e = keyframeEase(b.easing, (p - a.t) / span);
+      return a.value + (b.value - a.value) * e;
+    }
+  }
+  return last.value;
 }
 
 /** Progress 0..1 through a clip at `timeSec`. */

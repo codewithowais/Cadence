@@ -136,6 +136,7 @@ export function appendVideos(doc: EditDoc, medias: MediaAsset[]): EditDoc {
       transitionInSec: 0,
       transitionOutSec: 0,
       transitionType: "crossfade",
+      reversed: false,
     });
     pos += duration;
     if (!clone.media.some((x) => x.id === m.id)) clone.media.push(m);

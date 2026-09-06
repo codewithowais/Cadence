@@ -11,7 +11,9 @@ import type { ProjectState } from "./project";
 import type { TransitionType } from "@cadence/core";
 import {
   addCalloutTool,
+  addMarkerTool,
   adjustColorTool,
+  animateTool,
   autoMixTool,
   brollTool,
   buildDemoTool,
@@ -20,11 +22,14 @@ import {
   emphasisTool,
   fadesTool,
   fillerCutTool,
+  freezeFrameTool,
   kineticTitleTool,
   lookTool,
   musicTool,
+  platformTool,
   qualityTool,
   reframeTool,
+  reverseClipTool,
   slideshowTool,
   speedTool,
   styleCaptionsTool,
@@ -36,7 +41,8 @@ import {
 } from "./tools";
 import { currentGrade } from "./edits";
 import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle } from "./edits";
-import type { AspectKey, LookKey, QualityKey } from "./edits";
+import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
+import type { KeyframeEasing, KeyframeProp } from "@cadence/core";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -333,6 +339,42 @@ function parseCallout(
   return { ...rect, ...(label ? { label } : {}), ...(isZoomInto ? { zoom: 1.4 } : {}) };
 }
 
+/**
+ * Parse a delivery-platform request ("export for tiktok", "make it for youtube",
+ * "reels", "instagram story"). Shorts/story are checked before their parent so
+ * "youtube shorts" and "instagram story" win. Returns null when none is named.
+ */
+function parsePlatform(req: string): PlatformKey | null {
+  if (/tik ?tok/.test(req)) return "tiktok";
+  if (/youtube shorts|yt shorts|\bshorts\b/.test(req)) return "youtube-shorts";
+  if (/insta(gram)? (story|stories)|ig story/.test(req)) return "instagram-story";
+  if (/insta(gram)? (feed|post)|ig feed|instagram\b/.test(req)) return "instagram-feed";
+  if (/\breels?\b/.test(req)) return "reels";
+  if (/youtube|yt\b/.test(req)) return "youtube";
+  return null;
+}
+
+/**
+ * Parse an animation (keyframe) request. Handles "fade the title", "animate the
+ * title" (opacity on the titles track), and "over time / animate / gradually /
+ * keyframe" for a zoom (scale), fade (opacity), or rotation. Returns null when
+ * the request isn't animation-shaped.
+ */
+function parseAnimate(
+  req: string,
+): { prop: KeyframeProp; from?: number; to: number; easing?: KeyframeEasing; track?: string } | null {
+  if (/fade (in )?(the |a )?title|animate (the )?title|title (that )?fades? in/.test(req)) {
+    return { prop: "opacity", from: 0, to: 1, easing: "ease-in", track: "titles" };
+  }
+  const overTime = /over time|animate\b|gradually|keyframe|slowly (zoom|push|pan)/.test(req);
+  if (!overTime) return null;
+  if (/rotat|spin/.test(req)) return { prop: "rotation", from: 0, to: 360, easing: "linear" };
+  if (/fade|opacity/.test(req)) return { prop: "opacity", from: 0, to: 1, easing: "ease-in-out" };
+  // Default: a zoom / push-in over time (scale). Honor an explicit factor.
+  const to = parseZoom(req) ?? 1.3;
+  return { prop: "scale", from: 1, to, easing: "ease-in-out" };
+}
+
 function parseQuality(req: string): { preset: QualityKey; aiUpscale: boolean } | null {
   const aiUpscale = /\bai\b.*upscal|upscale.*\bai\b|super.?resolution|super.?res/.test(req);
   if (/4k|ultra|2160/.test(req)) return { preset: "ultra", aiUpscale };
@@ -396,6 +438,18 @@ export class StubDirector {
     }
 
     // ---- transforms (apply on the current doc, in a sensible order) ----
+    // A delivery platform ("export for tiktok") reframes + sets quality + fps in
+    // one step, so it takes precedence over a plain aspect reframe.
+    const platform = parsePlatform(req);
+    const animateReq = parseAnimate(req);
+    if (platform) {
+      const input = { platform };
+      steps.push({
+        run: (p) => platformTool.execute(input, { project: p }),
+        call: { name: platformTool.name, input },
+      });
+    }
+
     // A custom width×height ("reframe to 1600x900") wins over a named aspect.
     const custom = parseCustomReframe(req);
     const aspect = parseAspect(req);
@@ -405,7 +459,7 @@ export class StubDirector {
         run: (p) => reframeTool.execute(input, { project: p }),
         call: { name: reframeTool.name, input },
       });
-    } else if (aspect) {
+    } else if (aspect && !platform) {
       steps.push({
         run: (p) => reframeTool.execute({ aspect }, { project: p }),
         call: { name: reframeTool.name, input: { aspect } },
@@ -459,8 +513,11 @@ export class StubDirector {
       });
     }
 
-    // Kinetic (animated) title takes precedence over a plain title card.
-    const kinetic = parseKineticTitle(req, request);
+    // Kinetic (animated) title takes precedence over a plain title card. Skipped
+    // when the request is "fade/animate the title", which animates an EXISTING
+    // title via keyframes rather than adding a new one.
+    const titleFade = !!animateReq && animateReq.track === "titles";
+    const kinetic = !titleFade ? parseKineticTitle(req, request) : null;
     if (kinetic) {
       steps.push({
         run: (p) => kineticTitleTool.execute(kinetic, { project: p }),
@@ -468,11 +525,20 @@ export class StubDirector {
       });
     }
 
-    const title = !kinetic ? parseTitle(req, request) : null;
+    const title = !kinetic && !titleFade ? parseTitle(req, request) : null;
     if (title) {
       steps.push({
         run: (p) => titleTool.execute(title, { project: p }),
         call: { name: titleTool.name, input: title },
+      });
+    }
+
+    // Keyframe animation ("zoom over time", "fade the title in"). Runs after any
+    // title so "fade the title" has a title to animate.
+    if (animateReq) {
+      steps.push({
+        run: (p) => animateTool.execute(animateReq, { project: p }),
+        call: { name: animateTool.name, input: animateReq },
       });
     }
 
@@ -489,8 +555,9 @@ export class StubDirector {
 
     // Manual static zoom / reframe (fixed punch-in) — checked before the
     // animated emphasis so "zoom in 1.5x" reframes instead of pulsing. Skipped
-    // when the request is a callout "zoom into the …".
-    const zoomReframe = !callout ? parseZoomReframe(req) : null;
+    // when the request is a callout "zoom into the …", or a keyframe animation
+    // ("zoom in over time" → animate, not a static reframe).
+    const zoomReframe = !callout && !animateReq ? parseZoomReframe(req) : null;
     if (zoomReframe) {
       const input = { ...zoomReframe, atSec: parseAtSeconds(req) };
       steps.push({
@@ -515,6 +582,33 @@ export class StubDirector {
       steps.push({
         run: (p) => speedTool.execute(input, { project: p }),
         call: { name: speedTool.name, input },
+      });
+    }
+
+    // Reverse (play backwards).
+    if (/\breverse\b|reversed|backwards?|play(ed)? back|in reverse/.test(req)) {
+      const input = { atSec: parseAtSeconds(req) };
+      steps.push({
+        run: (p) => reverseClipTool.execute(input, { project: p }),
+        call: { name: reverseClipTool.name, input },
+      });
+    }
+
+    // Freeze-frame (hold a still frame).
+    if (/freeze.?frame|freeze the frame|freeze it|hold (the |a )?frame|freeze at/.test(req)) {
+      const input = { atSec: parseAtSeconds(req) };
+      steps.push({
+        run: (p) => freezeFrameTool.execute(input, { project: p }),
+        call: { name: freezeFrameTool.name, input },
+      });
+    }
+
+    // Timeline marker ("add a marker at 12s", "mark a chapter at 30s").
+    if (/add (a )?marker|\bmarker at|mark(er)? (a )?(chapter|point)|chapter (point|marker) at/.test(req)) {
+      const input = { t: parseAtSeconds(req) ?? 0 };
+      steps.push({
+        run: (p) => addMarkerTool.execute(input, { project: p }),
+        call: { name: addMarkerTool.name, input },
       });
     }
 
@@ -546,7 +640,11 @@ export class StubDirector {
       });
     }
 
-    if (/\bfades?\b|fade in|fade out|from black|to black|intro and outro/.test(req)) {
+    // Fade from/to black — but not "fade the title", which is a keyframe animation.
+    if (
+      /\bfades?\b|fade in|fade out|from black|to black|intro and outro/.test(req) &&
+      !(animateReq && animateReq.track === "titles")
+    ) {
       steps.push({
         run: (p) => fadesTool.execute({}, { project: p }),
         call: { name: fadesTool.name, input: {} },
@@ -602,7 +700,7 @@ export class StubDirector {
     const hasImages = project.media.some((m) => m.kind === "image");
     if (!hasVideo && !hasImages) return "Add a video or some photos to begin.";
     if (hasImages && !hasVideo)
-      return 'Try: "make a slideshow", "make an interactive demo from these screenshots", "type email and password then click login", "highlight the sign-in button", "zoom into the menu", "make it 21:9", "golden-hour look", "use dissolve transitions", or "make it high quality".';
-    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "white bold captions with an outline", "captions at the top", "cinematic look", "bleach-bypass look", "make it 2.39:1", "reframe to 1600x900", "slow motion", "zoom in 1.5x", "punch in at 5s", "smooth transitions", "add a vignette and film grain", "a bouncing title that says …", "add background music", or "make it 4K".';
+      return 'Try: "make a slideshow", "make an interactive demo from these screenshots", "type email and password then click login", "highlight the sign-in button", "zoom into the menu", "zoom in over time", "make it 21:9", "golden-hour look", "use dissolve transitions", "export for instagram feed", or "make it high quality".';
+    return 'Try: "cut a 60-second highlight", "remove filler words", "make it vertical with captions", "cinematic look", "reframe to 1600x900", "slow motion", "zoom in 1.5x", "zoom in over time", "fade the title in", "reverse the clip", "freeze frame at 3s", "add a marker at 12s", "punch in at 5s", "smooth transitions", "add background music", "export for tiktok", "export for youtube", or "make it 4K".';
   }
 }

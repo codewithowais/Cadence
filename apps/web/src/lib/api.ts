@@ -68,14 +68,21 @@ export async function exportVideo(doc: EditDoc, signal?: AbortSignal): Promise<E
   return { ok: false, unavailable: res.status === 501, message: data.error ?? `export failed: ${res.status}` };
 }
 
-/** Server-rendered frame (canvas engine) as an object URL. Used for poster/export-frame. */
-export async function renderFrame(doc: EditDoc, timeSec: number): Promise<string> {
+/** Server-rendered frame (canvas engine) as a PNG Blob. Used for poster/thumbnail. */
+export async function renderFrameBlob(doc: EditDoc, timeSec: number): Promise<Blob> {
   const res = await fetch("/api/render", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ doc, timeSec }),
   });
-  if (!res.ok) throw new Error(`render failed: ${res.status}`);
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    throw new Error(msg || `render failed: ${res.status}`);
+  }
+  return res.blob();
+}
+
+/** Server-rendered frame (canvas engine) as an object URL. Used for poster/export-frame. */
+export async function renderFrame(doc: EditDoc, timeSec: number): Promise<string> {
+  return URL.createObjectURL(await renderFrameBlob(doc, timeSec));
 }

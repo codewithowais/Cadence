@@ -104,6 +104,40 @@ export const Emphasis = z.object({
 });
 export type Emphasis = z.infer<typeof Emphasis>;
 
+/**
+ * A single animation keyframe. `prop` names the animatable property; `t` is
+ * clip-progress (0 = clip start, 1 = clip end); `value` is the target; `easing`
+ * describes how the value eases INTO this keyframe from the previous one.
+ *
+ * All keyframes are resolved by the ONE PURE `valueAt(keyframes, prop, progress,
+ * base)` helper in grade.ts, so the canvas preview, the browser Stage, and the
+ * ffmpeg export all read the same interpolation (export approximates it with a
+ * piecewise-LINEAR time expression — the eased curve is a preview nicety, exactly
+ * as the cursor path is eased in preview but linear on export). Faithful: keyframes
+ * only move/scale/rotate/fade or re-level the existing clip, never a content change.
+ *
+ *  - x | y     — the clip's transform anchor (composition px).
+ *  - scale     — uniform scale multiplier (1 = native).
+ *  - rotation  — clockwise degrees.
+ *  - opacity   — 0..1 (multiplies any transition ramp).
+ *  - volume    — 0..1 audio level (video/audio clips only).
+ */
+export const KeyframeProp = z.enum(["x", "y", "scale", "rotation", "opacity", "volume"]);
+export type KeyframeProp = z.infer<typeof KeyframeProp>;
+
+/** Easing applied to a keyframe segment (how the value eases INTO the keyframe). */
+export const KeyframeEasing = z.enum(["linear", "ease-in", "ease-out", "ease-in-out"]);
+export type KeyframeEasing = z.infer<typeof KeyframeEasing>;
+
+export const Keyframe = z.object({
+  prop: KeyframeProp,
+  /** Clip-progress 0..1 (0 = clip start, 1 = clip end). */
+  t: z.number().min(0).max(1),
+  value: z.number(),
+  easing: KeyframeEasing.default("linear"),
+});
+export type Keyframe = z.infer<typeof Keyframe>;
+
 /** Media kinds we can ingest. */
 export const MediaKind = z.enum(["video", "audio", "image"]);
 export type MediaKind = z.infer<typeof MediaKind>;
@@ -194,6 +228,25 @@ export const VideoClip = z.object({
   transitionType,
   /** Optional punch-in emphasis (scale pulse over a timeline sub-range). */
   emphasis: Emphasis.optional(),
+  /**
+   * Optional animation keyframes (x/y/scale/rotation/opacity + volume), resolved
+   * by the PURE `valueAt` helper. Optional so existing docs are unchanged; when
+   * present they override the corresponding static transform/volume value.
+   */
+  keyframes: z.array(Keyframe).optional(),
+  /**
+   * Play this clip backwards. Optional + defaulted-off so existing docs stay
+   * valid. The source-time mapping is reversed by `sourceTimeAt` (shared by
+   * canvas + Stage) and the ffmpeg export adds `reverse`/`areverse`.
+   */
+  reversed: z.boolean().default(false),
+  /**
+   * Hold one SOURCE frame (this many seconds into the media) for the whole clip
+   * duration — a freeze-frame. Optional (undefined ⇒ not frozen). `sourceTimeAt`
+   * returns this constant when set; the ffmpeg export grabs the frame (`-ss`) and
+   * clones it with `tpad=stop_mode=clone`.
+   */
+  freezeAtSec: z.number().nonnegative().optional(),
 });
 export type VideoClip = z.infer<typeof VideoClip>;
 
@@ -208,6 +261,8 @@ export const ImageClip = z.object({
   transitionInSec,
   transitionOutSec,
   transitionType,
+  /** Optional animation keyframes (x/y/scale/rotation/opacity), resolved by `valueAt`. */
+  keyframes: z.array(Keyframe).optional(),
 });
 export type ImageClip = z.infer<typeof ImageClip>;
 
@@ -252,6 +307,8 @@ export const TextClip = z.object({
   outline: TextOutline.optional(),
   /** Kinetic intro animation (slide + scale in); "none" by default. */
   anim: TextAnim.prefault({}),
+  /** Optional animation keyframes (x/y/scale/rotation/opacity), resolved by `valueAt`. */
+  keyframes: z.array(Keyframe).optional(),
 });
 export type TextClip = z.infer<typeof TextClip>;
 
@@ -283,6 +340,8 @@ export const AudioClip = z.object({
   mediaId: z.string().min(1),
   sourceIn: z.number().nonnegative().default(0),
   volume: z.number().min(0).max(1).default(1),
+  /** Optional volume keyframes (0..1), resolved by `valueAt`; e.g. audio fades/ducks. */
+  keyframes: z.array(Keyframe).optional(),
 });
 export type AudioClip = z.infer<typeof AudioClip>;
 
@@ -295,6 +354,8 @@ export const SolidClip = z.object({
   transitionInSec,
   transitionOutSec,
   transitionType,
+  /** Optional animation keyframes (x/y/scale/rotation/opacity), resolved by `valueAt`. */
+  keyframes: z.array(Keyframe).optional(),
 });
 export type SolidClip = z.infer<typeof SolidClip>;
 
@@ -451,6 +512,19 @@ export const Vfx = z.object({
 export type Vfx = z.infer<typeof Vfx>;
 
 /**
+ * A timeline marker (a labeled point in TIMELINE seconds) — chapter points, beat
+ * hits, review notes. Persisted on the doc so they survive round-trips and can
+ * drive chapters/exports. `label` is optional. Defaulted-empty so existing docs
+ * stay valid.
+ */
+export const Marker = z.object({
+  /** Timeline time in seconds. */
+  t: z.number().nonnegative(),
+  label: z.string().optional(),
+});
+export type Marker = z.infer<typeof Marker>;
+
+/**
  * The whole project as a declarative document. `version` is the schema version
  * so stored docs can be migrated. This object is what the Director emits and
  * what the DB versions.
@@ -463,6 +537,8 @@ export const EditDoc = z.object({
   quality: Quality.prefault({}),
   /** Whole-frame finishing overlays (vignette / grain / light-leak); off by default. */
   vfx: Vfx.prefault({}),
+  /** Timeline markers (chapter points / beats / notes); empty by default. */
+  markers: z.array(Marker).default([]),
 });
 export type EditDoc = z.infer<typeof EditDoc>;
 

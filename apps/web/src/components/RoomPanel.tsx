@@ -1,10 +1,12 @@
 "use client";
 
-import { useRef } from "react";
-import type { AudioClip, ColorGrade, EditDoc, MediaAsset, QualityPreset } from "@cadence/core";
+import { useRef, useState } from "react";
+import type { AudioClip, ColorGrade, EditDoc, MediaAsset } from "@cadence/core";
 import { adjustColor, currentGrade, NEUTRAL_GRADE } from "@cadence/director";
-import { fmtTime } from "@/lib/format";
+import { fmtTime, download, downloadBlob } from "@/lib/format";
 import { LOOKS, describeDoc } from "@/lib/status";
+import { captionsToSrt, hasCaptions } from "@/lib/srt";
+import { renderFrameBlob } from "@/lib/api";
 import { VoiceOverRecorder } from "./VoiceOverRecorder";
 import type { RoomKey } from "./RoomsRail";
 
@@ -25,6 +27,8 @@ interface RoomPanelProps {
   onFiles: (files: File[]) => void;
   onExport: () => void;
   canExport: boolean;
+  /** Current playhead time (seconds) — the frame the Deliver room's thumbnail grabs. */
+  timeSec: number;
   /** Preview mute state (lifted to the editor; also toggled in the transport). */
   muted: boolean;
   onToggleMute: () => void;
@@ -112,12 +116,6 @@ function VolumeSlider({
   );
 }
 
-const QUALITY_PRESETS: { key: QualityPreset; label: string; prompt: string }[] = [
-  { key: "standard", label: "Standard", prompt: "set standard quality (1080p)" },
-  { key: "high", label: "High", prompt: "make it high quality" },
-  { key: "ultra", label: "Ultra", prompt: "make it 4K" },
-];
-
 export function RoomPanel(props: RoomPanelProps) {
   const {
     room,
@@ -129,6 +127,7 @@ export function RoomPanel(props: RoomPanelProps) {
     onFiles,
     onExport,
     canExport,
+    timeSec,
     muted,
     onToggleMute,
     onReorderMedia,
@@ -158,6 +157,7 @@ export function RoomPanel(props: RoomPanelProps) {
 
   if (room === "media") {
     return (
+      <>
       <Shell label="media">
         {mediaList.length === 0 && <span className="shrink-0 text-xs text-faint">No media yet.</span>}
         {mediaList.map((m, i) => {
@@ -221,6 +221,8 @@ export function RoomPanel(props: RoomPanelProps) {
         )}
         {hiddenInput}
       </Shell>
+      <TrackPanel doc={doc} busy={busy} onSetTrackVolume={onSetTrackVolume} />
+      </>
     );
   }
 
@@ -318,6 +320,7 @@ export function RoomPanel(props: RoomPanelProps) {
       doc={doc}
       mediaList={mediaList}
       busy={busy}
+      timeSec={timeSec}
       onAction={onAction}
       onExport={onExport}
       canExport={canExport}
@@ -327,13 +330,6 @@ export function RoomPanel(props: RoomPanelProps) {
 }
 
 // ---- Color room ------------------------------------------------------------
-
-const ASPECT_CHIPS: { label: string; prompt: string }[] = [
-  { label: "9:16", prompt: "make it vertical 9:16" },
-  { label: "1:1", prompt: "make it square 1:1" },
-  { label: "4:5", prompt: "make it 4:5 portrait" },
-  { label: "16:9", prompt: "make it 16:9 widescreen" },
-];
 
 const gradeKey = (g: ColorGrade): string => `${g.brightness}|${g.contrast}|${g.saturation}|${g.warmth}`;
 
@@ -436,10 +432,27 @@ function ColorRoom({
 
 // ---- Deliver room ----------------------------------------------------------
 
+/**
+ * Social-platform delivery presets. Each maps to the aspect the platform expects
+ * and fires the SAME natural-language reframe the Director already understands
+ * (via `onAction`/`handleSend`) — no new tool, no schema change. Several presets
+ * share an aspect (Shorts / TikTok / Reels are all 9:16), so more than one can
+ * read as active when the current aspect matches.
+ */
+const PLATFORM_PRESETS: { key: string; label: string; aspect: string; prompt: string }[] = [
+  { key: "youtube", label: "YouTube", aspect: "16:9", prompt: "make it 16:9 widescreen for YouTube" },
+  { key: "shorts", label: "YT Shorts", aspect: "9:16", prompt: "make it vertical 9:16 for YouTube Shorts" },
+  { key: "tiktok", label: "TikTok", aspect: "9:16", prompt: "make it vertical 9:16 for TikTok" },
+  { key: "reels", label: "Reels", aspect: "9:16", prompt: "make it vertical 9:16 for Instagram Reels" },
+  { key: "ig-feed", label: "IG Feed", aspect: "1:1", prompt: "make it square 1:1 for Instagram feed" },
+  { key: "ig-portrait", label: "IG Portrait", aspect: "4:5", prompt: "make it 4:5 portrait for Instagram" },
+];
+
 function DeliverRoom({
   doc,
   mediaList,
   busy,
+  timeSec,
   onAction,
   onExport,
   canExport,
@@ -448,6 +461,7 @@ function DeliverRoom({
   doc: EditDoc;
   mediaList: MediaAsset[];
   busy: boolean;
+  timeSec: number;
   onAction: (prompt: string) => void;
   onExport: () => void;
   canExport: boolean;
@@ -457,32 +471,75 @@ function DeliverRoom({
   const outW = doc.quality.targetWidth ?? doc.meta.width;
   const outH = doc.quality.targetHeight ?? doc.meta.height;
   const upscaled = outW !== doc.meta.width || outH !== doc.meta.height;
+  const fps = doc.quality.fps ?? doc.meta.fps;
+  const qualityLabel =
+    doc.quality.preset === "ultra" ? "4K" : doc.quality.preset === "high" ? "High" : "Standard";
+
+  const [thumbState, setThumbState] = useState<"idle" | "working" | "error">("idle");
+  const captionsReady = hasCaptions(doc);
+
+  const filename = (ext: string) => `${(doc.meta.title || "cadence").replace(/\s+/g, "-")}.${ext}`;
+
+  async function downloadThumbnail() {
+    if (!canExport) return;
+    setThumbState("working");
+    try {
+      // POST the live doc + current playhead time to the canvas render route and
+      // save the PNG it returns as a poster/thumbnail (free, no ffmpeg).
+      const blob = await renderFrameBlob(doc, timeSec);
+      downloadBlob(filename("png"), blob);
+      setThumbState("idle");
+    } catch {
+      setThumbState("error");
+    }
+  }
+
+  function downloadCaptions() {
+    if (!captionsReady) return;
+    // Reuse the pure lib/srt helper — do NOT recreate SRT generation here.
+    download(filename("srt"), captionsToSrt(doc), "application/x-subrip");
+  }
 
   return (
-    <Shell label="deliver">
-      <span className="shrink-0 text-[10px] uppercase tracking-wider text-faint">Aspect</span>
-      {ASPECT_CHIPS.map((a) => (
-        <Pill key={a.label} onClick={() => onAction(a.prompt)} disabled={noMedia} active={status.aspect === a.label}>
-          {a.label}
+    <div
+      aria-label="Deliver"
+      className="flex flex-wrap items-center gap-2 border-b border-line-soft bg-panel/30 px-4 py-2"
+    >
+      <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint">deliver</span>
+
+      {/* Platform presets — each reframes via the existing reframe tool. */}
+      <span className="shrink-0 text-[10px] uppercase tracking-wider text-faint">Platform</span>
+      {PLATFORM_PRESETS.map((p) => (
+        <Pill
+          key={p.key}
+          onClick={() => onAction(p.prompt)}
+          disabled={noMedia}
+          active={status.aspect === p.aspect}
+        >
+          {p.label}
+          <span className="text-faint">{p.aspect}</span>
         </Pill>
       ))}
+
       <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
-      <span className="shrink-0 text-[10px] uppercase tracking-wider text-faint">Quality</span>
-      {QUALITY_PRESETS.map((q) => (
-        <Pill key={q.key} onClick={() => onAction(q.prompt)} disabled={noMedia} active={doc.quality.preset === q.key}>
-          {q.label}
-          {q.key === "ultra" ? " · 4K" : ""}
-        </Pill>
-      ))}
+
+      {/* Quality / format summary from doc.quality + meta. */}
       <span
-        className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated px-2.5 py-1 text-[11px] text-muted"
-        title={upscaled ? `Upscales ${doc.meta.width}×${doc.meta.height} → ${outW}×${outH} on export` : "Output resolution"}
+        className="flex shrink-0 items-center gap-2 rounded-full border border-line bg-elevated px-3 py-1 text-[11px] text-muted"
+        title={upscaled ? `Upscales ${doc.meta.width}×${doc.meta.height} → ${outW}×${outH} on export` : "Output specification"}
       >
-        <span className="text-faint">Output</span>
-        <span className="tabular-nums">
-          {outW}×{outH}
-        </span>
+        <span className="tabular-nums text-text">{outW}×{outH}</span>
+        <span className="text-faint">·</span>
+        <span className="tabular-nums">{fps}fps</span>
+        <span className="text-faint">·</span>
+        <span>MP4</span>
+        <span className="text-faint">·</span>
+        <span className={doc.quality.preset === "standard" ? "" : "text-amber-bright"}>{qualityLabel}</span>
       </span>
+
+      <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
+
+      {/* Export (hero) + free sidecar downloads. */}
       <button
         type="button"
         onClick={onExport}
@@ -491,9 +548,142 @@ function DeliverRoom({
       >
         {busy ? "Exporting…" : "Export .mp4"}
       </button>
-      <span className="shrink-0 text-[11px] text-faint">
-        Exports with the current settings. Use <span className="text-muted">Export</span> in the top bar for format &amp; quality options. Renders a real .mp4 via ffmpeg (<code>docker compose up</code>); otherwise you get the edit-doc JSON.
+      <button
+        type="button"
+        onClick={downloadThumbnail}
+        disabled={!canExport || busy || thumbState === "working"}
+        title="Save the current frame as a PNG poster"
+        className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></svg>
+        {thumbState === "working" ? "Rendering…" : "Thumbnail"}
+      </button>
+      <button
+        type="button"
+        onClick={downloadCaptions}
+        disabled={!captionsReady}
+        title={captionsReady ? "Download the captions as an .srt sidecar" : "Add captions first to download an .srt"}
+        className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 15h4M15 15h2M7 11h2M13 11h4" /></svg>
+        Captions .srt
+      </button>
+
+      {/* Honest one-liner: the real render needs ffmpeg. */}
+      <span className="shrink-0 basis-full text-[11px] text-faint">
+        {thumbState === "error" ? (
+          <span className="text-red-300">Couldn&apos;t render a thumbnail — try again once media is loaded. </span>
+        ) : null}
+        A real .mp4 renders via ffmpeg (<code>docker compose up</code>); without it you get the edit-doc JSON. Thumbnail &amp; .srt download instantly, no ffmpeg.
       </span>
-    </Shell>
+    </div>
+  );
+}
+
+// ---- Track panel -----------------------------------------------------------
+
+/** Friendly names for the doc's known track ids (falls back to the raw id). */
+const TRACK_LABELS: Record<string, string> = {
+  video: "Video / Photos",
+  captions: "Captions",
+  titles: "Titles",
+  broll: "B-roll",
+  fades: "Fades",
+  music: "Music",
+  voiceover: "Voice-over",
+};
+
+const trackLabel = (id: string): string =>
+  TRACK_LABELS[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
+
+/**
+ * A read-only map of the doc's tracks — each with a friendly label, kind badge,
+ * and clip count — so the timeline's layers are legible at a glance. Audio tracks
+ * get a mute toggle that routes through the same commit path as the volume
+ * sliders (undoable); visual tracks stay read-only.
+ */
+function TrackPanel({
+  doc,
+  busy,
+  onSetTrackVolume,
+}: {
+  doc: EditDoc;
+  busy: boolean;
+  onSetTrackVolume: (trackId: string, volume: number) => void;
+}) {
+  // Remember the pre-mute volume per track so unmute restores it (session-local).
+  const [lastVol, setLastVol] = useState<Record<string, number>>({});
+
+  if (doc.tracks.length === 0) {
+    return (
+      <div className="flex items-center gap-2 border-b border-line-soft bg-panel/20 px-4 py-1.5">
+        <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint">tracks</span>
+        <span className="text-xs text-faint">No tracks yet — add media to build your timeline.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      aria-label="Tracks"
+      className="flex items-center gap-2 overflow-x-auto border-b border-line-soft bg-panel/20 px-4 py-1.5"
+    >
+      <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint">tracks</span>
+      {doc.tracks.map((track) => {
+        const count = track.clips.length;
+        const audioClips = track.clips.filter((c): c is AudioClip => c.kind === "audio");
+        const isAudio = track.kind === "audio" && audioClips.length > 0;
+        const muted = isAudio && audioClips.every((c) => c.volume === 0);
+        const toggleMute = () => {
+          if (muted) {
+            onSetTrackVolume(track.id, lastVol[track.id] ?? (track.id === "music" ? 0.28 : 1));
+          } else {
+            const cur = audioClips.find((c) => c.volume > 0)?.volume ?? 1;
+            setLastVol((m) => ({ ...m, [track.id]: cur }));
+            onSetTrackVolume(track.id, 0);
+          }
+        };
+        return (
+          <span
+            key={track.id}
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated py-1 pl-2 pr-2.5 text-xs text-muted"
+          >
+            <span className="rounded bg-panel px-1.5 py-0.5 text-[10px] uppercase text-faint">{track.kind}</span>
+            <span className="text-text">{trackLabel(track.id)}</span>
+            <span className="tabular-nums text-faint">
+              {count} clip{count === 1 ? "" : "s"}
+            </span>
+            {isAudio && (
+              <button
+                type="button"
+                onClick={toggleMute}
+                disabled={busy}
+                aria-pressed={muted}
+                aria-label={`${muted ? "Unmute" : "Mute"} ${trackLabel(track.id)} track`}
+                title={muted ? "Unmute track" : "Mute track"}
+                className={[
+                  "ml-0.5 grid h-6 w-6 place-items-center rounded-md transition disabled:opacity-30",
+                  muted ? "text-red-300 hover:bg-red-500/15" : "text-faint hover:bg-line hover:text-text",
+                ].join(" ")}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  {muted ? (
+                    <>
+                      <path d="M11 5 6 9H2v6h4l5 4z" />
+                      <path d="M23 9l-6 6M17 9l6 6" />
+                    </>
+                  ) : (
+                    <>
+                      <path d="M11 5 6 9H2v6h4l5 4z" />
+                      <path d="M15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14" />
+                    </>
+                  )}
+                </svg>
+              </button>
+            )}
+          </span>
+        );
+      })}
+    </div>
   );
 }
