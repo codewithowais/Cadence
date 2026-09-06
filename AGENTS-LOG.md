@@ -25,3 +25,8 @@ run in parallel on disjoint files (packages/* vs apps/web/*), integrated + gated
 ## Wave 5 delivered (engine) — S3.11
 - Single expert engine agent (economical, disjoint `packages/**`+`scripts/verify.ts`, no-commit): `edit_by_transcript`, `remove_silence`, `auto_reframe` (free centered + gated subject tracking), `generate_voiceover` (pluggable `TtsProvider` none/cli/api, money-gated + graceful). All pure-fn → Director tool → routing → verify; verify 49→**53**.
 - Orchestrator integration fix: `@cadence/understanding` (whisper-transcriber) made fully browser-import-safe — lazy `node:*` imports so the barrel re-exported through `@cadence/director` into the client `RoomPanel` no longer leaks `node:child_process`/`fs` into the browser bundle (was breaking `next build` + `/editor`). Gated + committed.
+
+## Go-live (S3.12+) — DB + deploy
+- Full tester pass: Playwright **8/8** (added `e2e/wave5.spec.ts`; refreshed 3 stale assertions that lagged improved behavior). Artifacts refreshed under `test-artifacts/`.
+- **Neon Postgres live:** migrations applied to the user's instance; `/api/health` → `db:true`. Local `.env` (gitignored) symlinked to `apps/web/.env`.
+- **Vercel-ready:** `apps/web/vercel.json` + `DEPLOY.md` (Root Directory `apps/web`, env-var table, Neon setup, ffmpeg/Docker limitation).

@@ -97,3 +97,7 @@ npm run verify      # renders real frames + asserts (writes to .cadence/)
 npm run dev --workspace @cadence/web   # the editor at http://localhost:3000
 ```
 Real `.mp4` export + Postgres: `docker compose up` (ffmpeg is in the image). See `README.md` / `ARCHITECTURE.md`.
+
+### Deploy
+- **Vercel:** set Root Directory to `apps/web`, add `SESSION_SECRET` (+ `DATABASE_URL` for persistence). Full steps + env-var table in `DEPLOY.md`. (ffmpeg export is Docker-only; it degrades gracefully on serverless.)
+- **Database:** Neon Postgres — paste the URL into `.env`, run `npm -w @cadence/db run migrate`, confirm `GET /api/health` → `db:true`.

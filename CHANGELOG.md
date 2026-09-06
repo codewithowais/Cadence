@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### Ops — Neon DB live + Vercel deploy readiness
+- **Database live:** applied the 3 migrations to a Neon Postgres instance; `/api/health` → `{ status:"ok", db:true }`. Local `.env` (gitignored) holds `DATABASE_URL`; symlinked to `apps/web/.env` so the single file feeds both Node tooling (`migrate`, `verify`) and the Next app.
+- **Vercel:** `apps/web/vercel.json` (framework pin) + `DEPLOY.md` — Root Directory `apps/web` (Vercel re-anchors to the npm-workspace root and transpiles `packages/*`), env-var table (`SESSION_SECRET` required; `DATABASE_URL` for persistence), Neon steps, and honest limitations (ffmpeg export is Docker-only; absent on serverless it degrades gracefully). `.env.example` extended with the enhance/TTS provider vars.
+
 ### S3.12 — Cycle E wave 5 (web): edit-by-transcript + AI-edge UI
 - **Words room** (new `TranscriptRoom`): the transcript renders as clickable sentences/words — click a sentence or drag across words, then **Remove** ("cut this out") or **Keep only this** (`editByTranscript`, word/segment unit). Commits through the undoable path (instant preview + Undo); unmatched phrases never commit (no accidental wipe). Shows time removed.
 - **One-tap cleanups:** Remove filler words (`fillerCut`) and Tighten pauses / remove silences (`removeSilence`, surfaces gaps dropped + seconds saved). Stub transcripts show an honest "approximate — install Whisper" banner but still allow segment edits.

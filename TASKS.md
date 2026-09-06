@@ -8,7 +8,20 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 ## QA / end-to-end testing
 
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
-  - ⬜ **Bug (MEDIUM):** `setQuality` anchors ultra/high upscale to width (`3840/baseW`) regardless of orientation → vertical "make it 4K" overshoots to ~3844×6836 instead of 2160×3840. Fix: cap the LONG edge at 3840 (or clamp both dims to a 4K pixel budget). (`packages/director/src/edits.ts`.)
+  - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
+
+## Cycle E — craft depth (waves 2–5) + go-live — ✅ COMPLETE
+
+Run as expert-agent waves on disjoint files (packages/** vs apps/web/**), each integrated → gated (`typecheck` root+web · `test:unit` · `verify` · `next build` · `test:e2e`) → committed. Full history in `CHANGELOG.md` (S3.7–S3.12), advisory docs in `docs/`, agent runs in `AGENTS-LOG.md`.
+
+- ✅ **Wave 1 — interaction demos + timeline editing.** `build_demo` (cursor/typewriter/callout — ERP-style walkthroughs from screenshots); direct trim/split/reorder/ripple/markers/zoom.
+- ✅ **Wave 2 — P0 fixes + audible audio.** Export transitions on cuts; music auto-attaches on upload and is **audible in preview**; overlays ripple in sync; UX quick wins (determinate progress, undo toast, describe-first).
+- ✅ **Wave 3 — craft foundations.** Keyframe engine (`valueAt`), multi-track compositing, reverse/freeze, markers; delivery presets (YouTube/TikTok/Reels/Shorts) + SRT/VTT + thumbnail.
+- ✅ **Wave 4 — VFX + color + audio depth.** Chroma-key, masks, blur/pixelate, blend modes; curves/HSL/scopes; audio mixer (fades/pan/LUFS).
+- ✅ **Wave 5 — AI-native edge.** Edit-by-transcript (click words to cut), silence removal, auto-reframe (subject-tracking money-gated), TTS voice-over seam (money-gated, graceful). New "Words" room. Fixed a client/server boundary leak that broke `/editor` (whisper transcriber made browser-import-safe).
+- ✅ **QA — full tester pass.** Playwright **8/8** green incl. a Wave-5 spec; refreshed artifacts (screenshots + `.webm`) in `test-artifacts/`.
+- ✅ **DB live (Neon Postgres).** Migrations applied to the user's Neon instance; `/api/health` → `{ status:"ok", db:true }`. Local `.env` (gitignored) feeds both tooling and the app (symlinked into `apps/web/.env`).
+- ✅ **Vercel deploy readiness.** `apps/web/vercel.json` (framework pin) + `DEPLOY.md` (Root Directory `apps/web`, env-var table, Neon + limitations). ffmpeg export documented as Docker-only (absent on serverless; degrades gracefully).
 
 ## Phase 0 — Spike (prove the loop) — ✅ COMPLETE
 
@@ -44,11 +57,15 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ Export renders a real file (ffmpeg; free, needs ffmpeg installed — see S1.4).
 - ✅ Agentic loop hardening (plan→act→verify→correct) + 5 eval prompts. **See S1.8.**
 
-## Open money gates
-- _None yet._ Real Claude Director (Anthropic API, metered) will be raised at S-Director-real. Free stub is the default until then.
+## Open money gates (all OFF by default; never auto-enabled)
+- ⛔ Real Claude Director (`DIRECTOR_MODE=claude` + `ANTHROPIC_API_KEY`) — metered. Free stub is the default.
+- ⛔ AI faithful upscale (`ENHANCE_PROVIDER=local|api|cli`) — free no-AI upscale is the default.
+- ⛔ TTS voice-over (`TTS_PROVIDER=cli|api`) — free mic recorder is the default; gated tool fails gracefully.
+- ⛔ Auto-reframe subject tracking (needs a vision provider) — free centered reframe ships now.
 
 ## Environment notes
-- Node 25.1.0 present (odd/current). **Recommend Node 22 LTS** — vitest 5 flags Node 25 as unsupported.
-- Docker: **not installed** (free). Needed for `docker compose up` (Postgres + web) and running migrations live; core dev + verify gate do NOT require it. Live bring-up: `cp .env.example .env` (set SESSION_SECRET) → `docker compose up` → `npm -w @cadence/db run migrate`. Health at `GET /api/health`.
+- Node 25.1.0 present (odd/current). **Recommend Node 22 LTS.** Vercel uses a supported LTS automatically (engines `>=20`).
+- **DB: LIVE on Neon Postgres.** `DATABASE_URL` set in local `.env`; migrations applied; `/api/health` → `db:true`. For Vercel, set `DATABASE_URL` + `SESSION_SECRET` in the dashboard — see `DEPLOY.md`.
+- Docker: optional (free). Needed only for real `.mp4` export (ffmpeg baked into the image) and as an alt to Neon. `docker compose up` + `npm -w @cadence/db run migrate`.
 - ffmpeg: **not installed** (free). Needed for video export and for real Whisper transcription (audio extraction), not for the canvas verify/preview path.
 - Whisper: **not installed** (free). Real transcription uses a local `whisper` / `whisper-cpp` / `faster-whisper` CLI (or `WHISPER_CMD`) + ffmpeg; absent here, so `/api/transcribe` uses the offline `StubTranscriber`. Enable by installing one of those CLIs (e.g. `pip install faster-whisper` / build whisper.cpp) + ffmpeg; both are available in the Docker image.
