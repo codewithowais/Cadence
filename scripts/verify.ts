@@ -149,8 +149,10 @@ import {
   atempoChain,
   buildExportPlan,
   detectFfmpeg,
+  detectMediaAudio,
   ffBlendMode,
   keyframeTransformExpr,
+  probeHasAudio,
   renderTextOverlays,
   resolveFfmpegBin,
   runExport,
@@ -3018,6 +3020,7 @@ async function checkRealEncode(): Promise<void> {
   const encDir = resolve(OUT_DIR, "encode");
   mkdirSync(encDir, { recursive: true });
   const srcMp4 = resolve(encDir, "src.mp4");
+  const srcNoAudio = resolve(encDir, "src-noaudio.mp4");
   const pngA = resolve(encDir, "photo-0.png");
   const pngB = resolve(encDir, "photo-1.png");
   const synth = (args: string[], what: string): void => {
@@ -3029,10 +3032,36 @@ async function checkRealEncode(): Promise<void> {
     ["-f", "lavfi", "-i", "testsrc=size=640x480:rate=30:duration=6", "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", srcMp4],
     "source mp4",
   );
+  // A short source clip with NO audio input at all — the exact shape of a
+  // browser-captured `clip.webm` (canvas captureStream → video only) or any silent
+  // user video. Referencing its `[idx:a]` used to abort the export (exit ~234); the
+  // fix must synthesize silence instead. Self-contained via lavfi (no audio input).
+  synth(
+    ["-f", "lavfi", "-i", "testsrc=size=640x480:rate=30:duration=6", "-c:v", "libx264", "-pix_fmt", "yuv420p", srcNoAudio],
+    "audioless source mp4",
+  );
   synth(["-f", "lavfi", "-i", "testsrc=size=1280x720:duration=1", "-frames:v", "1", pngA], "photo-0");
   synth(["-f", "lavfi", "-i", "rgbtestsrc=size=1280x720:duration=1", "-frames:v", "1", pngB], "photo-1");
 
-  const resolveMedia = (id: string): string => (id.startsWith("photo") ? (id === "photo-0" ? pngA : pngB) : srcMp4);
+  // Prove the no-ffprobe audio detection: `probeHasAudio` (ffmpeg -i, stderr parse)
+  // must see the audio stream in src.mp4 and NOT in the audioless clip.
+  assert(
+    (await probeHasAudio(bin, srcMp4)) === true,
+    "real encode: probeHasAudio must detect the audio stream in src.mp4 (ffmpeg -i stderr parse)",
+  );
+  assert(
+    (await probeHasAudio(bin, srcNoAudio)) === false,
+    "real encode: probeHasAudio must report NO audio for the audioless source (the export bug)",
+  );
+
+  const resolveMedia = (id: string): string =>
+    id.startsWith("photo")
+      ? id === "photo-0"
+        ? pngA
+        : pngB
+      : id.includes("noaudio")
+        ? srcNoAudio
+        : srcMp4;
 
   // A cinematic look + a caption track. Captions are ALWAYS burned in now (as a
   // rasterized PNG overlay), regardless of whether the ffmpeg build has drawtext.
@@ -3062,7 +3091,12 @@ async function checkRealEncode(): Promise<void> {
     // transparent PNGs, then overlay them — NO drawtext, so it works on the bundled
     // freetype-less ffmpeg. This is the exact path the export route now takes.
     const overlays = await renderTextOverlays(doc, encDir);
-    const plan = buildExportPlan(doc, resolveMedia, out, overlays);
+    // Detect audio the SAME way runExport does (no ffprobe — `ffmpeg -i` stderr
+    // parse), then thread it into the pure plan so audioless inputs get synthesized
+    // silence instead of a non-existent [idx:a] pad. For all-audio docs this map is
+    // every-true, so the emitted graph is byte-identical to the pre-fix fast path.
+    const mediaHasAudio = await detectMediaAudio(bin, doc, resolveMedia);
+    const plan = buildExportPlan(doc, resolveMedia, out, overlays, mediaHasAudio);
     // Guard the exact class of the fixed bug: a `\,` that got escaped twice.
     assert(!plan.filterComplex.includes("\\\\,"), `real encode [${label}]: double-escaped comma (\\\\,) in filtergraph — ffmpeg's eval will reject it`);
     // Text is PNG overlays now, never drawtext (which the bundled ffmpeg lacks).
@@ -3189,6 +3223,80 @@ async function checkRealEncode(): Promise<void> {
     ],
   });
 
+  // ---- AUDIOLESS INPUTS (the reported export bug) -------------------------
+  // A source with NO audio stream used to abort export: the filtergraph referenced
+  // `[idx:a]`, and ffmpeg exited ~234 with "Stream specifier ':a' … matches no
+  // streams". The fix probes audio (no ffprobe) and substitutes silence. These
+  // three cases ENCODE audioless docs end-to-end and assert a real, non-empty mp4.
+  // The media set `hasAudio` UNSET (like a browser `clip.webm`), so detectMediaAudio
+  // must probe and report false, driving the anullsrc silence path.
+
+  // detectMediaAudio (the exact production probe) must classify a mixed media set:
+  // audioless video → false, audio-bearing video → true, image → false.
+  const audioMap = await detectMediaAudio(
+    bin,
+    parseEditDoc({
+      version: 1, meta: { title: "probe", width: 640, height: 480, fps: 30 },
+      media: [
+        { id: "clip-noaudio", kind: "video", src: srcNoAudio },
+        { id: "clip-001", kind: "video", src: srcMp4 },
+        { id: "photo-0", kind: "image", src: pngA, width: 1280, height: 720 },
+      ],
+      tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 1, mediaId: "clip-noaudio", sourceIn: 0 }] }],
+    }),
+    resolveMedia,
+  );
+  assert(audioMap.get("clip-noaudio") === false, "detectMediaAudio: audioless video must be false");
+  assert(audioMap.get("clip-001") === true, "detectMediaAudio: audio-bearing video must be true");
+  assert(audioMap.get("photo-0") === false, "detectMediaAudio: image must be false (never probed)");
+
+  // (i) THE exact e2e doc shape on an AUDIOLESS input: highlight cut (2-clip concat)
+  //     + 9:16 reframe (1080x1920) + 4K (1216x2160) + cinematic look + burn-in
+  //     captions + fade in/out + punch-in emphasis. Mirrors case (a), but the source
+  //     has no audio — so each concat segment must get synthesized silence.
+  await encode("i_audioless_e2e", {
+    version: 1, meta: { title: "i", width: 1080, height: 1920, fps: 30, background: "#000000" },
+    media: [{ id: "clip-noaudio", kind: "video", src: srcNoAudio }],
+    quality: { preset: "ultra", targetWidth: 1216, targetHeight: 2160, sharpen: 0.5, denoise: 0.3, aiUpscale: false, faithful: true },
+    tracks: [
+      { id: "video", kind: "visual", clips: [
+        { id: "c0", kind: "video", start: 0, duration: 1.5, mediaId: "clip-noaudio", sourceIn: 1, transform: { x: 540, y: 960 }, look, emphasis: { atSec: 0.6, durationSec: 0.6, zoom: 1.25 } },
+        { id: "c1", kind: "video", start: 1.5, duration: 1.5, mediaId: "clip-noaudio", sourceIn: 3, transform: { x: 540, y: 960 }, look, emphasis: { atSec: 2.0, durationSec: 0.6, zoom: 1.3 } },
+      ] },
+      ...captions(1600),
+      fades(3),
+    ],
+  });
+
+  // (j) audioless base video + a MUSIC track: the base contributes silence, the
+  //     music (a real audio-bearing source) must remain audible in the mix (amix).
+  await encode("j_audioless_music", {
+    version: 1, meta: { title: "j", width: 1080, height: 1920, fps: 30 },
+    media: [
+      { id: "clip-noaudio", kind: "video", src: srcNoAudio },
+      { id: "music-1", kind: "audio", src: srcMp4 },
+    ],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 3, mediaId: "clip-noaudio", sourceIn: 0, transform: { x: 540, y: 960 } }] },
+      { id: "music", kind: "audio", clips: [{ id: "m0", kind: "audio", start: 0, duration: 3, mediaId: "music-1", sourceIn: 0, volume: 0.8, fadeInSec: 0.3, fadeOutSec: 0.5 }] },
+    ],
+  });
+
+  // (k) multi-clip concat where SOME clips have audio and some don't: clip A (audio)
+  //     then clip B (audioless). The audioless segment must be padded with silence so
+  //     concat=…:a=1 lines up and the export still succeeds.
+  await encode("k_audioless_mixed", {
+    version: 1, meta: { title: "k", width: 1080, height: 1920, fps: 30 },
+    media: [
+      { id: "clip-001", kind: "video", src: srcMp4 },
+      { id: "clip-noaudio", kind: "video", src: srcNoAudio },
+    ],
+    tracks: [{ id: "video", kind: "visual", clips: [
+      { id: "c0", kind: "video", start: 0, duration: 1.5, mediaId: "clip-001", sourceIn: 0, transform: { x: 540, y: 960 } },
+      { id: "c1", kind: "video", start: 1.5, duration: 1.5, mediaId: "clip-noaudio", sourceIn: 0, transform: { x: 540, y: 960 } },
+    ] }],
+  });
+
   // (4) regression guard: a plain, simple single-clip export must still encode.
   await encode("plain_simple", {
     version: 1, meta: { title: "plain", width: 1080, height: 1920, fps: 30 },
@@ -3197,7 +3305,7 @@ async function checkRealEncode(): Promise<void> {
   });
 
   console.log(
-    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades+CAPTIONS), captions+title (user's case), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, plain; all text burned in as PNG overlays (works on the bundled freetype-less ffmpeg)`,
+    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades+CAPTIONS), captions+title (user's case), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, AUDIOLESS e2e (highlight+9:16+4K+look+captions+fades+emphasis on a no-audio source), audioless+music, audioless↔audio mix, plain; audio presence detected without ffprobe (ffmpeg -i stderr parse) and audioless inputs padded with anullsrc silence; all text burned in as PNG overlays (works on the bundled freetype-less ffmpeg)`,
   );
 }
 

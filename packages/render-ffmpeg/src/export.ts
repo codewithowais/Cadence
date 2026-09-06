@@ -70,7 +70,11 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
       overlayDir = await mkdtemp(join(tmpdir(), "cadence-text-"));
       overlays = await renderTextOverlays(doc, overlayDir);
     }
-    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays);
+    // Detect which sources actually carry an audio stream (no ffprobe exists in
+    // ffmpeg-static) so the pure plan substitutes silence for audioless inputs
+    // instead of referencing a non-existent [idx:a] pad — the audioless-export fix.
+    const mediaHasAudio = await detectMediaAudio(bin, doc, opts.resolveMediaPath);
+    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays, mediaHasAudio);
     await spawnFfmpeg(bin, plan.args, opts.onLog);
 
     // Optional faithful AI enhancement pass (off by default; money/setup gated).
@@ -110,6 +114,65 @@ function deriveScale(doc: EditDoc): number {
   const tw = doc.quality.targetWidth;
   if (tw && doc.meta.width > 0) return Math.max(2, Math.min(4, Math.round(tw / doc.meta.width)));
   return 2;
+}
+
+/**
+ * Whether a media file carries an audio stream — detected WITHOUT ffprobe, because
+ * `ffmpeg-static` bundles only the `ffmpeg` binary (no `ffprobe`). We run
+ * `ffmpeg -hide_banner -i <path>` with NO output file: ffmpeg prints the input's
+ * stream table to stderr and then exits NONZERO ("At least one output file must be
+ * specified") — that nonzero exit is expected and irrelevant; we only parse stderr
+ * for a `Stream #… Audio:` line. Resolves `false` on any spawn/error (a probe
+ * failure degrades to silence-substitution, which still yields a valid, playable
+ * mp4, rather than crashing the export). Never rejects.
+ */
+export function probeHasAudio(bin: string, path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let stderr = "";
+    let child;
+    try {
+      child = spawn(bin, ["-hide_banner", "-i", path], { stdio: ["ignore", "ignore", "pipe"] });
+    } catch {
+      resolve(false);
+      return;
+    }
+    child.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+      if (stderr.length > 64_000) stderr = stderr.slice(-64_000);
+    });
+    child.on("error", () => resolve(false));
+    child.on("close", () => resolve(/Stream #[^\n]*Audio:/i.test(stderr)));
+  });
+}
+
+/**
+ * Build `mediaId → hasAudio` for every asset a doc references, honoring an explicit
+ * `MediaAsset.hasAudio` (skips the probe when the caller already knows), treating
+ * image assets as always audioless, and otherwise probing the file with
+ * {@link probeHasAudio}. Threaded into the pure {@link buildExportPlan} so an
+ * audioless video/audio input contributes synthesized silence instead of a
+ * non-existent `[idx:a]` pad. Probes run in parallel; a probe failure yields `false`.
+ */
+export async function detectMediaAudio(
+  bin: string,
+  doc: EditDoc,
+  resolveMediaPath: ResolveMediaPath,
+): Promise<Map<string, boolean>> {
+  const map = new Map<string, boolean>();
+  await Promise.all(
+    doc.media.map(async (asset) => {
+      if (asset.hasAudio !== undefined) {
+        map.set(asset.id, asset.hasAudio);
+        return;
+      }
+      if (asset.kind === "image") {
+        map.set(asset.id, false);
+        return;
+      }
+      map.set(asset.id, await probeHasAudio(bin, resolveMediaPath(asset.id)));
+    }),
+  );
+  return map;
 }
 
 function spawnFfmpeg(bin: string, args: string[], onLog?: (line: string) => void): Promise<void> {

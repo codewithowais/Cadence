@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.26 — fix: export works on audioless inputs (export now fully working E2E)
+- Exporting a video with **no audio track** failed (`Stream specifier ':a' … matches no streams`). Now `runExport` detects audio presence per input without ffprobe (`ffmpeg -i` stderr parse + `MediaAsset.hasAudio`), and the plan substitutes **silence** (`anullsrc`) for audioless inputs in concat/mix/ramp paths — with-audio path byte-identical. Handles single audioless clip, audioless+music, and mixed audio/audioless concat.
+- Real-encode check 64 now covers 12 docs incl. 3 audioless cases. **Playwright e2e 18/18 — the export test downloads a real `.mp4`.** Export is fully working end-to-end (bundled ffmpeg; no Docker/install), the culmination of S4.21/23/25/26.
+
 ### S4.25 — export text via canvas PNG overlays (captions/titles work on any ffmpeg)
 - **Captioned/titled export now works** on the bundled ffmpeg (which has no `drawtext`/libfreetype): text clips (captions, titles, kinetic titles, callout labels) are rasterized by the canvas engine to transparent PNGs and overlaid (time-gated, positioned) instead of `drawtext` — universal compatibility AND pixel-exact preview↔export parity. `runExport` renders the PNGs (server-only, lazy canvas import) and threads paths into the pure `buildExportPlan`; `@cadence/render-node` added as a render-ffmpeg dep.
 - Animated text exports at its resting state (documented); preview still animates. Real-encode check 64 now burns captions+title and asserts exit 0.

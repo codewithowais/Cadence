@@ -993,9 +993,34 @@ export function buildExportPlan(
    * buildExportPlan (still deterministic, no I/O). Omitted ⇒ no text overlays.
    */
   textOverlays?: TextOverlayMap,
+  /**
+   * mediaId → whether that source carries an audio stream. Built by the impure
+   * driver (runExport → detectMediaAudio), which probes each file with `ffmpeg -i`
+   * because `ffmpeg-static` ships NO ffprobe. When a mediaId maps to `false` this
+   * builder synthesizes matching silence (anullsrc) instead of referencing a
+   * non-existent `[idx:a]` pad — the fix for exporting an audioless source (a
+   * canvas-captured `clip.webm`, a muted screen-recording). A mediaId absent from
+   * the map falls back to `MediaAsset.hasAudio` (and, unset, to "assume audio
+   * present" — the prior behavior), so existing callers stay byte-identical.
+   */
+  mediaHasAudio?: Map<string, boolean>,
 ): ExportPlan {
   const { width: W, height: H, fps } = doc.meta;
   const total = r3(docDurationSec(doc));
+
+  /**
+   * Whether the media behind a clip has an audio stream. Priority: the probed
+   * `mediaHasAudio` map (from runExport) → the doc's `MediaAsset.hasAudio` →
+   * default true (assume audio present). Only an explicit `false` (probed or
+   * declared) triggers silence-substitution, so the with-audio fast path is
+   * unchanged whenever nothing says the source is silent.
+   */
+  const hasAudioFor = (mediaId: string): boolean => {
+    const probed = mediaHasAudio?.get(mediaId);
+    if (probed !== undefined) return probed;
+    const asset = doc.media.find((m) => m.id === mediaId);
+    return asset?.hasAudio !== false;
+  };
 
   const inputArgs: string[] = [];
   const inputs: string[] = [];
@@ -1027,10 +1052,9 @@ export function buildExportPlan(
    * is speed-retimed (atempo) and normalized (aformat).
    */
   const audioSegmentFilter = (c: VideoClip, srcIdx: number, i: number): string => {
-    const asset = doc.media.find((m) => m.id === c.mediaId);
     // A frozen frame carries no audio, so synthesize silence for its duration —
-    // same path as a source with no audio stream.
-    if (c.freezeAtSec !== undefined || asset?.hasAudio === false) {
+    // same path as a source with no audio stream (probed or declared silent).
+    if (c.freezeAtSec !== undefined || !hasAudioFor(c.mediaId)) {
       const silIdx = addInput(
         ["-f", "lavfi", "-t", String(r3(c.duration))],
         `anullsrc=channel_layout=stereo:sample_rate=44100`,
@@ -1105,8 +1129,7 @@ export function buildExportPlan(
     const ramp = c.speedRamp!;
     const dur = Math.max(1e-6, c.duration);
     const totalSpan = dur * speedRampIntegral(ramp, 1); // total source seconds consumed
-    const asset = doc.media.find((m) => m.id === c.mediaId);
-    const hasAudio = includeAudio && asset?.hasAudio !== false;
+    const hasAudio = includeAudio && hasAudioFor(c.mediaId);
     const pan = panFilter(c.pan);
     const vSeg: string[] = [];
     const aSeg: string[] = [];
@@ -1582,12 +1605,29 @@ export function buildExportPlan(
   const audioClips = collectAudioClips(doc);
   const extraAudioLabels: string[] = [];
   audioClips.forEach(({ clip, trackId }, i) => {
+    const delayMs = Math.round(clip.start * 1000);
+    const pan = panFilter(clip.pan);
+    // A music/voice-over source with no audio stream (probed or declared silent)
+    // can't be mapped as [idx:a]; contribute matching silence so the amix stays
+    // valid rather than failing on a non-existent pad. (Real audio takes the path
+    // below unchanged — the with-audio fast path is byte-identical.)
+    if (!hasAudioFor(clip.mediaId)) {
+      const silIdx = addInput(
+        ["-f", "lavfi", "-t", String(r3(clip.duration))],
+        `anullsrc=channel_layout=stereo:sample_rate=44100`,
+        false,
+      );
+      filters.push(
+        `[${silIdx}:a]asetpts=PTS-STARTPTS,${AUDIO_FORMAT},adelay=${delayMs}|${delayMs}[m${i}]`,
+      );
+      extraAudioLabels.push(`[m${i}]`);
+      void trackId;
+      return;
+    }
     const idx = addInput(
       ["-ss", String(r3(clip.sourceIn)), "-t", String(r3(clip.duration))],
       resolveMediaPath(clip.mediaId),
     );
-    const delayMs = Math.round(clip.start * 1000);
-    const pan = panFilter(clip.pan);
     // Music ducks under speech (auto-mix already sets volume in the doc); a
     // keyframed volume rides the level over time (volume=…:eval=frame). Fades/pan
     // apply in clip-local time BEFORE the adelay that places it on the timeline.

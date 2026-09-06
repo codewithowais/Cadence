@@ -155,21 +155,19 @@ test("video flow: upload → edits → rooms → mute → applied-status → exp
   await expect(page.getByRole("button", { name: /Preview muted/i })).toBeVisible();
   await shot(page, "09-muted");
 
-  // ---- export: ffmpeg absent → graceful message + JSON edit-doc download ----
+  // ---- export: real .mp4 via the bundled ffmpeg (ffmpeg-static) ----
   // The top-bar "Export" button opens the ExportMenu popover; the actual export
-  // is the "Export .mp4" button inside it.
+  // is the "Export .mp4" button inside it. ffmpeg is now bundled, so export
+  // succeeds and downloads a real .mp4 (was a graceful JSON fallback when ffmpeg
+  // was absent).
   await page.getByRole("button", { name: "Export", exact: true }).click();
   const exportDialog = page.getByRole("dialog", { name: "Export options" });
   await expect(exportDialog).toBeVisible();
-  const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
+  const downloadPromise = page.waitForEvent("download", { timeout: 120_000 });
   await exportDialog.getByRole("button", { name: "Export .mp4" }).click();
-  // The graceful message names both the missing ffmpeg AND the JSON fallback.
-  const ffmpegMsg = page.getByText(/ffmpeg not found/i);
-  await expect(ffmpegMsg).toBeVisible({ timeout: 60_000 });
-  await expect(ffmpegMsg).toContainText(/edit-doc \(JSON\)/i);
   const download = await downloadPromise;
-  expect(download.suggestedFilename()).toMatch(/\.editdoc\.json$/);
-  await shot(page, "10-export-graceful");
+  expect(download.suggestedFilename()).toMatch(/\.mp4$/);
+  await shot(page, "10-export");
 });
 
 test("photo flow: upload photos → slideshow → vertical + warm look", async ({ page }) => {
