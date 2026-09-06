@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.15 — 55-transition gallery UI (grouped + searchable)
+- The per-cut ◇ picker now shows all **55** transitions from the engine (`TRANSITION_TYPES`/`TRANSITION_GROUPS`), **grouped by family** with headings, a live **search** box, and a scrollable body (flips on overflow). Keeps duration + hard-cut + fade edges; preview honors every type.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **17/17** (transitions.spec labels updated to directional names).
+
 ### S4.14 — UX overhaul wave 3: new theme + preview-visibility + prominence
 - **New theme** (drops the yellow): a warm **coral/vermilion** accent (`#f76f53`) on a **warm-charcoal** base, teal kept as a sparing secondary — applied app-wide by retokenizing `globals.css` (AA contrast verified), plus purging every hardcoded brand-yellow. Deliberately not the amber-yellow nor the cliché AI indigo/purple.
 - **Fix "can't see the video":** tall rooms (Demo/Design) no longer push the preview off-screen — the room panel is hard-capped with internal scroll and the Stage keeps a floor; the **preview height is user-adjustable** (new divider, persisted) alongside the existing preview↔timeline divider.

@@ -98,7 +98,7 @@ test("per-cut: change the transition type and the preview honors it", async ({ p
   await cutChip.click();
   const dialog = page.getByRole("dialog", { name: "Cut transition" });
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "Wipe", exact: true }).click();
+  await dialog.getByRole("button", { name: "Wipe Left", exact: true }).click();
 
   // (a) The doc reflects the new type + an incoming ramp.
   await expect(drawerCode(page)).toContainText('"transitionType": "wipe"');
@@ -118,7 +118,7 @@ test("per-cut: change the transition type and the preview honors it", async ({ p
   // (c) Change to another type ("Slide") — it updates.
   await cutChip.click();
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "Slide", exact: true }).click();
+  await dialog.getByRole("button", { name: "Slide Left", exact: true }).click();
   await expect(drawerCode(page)).toContainText('"transitionType": "slide"');
 
   await page.keyboard.press("Escape");

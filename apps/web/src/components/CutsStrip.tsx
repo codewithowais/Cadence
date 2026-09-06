@@ -4,6 +4,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   clipProgress,
   valueAt,
+  TRANSITION_GROUPS,
+  TRANSITION_TYPES,
   type Clip,
   type EditDoc,
   type KeyframeEasing,
@@ -342,16 +344,39 @@ interface DragState {
 
 // ---- transitions / keyframes (Wave C) --------------------------------------
 
-/** The 7 faithful transition types, with short human labels for the gallery. */
-const TRANSITIONS: { type: TransitionType; label: string }[] = [
-  { type: "crossfade", label: "Crossfade" },
-  { type: "dip-to-black", label: "Dip to black" },
-  { type: "slide", label: "Slide" },
-  { type: "wipe", label: "Wipe" },
-  { type: "dissolve", label: "Dissolve" },
-  { type: "zoom", label: "Zoom" },
-  { type: "smooth", label: "Smooth" },
-];
+/** One gallery entry: the engine type + its human label + its group heading. */
+interface TransitionEntry {
+  type: TransitionType;
+  label: string;
+  group: string;
+}
+
+/** All 55 transitions, in engine order, labelled from `TRANSITION_GROUPS`. */
+const TRANSITIONS: TransitionEntry[] = TRANSITION_TYPES.map((type) => ({
+  type,
+  label: TRANSITION_GROUPS[type].label,
+  group: TRANSITION_GROUPS[type].group,
+}));
+
+/**
+ * The gallery grouped by `group`, groups in first-seen (engine) order. Rendered
+ * as a group heading followed by that group's swatches; the search box filters
+ * this list live by label / type across every group.
+ */
+const TRANSITION_GALLERY: { group: string; items: TransitionEntry[] }[] = (() => {
+  const order: string[] = [];
+  const byGroup = new Map<string, TransitionEntry[]>();
+  for (const entry of TRANSITIONS) {
+    let bucket = byGroup.get(entry.group);
+    if (!bucket) {
+      bucket = [];
+      byGroup.set(entry.group, bucket);
+      order.push(entry.group);
+    }
+    bucket.push(entry);
+  }
+  return order.map((group) => ({ group, items: byGroup.get(group)! }));
+})();
 
 /** Which animatable props a clip kind supports (mirrors core's clipSupportsProp). */
 function animatableProps(clip: Clip): KeyframeProp[] {
@@ -1427,6 +1452,18 @@ function TransitionPopover({
   const on = current > 0;
   // Seed the duration slider from the current transition, else a sensible 0.6s.
   const [dur, setDur] = useState(on ? Math.max(0.1, Math.min(2, current)) : 0.6);
+  // Live filter across all 55 transitions (label + engine type), case-insensitive.
+  const [query, setQuery] = useState("");
+  const filteredGallery = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return TRANSITION_GALLERY;
+    return TRANSITION_GALLERY.map((section) => ({
+      group: section.group,
+      items: section.items.filter(
+        (t) => t.label.toLowerCase().includes(q) || t.type.toLowerCase().includes(q),
+      ),
+    })).filter((section) => section.items.length > 0);
+  }, [query]);
 
   // The chip sits near the BOTTOM of the screen (the timeline), so a popover
   // anchored below it would overflow off-screen with its controls unclickable.
@@ -1447,7 +1484,9 @@ function TransitionPopover({
     const top =
       y + 6 + h > window.innerHeight - 8 ? Math.max(8, y - 22 - h) : y + 6;
     setPos({ left, top });
-  }, [x, y]);
+    // `query` is a dep so the panel re-anchors when the filtered list changes its
+    // height (the scrollable body caps growth, but an empty result shrinks it).
+  }, [x, y, isOut, query]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1499,31 +1538,57 @@ function TransitionPopover({
             Fade the final frame out to black over the chosen time.
           </p>
         ) : (
-          <div className="grid grid-cols-2 gap-1.5">
-            {TRANSITIONS.map(({ type, label }) => {
-              const active = on && clip.transitionType === type;
-              return (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => edit.onSetTransition(clip.id, type, dur)}
-                  aria-pressed={active}
-                  className={[
-                    "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition",
-                    active
-                      ? "border-amber bg-amber/10 text-amber"
-                      : "border-line bg-panel text-muted hover:border-amber/40 hover:text-text",
-                  ].join(" ")}
-                >
-                  <span
-                    aria-hidden
-                    className={["h-2.5 w-2.5 shrink-0 rounded-[2px]", active ? "bg-amber" : "bg-teal/50"].join(" ")}
-                  />
-                  <span className="truncate text-[11px]">{label}</span>
-                </button>
-              );
-            })}
-          </div>
+          <>
+            {/* Search across all 55 transitions (by name or type). */}
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search transitions…"
+              aria-label="Search transitions"
+              className="mb-2 w-full rounded-md border border-line bg-panel px-2 py-1.5 text-[11px] text-text placeholder:text-faint outline-none transition focus:border-amber/50"
+            />
+            {/* Grouped, scrollable gallery — capped height so all 55 fit on-screen. */}
+            <div className="max-h-[50vh] space-y-2 overflow-y-auto pr-0.5">
+              {filteredGallery.length === 0 ? (
+                <p className="px-1 py-2 text-[11px] text-faint">No transitions match “{query.trim()}”.</p>
+              ) : (
+                filteredGallery.map((section) => (
+                  <div key={section.group}>
+                    <p className="mb-1 px-0.5 text-[10px] font-medium uppercase tracking-wider text-faint">
+                      {section.group}
+                    </p>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {section.items.map(({ type, label }) => {
+                        const active = on && clip.transitionType === type;
+                        return (
+                          <button
+                            key={type}
+                            type="button"
+                            onClick={() => edit.onSetTransition(clip.id, type, dur)}
+                            aria-pressed={active}
+                            title={label}
+                            className={[
+                              "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition",
+                              active
+                                ? "border-amber bg-amber/10 text-amber"
+                                : "border-line bg-panel text-muted hover:border-amber/40 hover:text-text",
+                            ].join(" ")}
+                          >
+                            <span
+                              aria-hidden
+                              className={["h-2.5 w-2.5 shrink-0 rounded-[2px]", active ? "bg-amber" : "bg-teal/50"].join(" ")}
+                            />
+                            <span className="truncate text-[11px]">{label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
         )}
         <label className="mt-3 flex items-center gap-2">
           <span className="shrink-0 text-faint">Duration</span>
