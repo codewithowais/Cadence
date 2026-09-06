@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Clip, EditDoc } from "@cadence/core";
+import type { Clip, EditDoc, Track, TrackKind } from "@cadence/core";
 import { fmtTime } from "@/lib/format";
 import { computeWaveform } from "@/lib/waveform";
 import { findClip, isMainSequentialTrack, maxTimelineDuration, MIN_CLIP_SEC, type TrimEdge } from "@/lib/edit-ops";
@@ -12,6 +12,9 @@ export interface WaveformSource {
   file?: File;
   url?: string;
 }
+
+/** Track-flag toggles surfaced on the header (subset of the schema's booleans). */
+export type TrackFlag = "hidden" | "locked" | "muted" | "solo";
 
 /**
  * Direct-manipulation callbacks. Each returns a doc mutation that the editor
@@ -32,6 +35,19 @@ export interface TimelineEdit {
   markers: number[];
   onAddMarker: () => void;
   onRemoveMarker: (t: number) => void;
+  // ---- Track management (Wave A) ------------------------------------------
+  /** Add an empty visual/overlay or audio track. */
+  onAddTrack: (kind: TrackKind) => void;
+  /** Remove a track and its clips (the header guards non-empty / base removal). */
+  onRemoveTrack: (trackId: string) => void;
+  /** Rename a track (header label only). */
+  onRenameTrack: (trackId: string, name: string) => void;
+  /** Toggle one of a track's boolean flags (hidden/locked/muted/solo). */
+  onSetTrackFlag: (trackId: string, flag: TrackFlag, value: boolean) => void;
+  /** Move a track to a new z-index in the doc's `tracks` array (0 = bottom). */
+  onReorderTrack: (trackId: string, toIndex: number) => void;
+  /** Move a clip onto another track at a (snapped) start; magnetic lanes gap-close. */
+  onMoveClipToTrack: (clipId: string, toTrackId: string, toStartSec?: number) => void;
 }
 
 interface CutsStripProps {
@@ -55,12 +71,32 @@ const ZOOM_MIN = 1;
 const ZOOM_MAX = 24;
 /** Pixels within which a drag snaps to a neighbor edge / playhead / marker. */
 const SNAP_PX = 8;
+/** Width of the sticky track-header gutter (px). */
+const GUTTER_PX = 152;
 
 function clipLabel(clip: Clip): string {
   if (clip.kind === "text") return `“${clip.text.slice(0, 18)}”`;
   if (clip.kind === "audio") return "audio";
   if (clip.kind === "solid") return "solid";
   return fmtTime(clip.duration);
+}
+
+/** A readable header label for a track: its name, else a humanized id. */
+function trackLabel(track: Track): string {
+  if (track.name && track.name.trim()) return track.name;
+  return track.id
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** True when `clip` may live on a track of `kind` (media-family compatibility). */
+function clipFitsTrack(clip: Clip, kind: TrackKind): boolean {
+  return clip.kind === "audio" ? kind === "audio" : kind === "visual";
+}
+
+/** True when a clip participates in a main track's gapless back-to-back reflow. */
+function isSequentialOn(track: Track, clip: Clip): boolean {
+  return track.kind === "audio" ? clip.kind === "audio" : clip.kind === "video" || clip.kind === "image";
 }
 
 // ---- waveform (unchanged behavior) -----------------------------------------
@@ -118,6 +154,28 @@ function WaveformStrip({ peaks }: { peaks: number[] }) {
   );
 }
 
+// ---- tiny inline icons -----------------------------------------------------
+
+function Icon({ path, filled }: { path: string; filled?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d={path} />
+    </svg>
+  );
+}
+
+const ICONS = {
+  eye: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z M12 9a3 3 0 100 6 3 3 0 000-6z",
+  eyeOff: "M3 3l18 18 M10.6 10.6a3 3 0 004.2 4.2 M9.9 5.2A9.5 9.5 0 0112 5c6.5 0 10 7 10 7a17 17 0 01-3.3 4 M6.1 6.1A17 17 0 002 12s3.5 7 10 7a9.6 9.6 0 003.9-.8",
+  lock: "M6 11h12v9H6z M9 11V7a3 3 0 016 0v4",
+  unlock: "M6 11h12v9H6z M9 11V7a3 3 0 015.9-.8",
+  mute: "M4 9v6h4l5 4V5L8 9H4z M17 9l4 4 M21 9l-4 4",
+  sound: "M4 9v6h4l5 4V5L8 9H4z M16 8a5 5 0 010 8",
+  handle: "M9 6h.01 M15 6h.01 M9 12h.01 M15 12h.01 M9 18h.01 M15 18h.01",
+  close: "M6 6l12 12 M18 6L6 18",
+  plus: "M12 5v14 M5 12h14",
+};
+
 // ---- drag state ------------------------------------------------------------
 
 type DragKind = "trim-left" | "trim-right" | "move" | "seek" | null;
@@ -132,8 +190,19 @@ interface DragState {
   origStart: number;
   origEnd: number;
   moved: boolean;
-  /** For a reorder drag: current target sequential index (rendered as a marker). */
+  /** A within-main-track reorder resolves to a sequential index. */
   dropIndex: number | null;
+  /** A cross-track / free move resolves to a destination track + snapped start. */
+  dropTrackId: string | null;
+  dropStart: number | null;
+}
+
+interface TrackDragState {
+  trackId: string;
+  kind: TrackKind;
+  pointerId: number;
+  startY: number;
+  moved: boolean;
 }
 
 export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }: CutsStripProps) {
@@ -141,12 +210,27 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   const peaks = useWaveformPeaks(waveform);
   const { selectedClipId } = edit;
 
+  // Display order: TOP layer first (CapCut/Premiere mental model). The doc's
+  // `tracks` array is bottom→top (z-order); we reverse each kind group for the
+  // headers/lanes while keeping audio grouped beneath the visual layers.
+  const displayTracks = useMemo(() => {
+    const visual = doc.tracks.filter((t) => t.kind === "visual");
+    const audio = doc.tracks.filter((t) => t.kind === "audio");
+    return [...visual.reverse(), ...audio.reverse()];
+  }, [doc.tracks]);
+  const visualCount = useMemo(() => doc.tracks.filter((t) => t.kind === "visual").length, [doc.tracks]);
+  const anyAudioSolo = useMemo(() => doc.tracks.some((t) => t.kind === "audio" && t.solo), [doc.tracks]);
+
   // Zoom multiplier: at 1 the whole timeline fits the lane width (matching the
   // previous %-based look); >1 makes it wider and horizontally scrollable.
   const [zoom, setZoom] = useState(1);
   const [laneWidth, setLaneWidth] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
+  // Live geometry of each lane + header row, keyed by track id, for hit-testing
+  // cross-track clip drags and track-reorder drags by pointer Y.
+  const laneRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const headerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -210,8 +294,25 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   );
 
   const drag = useRef<DragState | null>(null);
+  const trackDrag = useRef<TrackDragState | null>(null);
   const rafRef = useRef<number | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ trackId: string; x: number } | null>(null);
+  // Track-reorder insertion line: the kind group + top-first slot the header will land in.
+  const [trackDrop, setTrackDrop] = useState<{ kind: TrackKind; index: number } | null>(null);
+  // Inline rename editor state.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState("");
+
+  const findTrackById = useCallback((id: string): Track | undefined => doc.tracks.find((t) => t.id === id), [doc.tracks]);
+
+  /** The lane (track) the pointer Y is currently over, or null. */
+  const trackAtY = useCallback((clientY: number): Track | null => {
+    for (const [id, el] of laneRefs.current) {
+      const r = el.getBoundingClientRect();
+      if (clientY >= r.top && clientY <= r.bottom) return findTrackById(id) ?? null;
+    }
+    return null;
+  }, [findTrackById]);
 
   // Follow the playhead: when time advances past the visible edge (playback or a
   // seek off-screen), scroll to keep it in view. It only reacts to time changes,
@@ -227,22 +328,24 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
 
   const selected = selectedClipId ? findClip(doc, selectedClipId) : null;
 
-  // ---- pointer handlers ----------------------------------------------------
+  // ---- clip pointer handlers -----------------------------------------------
 
-  const onClipPointerDown = (e: React.PointerEvent, clip: Clip, trackId: string, edge: DragKind) => {
-    // edge is "trim-left"/"trim-right" from a handle, otherwise a body press.
+  const onClipPointerDown = (e: React.PointerEvent, clip: Clip, track: Track, edge: DragKind) => {
+    if (track.locked) return; // locked lane: clips are click-through for seek only
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     drag.current = {
       kind: edge ?? "move",
       clipId: clip.id,
-      trackId,
+      trackId: track.id,
       pointerId: e.pointerId,
       startX: e.clientX,
       origStart: clip.start,
       origEnd: clip.start + clip.duration,
       moved: false,
       dropIndex: null,
+      dropTrackId: null,
+      dropStart: null,
     };
   };
 
@@ -252,6 +355,23 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
 
   const handlePointerMove = useCallback(
     (e: PointerEvent) => {
+      // ---- track-reorder drag (header handle) ------------------------------
+      const td = trackDrag.current;
+      if (td) {
+        if (!td.moved && Math.abs(e.clientY - td.startY) < 3) return;
+        td.moved = true;
+        const others = displayTracks.filter((t) => t.kind === td.kind && t.id !== td.trackId);
+        let index = 0;
+        for (const t of others) {
+          const el = headerRefs.current.get(t.id);
+          if (!el) continue;
+          const r = el.getBoundingClientRect();
+          if (e.clientY > r.top + r.height / 2) index++;
+        }
+        setTrackDrop({ kind: td.kind, index });
+        return;
+      }
+
       const d = drag.current;
       if (!d) return;
       const dx = e.clientX - d.startX;
@@ -265,36 +385,81 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
         if (!cur) return;
         const found = findClip(doc, cur.clipId);
         if (!found) return;
-        const { track } = found;
+        const { track, clip } = found;
         const deltaSec = pxToSec(e.clientX - cur.startX);
 
         if (cur.kind === "trim-right") {
           const edgeTime = snap(cur.origEnd + deltaSec, cur.clipId);
           edit.onTrim(cur.clipId, "right", edgeTime, `trim-${cur.clipId}`);
-        } else if (cur.kind === "trim-left") {
+          return;
+        }
+        if (cur.kind === "trim-left") {
           const edgeTime = snap(cur.origStart + deltaSec, cur.clipId);
           edit.onTrim(cur.clipId, "left", edgeTime, `trim-${cur.clipId}`);
-        } else if (cur.kind === "move" && isMainSequentialTrack(track)) {
+          return;
+        }
+
+        // ---- move: cross-track aware -------------------------------------
+        const overTrack = trackAtY(e.clientY);
+        const target = overTrack && clipFitsTrack(clip, overTrack.kind) && !overTrack.locked ? overTrack : track;
+
+        const withinSameMain =
+          target.id === cur.trackId && isMainSequentialTrack(target) && isSequentialOn(target, clip);
+
+        if (withinSameMain) {
           // Reorder: find the sequential drop index from the cursor x.
           const xInLane = e.clientX - laneRectX() + (scrollRef.current?.scrollLeft ?? 0);
-          const seq = track.clips.filter((c) => (track.kind === "audio" ? c.kind === "audio" : c.kind === "video" || c.kind === "image"));
+          const seq = target.clips.filter((c) => isSequentialOn(target, c));
           let idx = seq.length - 1;
           for (let i = 0; i < seq.length; i++) {
             const c = seq[i]!;
             const mid = secToPx(c.start + c.duration / 2);
             if (xInLane < mid) { idx = i; break; }
           }
+          cur.kind = "move";
           cur.dropIndex = idx;
-          const target = seq[idx];
-          setDropIndicator({ trackId: track.id, x: target ? secToPx(target.start) : contentWidth });
+          cur.dropTrackId = null;
+          cur.dropStart = null;
+          const targetClip = seq[idx];
+          setDropIndicator({ trackId: target.id, x: targetClip ? secToPx(targetClip.start) : contentWidth });
+        } else {
+          // Cross-track drop or free reposition on an overlay lane.
+          const newStart = Math.max(0, snap(cur.origStart + deltaSec, cur.clipId));
+          cur.dropIndex = null;
+          cur.dropTrackId = target.id;
+          cur.dropStart = newStart;
+          setDropIndicator({ trackId: target.id, x: secToPx(newStart) });
         }
       });
     },
-    [doc, pxToSec, secToPx, snap, edit, laneRectX, contentWidth],
+    [doc, pxToSec, secToPx, snap, edit, laneRectX, contentWidth, displayTracks, trackAtY],
   );
 
   const handlePointerUp = useCallback(
     (e: PointerEvent) => {
+      // ---- finish a track-reorder drag -------------------------------------
+      const td = trackDrag.current;
+      if (td) {
+        trackDrag.current = null;
+        const drop = trackDrop;
+        setTrackDrop(null);
+        if (td.moved && drop) {
+          const dragged = findTrackById(td.trackId);
+          if (dragged) {
+            const arr = doc.tracks.filter((t) => t.id !== td.trackId);
+            const kin = arr.filter((t) => t.kind === dragged.kind); // array (bottom-first) order
+            const bi = Math.max(0, Math.min(kin.length - drop.index, kin.length)); // top-first → bottom-first
+            let dest: number;
+            if (kin.length === 0) dest = arr.length;
+            else if (bi < kin.length) dest = arr.indexOf(kin[bi]!);
+            else dest = arr.indexOf(kin[kin.length - 1]!) + 1;
+            edit.onReorderTrack(td.trackId, dest);
+          }
+        }
+        void e;
+        return;
+      }
+
       const d = drag.current;
       drag.current = null;
       if (rafRef.current != null) {
@@ -312,10 +477,12 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
       }
       if (d.kind === "move" && d.dropIndex != null) {
         edit.onReorder(d.clipId, d.dropIndex);
+      } else if (d.kind === "move" && d.dropTrackId) {
+        edit.onMoveClipToTrack(d.clipId, d.dropTrackId, d.dropStart ?? undefined);
       }
       void e;
     },
-    [doc, edit, onSeek],
+    [doc, edit, onSeek, trackDrop, findTrackById],
   );
 
   useEffect(() => {
@@ -328,6 +495,12 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
       window.removeEventListener("pointercancel", handlePointerUp);
     };
   }, [handlePointerMove, handlePointerUp]);
+
+  const onHeaderHandleDown = (e: React.PointerEvent, track: Track) => {
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    trackDrag.current = { trackId: track.id, kind: track.kind, pointerId: e.pointerId, startY: e.clientY, moved: false };
+  };
 
   // Click an empty area of a lane / the ruler → seek there.
   const seekFromPointer = (e: React.PointerEvent) => {
@@ -351,6 +524,30 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
     return out;
   }, [pxPerSec, total]);
 
+  // ---- rename helpers ------------------------------------------------------
+  const beginRename = (track: Track) => {
+    setEditingId(track.id);
+    setDraftName(track.name ?? trackLabel(track));
+  };
+  const commitRename = () => {
+    if (editingId) {
+      const name = draftName.trim();
+      const track = findTrackById(editingId);
+      if (track && name && name !== (track.name ?? "")) edit.onRenameTrack(editingId, name);
+    }
+    setEditingId(null);
+  };
+
+  const requestRemove = (track: Track) => {
+    if (track.kind === "visual" && visualCount <= 1) {
+      if (typeof window !== "undefined") window.alert("This is the base video track — add another visual layer before removing it.");
+      return;
+    }
+    const hasClips = track.clips.length > 0;
+    if (hasClips && typeof window !== "undefined" && !window.confirm(`Remove “${trackLabel(track)}” and its ${track.clips.length} clip${track.clips.length === 1 ? "" : "s"}?`)) return;
+    edit.onRemoveTrack(track.id);
+  };
+
   return (
     <section aria-label="Timeline" className="border-t border-line-soft bg-panel/40 px-4 pb-4 pt-3">
       {/* Toolbar */}
@@ -358,7 +555,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
         <span className="uppercase tracking-wider text-faint">Timeline</span>
         <span className="text-line">·</span>
         <span className="text-muted">
-          {selected ? "click edges to trim · drag to reorder" : "click a cut to select · drag the ruler to scan"}
+          {selected ? "trim edges · drag to reorder or onto another track" : "click a cut to select · drag the ruler to scan"}
         </span>
 
         <span className="ml-auto flex items-center gap-1.5">
@@ -414,127 +611,203 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
         </span>
       </div>
 
-      {/* Scrollable timeline */}
-      <div ref={scrollRef} className="relative overflow-x-auto overflow-y-hidden">
-        <div ref={lanesRef} className="relative select-none" style={{ width: contentWidth || "100%" }}>
-          {/* Ruler */}
-          <div
-            className="relative mb-1 h-5 cursor-text border-b border-line-soft/60"
-            onPointerDown={seekFromPointer}
-            role="presentation"
-          >
-            {ticks.map((t) => (
-              <span key={t} className="absolute top-0 flex h-full flex-col items-start" style={{ left: secToPx(t) }}>
-                <span className="h-1.5 w-px bg-line" />
-                <span className="pl-1 text-[9px] tabular-nums text-faint">{fmtTime(t)}</span>
-              </span>
-            ))}
-            {/* Markers */}
-            {edit.markers.map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSeek(m);
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  edit.onRemoveMarker(m);
-                }}
-                title={`Marker ${fmtTime(m)} · click to jump · right-click to remove`}
-                aria-label={`Marker at ${fmtTime(m)}`}
-                className="absolute top-0 z-10 -ml-1.5 h-full w-3"
-                style={{ left: secToPx(m) }}
-              >
-                <svg width="12" height="12" viewBox="0 0 12 12" className="text-amber">
-                  <path d="M6 11 1 3h10z" fill="currentColor" />
-                </svg>
-              </button>
-            ))}
-          </div>
-
-          {/* Playhead spanning tracks + waveform */}
-          <div className="pointer-events-none absolute bottom-0 z-20 w-px bg-amber" style={{ left: playheadX, top: 24 }}>
-            <span className="absolute -top-1 -left-[3px] h-1.5 w-1.5 rounded-full bg-amber" />
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            {doc.tracks.map((track) => (
-              <div
-                key={track.id}
-                className="relative h-9 rounded-lg bg-line-soft/40"
-                onPointerDown={(e) => {
-                  if (e.target === e.currentTarget) seekFromPointer(e);
-                }}
-              >
-                {dropIndicator && dropIndicator.trackId === track.id && (
-                  <span className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-amber" style={{ left: dropIndicator.x }} />
-                )}
-                {track.clips.map((clip) => {
-                  const left = secToPx(clip.start);
-                  const width = Math.max(4, secToPx(clip.duration) - 2);
-                  const active = timeSec >= clip.start && timeSec < clip.start + clip.duration;
-                  const isSelected = clip.id === selectedClipId;
-                  const color = TRACK_COLORS[clip.kind] ?? TRACK_COLORS.audio;
-                  const canReorder = isMainSequentialTrack(track) && (track.kind === "audio" ? clip.kind === "audio" : clip.kind === "video" || clip.kind === "image");
-                  return (
-                    <div
-                      key={clip.id}
-                      role="button"
-                      tabIndex={0}
-                      aria-pressed={isSelected}
-                      aria-label={`${clip.kind} clip, ${fmtTime(clip.duration)}${isSelected ? ", selected" : ""}`}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          edit.onSelectClip(clip.id);
-                          onSeek(clip.start + 0.001);
-                        }
-                      }}
-                      onPointerDown={(e) => onClipPointerDown(e, clip, track.id, "move")}
-                      title={`${clip.kind} · ${fmtTime(clip.duration)}`}
-                      className={[
-                        "group absolute inset-y-0 overflow-hidden rounded-md border px-2 text-left text-[11px] leading-9 outline-none transition",
-                        color,
-                        canReorder ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
-                        isSelected
-                          ? "z-10 ring-2 ring-amber shadow-[0_0_0_1px_var(--color-amber)]"
-                          : active
-                            ? "ring-2 ring-amber/70"
-                            : "hover:brightness-125",
-                      ].join(" ")}
-                      style={{ left, width }}
-                    >
-                      <span className="pointer-events-none block truncate">{clipLabel(clip)}</span>
-                      {/* Trim handles — only meaningful once selected, but always grabbable. */}
-                      <span
-                        onPointerDown={(e) => onClipPointerDown(e, clip, track.id, "trim-left")}
-                        className={[
-                          "absolute inset-y-0 left-0 w-2 cursor-col-resize",
-                          isSelected ? "bg-amber/80" : "opacity-0 group-hover:bg-amber/40 group-hover:opacity-100",
-                        ].join(" ")}
-                        aria-hidden
-                      />
-                      <span
-                        onPointerDown={(e) => onClipPointerDown(e, clip, track.id, "trim-right")}
-                        className={[
-                          "absolute inset-y-0 right-0 w-2 cursor-col-resize",
-                          isSelected ? "bg-amber/80" : "opacity-0 group-hover:bg-amber/40 group-hover:opacity-100",
-                        ].join(" ")}
-                        aria-hidden
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-
-            {peaks && peaks.length > 0 && (
-              <div className="relative h-7 overflow-hidden rounded-lg bg-line-soft/25" aria-label="Audio waveform">
-                <WaveformStrip peaks={peaks} />
-              </div>
+      {/* Header gutter (sticky-left) + horizontally-scrolling lanes. They share
+          the editor's vertical scroll, so headers stay aligned to their lanes. */}
+      <div className="flex">
+        {/* Track-header gutter */}
+        <div className="relative shrink-0 pr-2" style={{ width: GUTTER_PX }}>
+          {/* spacer aligning the header list with the ruler (h-5 + mb-1) */}
+          <div className="mb-1 h-5" aria-hidden />
+          <div className="relative flex flex-col gap-1.5">
+            {trackDrop && (
+              <TrackInsertLine displayTracks={displayTracks} drop={trackDrop} />
             )}
+            {displayTracks.map((track) => (
+              <TrackHeader
+                key={track.id}
+                track={track}
+                editing={editingId === track.id}
+                draftName={draftName}
+                dimmed={track.hidden || (track.kind === "audio" && anyAudioSolo && !track.solo)}
+                registerRef={(el) => {
+                  if (el) headerRefs.current.set(track.id, el);
+                  else headerRefs.current.delete(track.id);
+                }}
+                onHandleDown={(e) => onHeaderHandleDown(e, track)}
+                onBeginRename={() => beginRename(track)}
+                onDraftChange={setDraftName}
+                onCommitRename={commitRename}
+                onCancelRename={() => setEditingId(null)}
+                onToggleFlag={(flag) => edit.onSetTrackFlag(track.id, flag, !track[flag])}
+                onRemove={() => requestRemove(track)}
+                canRemove={!(track.kind === "visual" && visualCount <= 1)}
+              />
+            ))}
+          </div>
+          {/* Add-track controls */}
+          <div className="mt-2 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => edit.onAddTrack("visual")}
+              className="flex items-center gap-1 rounded-md border border-line bg-elevated px-2 py-1 text-[10px] text-muted transition hover:border-teal/40 hover:text-text"
+              title="Add a video / overlay layer"
+              aria-label="Add a video or overlay track"
+            >
+              <Icon path={ICONS.plus} /> Video
+            </button>
+            <button
+              type="button"
+              onClick={() => edit.onAddTrack("audio")}
+              className="flex items-center gap-1 rounded-md border border-line bg-elevated px-2 py-1 text-[10px] text-muted transition hover:border-teal/40 hover:text-text"
+              title="Add an audio track"
+              aria-label="Add an audio track"
+            >
+              <Icon path={ICONS.plus} /> Audio
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable lanes */}
+        <div ref={scrollRef} className="relative min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
+          <div ref={lanesRef} className="relative select-none" style={{ width: contentWidth || "100%" }}>
+            {/* Ruler */}
+            <div
+              className="relative mb-1 h-5 cursor-text border-b border-line-soft/60"
+              onPointerDown={seekFromPointer}
+              role="presentation"
+            >
+              {ticks.map((t) => (
+                <span key={t} className="absolute top-0 flex h-full flex-col items-start" style={{ left: secToPx(t) }}>
+                  <span className="h-1.5 w-px bg-line" />
+                  <span className="pl-1 text-[9px] tabular-nums text-faint">{fmtTime(t)}</span>
+                </span>
+              ))}
+              {/* Markers */}
+              {edit.markers.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSeek(m);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    edit.onRemoveMarker(m);
+                  }}
+                  title={`Marker ${fmtTime(m)} · click to jump · right-click to remove`}
+                  aria-label={`Marker at ${fmtTime(m)}`}
+                  className="absolute top-0 z-10 -ml-1.5 h-full w-3"
+                  style={{ left: secToPx(m) }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" className="text-amber">
+                    <path d="M6 11 1 3h10z" fill="currentColor" />
+                  </svg>
+                </button>
+              ))}
+            </div>
+
+            {/* Playhead spanning tracks + waveform */}
+            <div className="pointer-events-none absolute bottom-0 z-20 w-px bg-amber" style={{ left: playheadX, top: 24 }}>
+              <span className="absolute -top-1 -left-[3px] h-1.5 w-1.5 rounded-full bg-amber" />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              {displayTracks.map((track) => {
+                const laneDimmed = track.hidden || (track.kind === "audio" && anyAudioSolo && !track.solo);
+                const isDropTarget = dropIndicator?.trackId === track.id;
+                return (
+                  <div
+                    key={track.id}
+                    ref={(el) => {
+                      if (el) laneRefs.current.set(track.id, el);
+                      else laneRefs.current.delete(track.id);
+                    }}
+                    className={[
+                      "relative h-9 rounded-lg transition",
+                      track.locked ? "bg-line-soft/20" : "bg-line-soft/40",
+                      laneDimmed ? "opacity-40" : "",
+                      isDropTarget ? "ring-1 ring-amber/60" : "",
+                    ].join(" ")}
+                    style={track.locked ? { backgroundImage: "repeating-linear-gradient(45deg, transparent, transparent 6px, var(--color-line) 6px, var(--color-line) 7px)" } : undefined}
+                    onPointerDown={(e) => {
+                      if (e.target === e.currentTarget) seekFromPointer(e);
+                    }}
+                  >
+                    {isDropTarget && (
+                      <span className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-amber" style={{ left: dropIndicator!.x }} />
+                    )}
+                    {track.clips.map((clip) => {
+                      const left = secToPx(clip.start);
+                      const width = Math.max(4, secToPx(clip.duration) - 2);
+                      const active = timeSec >= clip.start && timeSec < clip.start + clip.duration;
+                      const isSelected = clip.id === selectedClipId;
+                      const color = TRACK_COLORS[clip.kind] ?? TRACK_COLORS.audio;
+                      const draggable = !track.locked;
+                      return (
+                        <div
+                          key={clip.id}
+                          role="button"
+                          tabIndex={track.locked ? -1 : 0}
+                          aria-pressed={isSelected}
+                          aria-label={`${clip.kind} clip, ${fmtTime(clip.duration)}${isSelected ? ", selected" : ""}${track.locked ? ", locked" : ""}`}
+                          onKeyDown={(e) => {
+                            if (track.locked) return;
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              edit.onSelectClip(clip.id);
+                              onSeek(clip.start + 0.001);
+                            }
+                          }}
+                          onPointerDown={(e) => onClipPointerDown(e, clip, track, "move")}
+                          title={`${clip.kind} · ${fmtTime(clip.duration)}${track.locked ? " · locked" : ""}`}
+                          className={[
+                            "group absolute inset-y-0 overflow-hidden rounded-md border px-2 text-left text-[11px] leading-9 outline-none transition",
+                            color,
+                            track.locked ? "pointer-events-none cursor-default" : draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
+                            isSelected
+                              ? "z-10 ring-2 ring-amber shadow-[0_0_0_1px_var(--color-amber)]"
+                              : active
+                                ? "ring-2 ring-amber/70"
+                                : "hover:brightness-125",
+                          ].join(" ")}
+                          style={{ left, width }}
+                        >
+                          <span className="pointer-events-none block truncate">{clipLabel(clip)}</span>
+                          {/* Trim handles — only meaningful once selected, but always grabbable. */}
+                          {!track.locked && (
+                            <>
+                              <span
+                                onPointerDown={(e) => onClipPointerDown(e, clip, track, "trim-left")}
+                                className={[
+                                  "absolute inset-y-0 left-0 w-2 cursor-col-resize",
+                                  isSelected ? "bg-amber/80" : "opacity-0 group-hover:bg-amber/40 group-hover:opacity-100",
+                                ].join(" ")}
+                                aria-hidden
+                              />
+                              <span
+                                onPointerDown={(e) => onClipPointerDown(e, clip, track, "trim-right")}
+                                className={[
+                                  "absolute inset-y-0 right-0 w-2 cursor-col-resize",
+                                  isSelected ? "bg-amber/80" : "opacity-0 group-hover:bg-amber/40 group-hover:opacity-100",
+                                ].join(" ")}
+                                aria-hidden
+                              />
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+
+              {peaks && peaks.length > 0 && (
+                <div className="relative h-7 overflow-hidden rounded-lg bg-line-soft/25" aria-label="Audio waveform">
+                  <WaveformStrip peaks={peaks} />
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -543,6 +816,152 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
       {selected && <ClipInspector doc={doc} found={selected} timeSec={timeSec} edit={edit} />}
     </section>
   );
+}
+
+// ---- track header ----------------------------------------------------------
+
+function TrackHeader({
+  track,
+  editing,
+  draftName,
+  dimmed,
+  registerRef,
+  onHandleDown,
+  onBeginRename,
+  onDraftChange,
+  onCommitRename,
+  onCancelRename,
+  onToggleFlag,
+  onRemove,
+  canRemove,
+}: {
+  track: Track;
+  editing: boolean;
+  draftName: string;
+  dimmed: boolean;
+  registerRef: (el: HTMLDivElement | null) => void;
+  onHandleDown: (e: React.PointerEvent) => void;
+  onBeginRename: () => void;
+  onDraftChange: (v: string) => void;
+  onCommitRename: () => void;
+  onCancelRename: () => void;
+  onToggleFlag: (flag: TrackFlag) => void;
+  onRemove: () => void;
+  canRemove: boolean;
+}) {
+  const isAudio = track.kind === "audio";
+  return (
+    <div
+      ref={registerRef}
+      className={["group flex h-9 items-center gap-1 rounded-lg border border-line bg-elevated/70 pl-1 pr-1 transition", dimmed ? "opacity-60" : ""].join(" ")}
+    >
+      {/* reorder drag-handle */}
+      <button
+        type="button"
+        onPointerDown={onHandleDown}
+        aria-label={`Drag to reorder the ${trackLabel(track)} track`}
+        title="Drag to change layer order"
+        className="grid h-6 w-3 shrink-0 cursor-grab place-items-center text-faint transition hover:text-text active:cursor-grabbing"
+      >
+        <Icon path={ICONS.handle} filled />
+      </button>
+
+      <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+        {/* name + kind badge */}
+        <div className="flex min-w-0 items-center gap-1">
+          <span className={["shrink-0 rounded px-1 py-px text-[8px] uppercase leading-none", isAudio ? "bg-panel text-faint" : "bg-teal/20 text-teal"].join(" ")}>
+            {isAudio ? "aud" : "vis"}
+          </span>
+          {editing ? (
+            <input
+              type="text"
+              value={draftName}
+              autoFocus
+              onChange={(e) => onDraftChange(e.target.value)}
+              onBlur={onCommitRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); onCommitRename(); }
+                else if (e.key === "Escape") { e.preventDefault(); onCancelRename(); }
+              }}
+              aria-label="Track name"
+              className="min-w-0 flex-1 rounded border border-amber/50 bg-panel px-1 py-px text-[11px] text-text outline-none"
+            />
+          ) : (
+            <span
+              onDoubleClick={onBeginRename}
+              title="Double-click to rename"
+              className="min-w-0 flex-1 cursor-text truncate text-[11px] text-text"
+            >
+              {trackLabel(track)}
+            </span>
+          )}
+        </div>
+
+        {/* flag toggles */}
+        <div className="flex items-center gap-0.5">
+          {isAudio ? (
+            <>
+              <FlagButton active={track.muted} onClick={() => onToggleFlag("muted")} label={`${track.muted ? "Unmute" : "Mute"} ${trackLabel(track)}`} icon={track.muted ? ICONS.mute : ICONS.sound} />
+              <FlagButton active={track.solo} onClick={() => onToggleFlag("solo")} label={`${track.solo ? "Unsolo" : "Solo"} ${trackLabel(track)}`} letter="S" />
+            </>
+          ) : (
+            <FlagButton active={track.hidden} onClick={() => onToggleFlag("hidden")} label={`${track.hidden ? "Show" : "Hide"} ${trackLabel(track)}`} icon={track.hidden ? ICONS.eyeOff : ICONS.eye} />
+          )}
+          <FlagButton active={track.locked} onClick={() => onToggleFlag("locked")} label={`${track.locked ? "Unlock" : "Lock"} ${trackLabel(track)}`} icon={track.locked ? ICONS.lock : ICONS.unlock} />
+          <button
+            type="button"
+            onClick={onRemove}
+            disabled={!canRemove}
+            aria-label={`Remove ${trackLabel(track)} track`}
+            title={canRemove ? "Remove track" : "The base video track can't be removed"}
+            className="ml-auto grid h-4 w-4 place-items-center rounded text-faint transition hover:bg-red-500/15 hover:text-red-300 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-faint"
+          >
+            <Icon path={ICONS.close} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FlagButton({
+  active,
+  onClick,
+  label,
+  icon,
+  letter,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  icon?: string;
+  letter?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      aria-label={label}
+      title={label}
+      className={[
+        "grid h-4 w-4 place-items-center rounded text-[9px] font-semibold leading-none transition",
+        active ? "bg-amber/20 text-amber" : "text-faint hover:text-text",
+      ].join(" ")}
+    >
+      {letter ? letter : icon ? <Icon path={icon} /> : null}
+    </button>
+  );
+}
+
+/** The amber insertion line shown while dragging a header to reorder layers. */
+function TrackInsertLine({ displayTracks, drop }: { displayTracks: Track[]; drop: { kind: TrackKind; index: number } }) {
+  // Count display rows (36px h-9 + 6px gap-1.5 = 42px pitch) above the slot,
+  // including the visual group's height when inserting into the audio group.
+  const group = displayTracks.filter((t) => t.kind === drop.kind);
+  const rowsAbove = (drop.kind === "audio" ? displayTracks.filter((t) => t.kind === "visual").length : 0) + Math.min(drop.index, group.length);
+  const top = rowsAbove * 42 - 3;
+  return <span className="pointer-events-none absolute left-0 right-0 z-10 h-0.5 rounded bg-amber" style={{ top }} aria-hidden />;
 }
 
 // ---- inspector -------------------------------------------------------------
@@ -575,7 +994,7 @@ function ClipInspector({
       <span className="flex items-center gap-1.5">
         <span className="rounded bg-panel px-1.5 py-0.5 text-[10px] uppercase text-faint">{clip.kind}</span>
         <span className="text-muted">on</span>
-        <span className="rounded bg-panel px-1.5 py-0.5 text-[10px] text-faint">{track.id}</span>
+        <span className="rounded bg-panel px-1.5 py-0.5 text-[10px] text-faint">{trackLabel(track)}</span>
       </span>
 
       {/* Duration via right-edge trim, shown read-only + steppers */}

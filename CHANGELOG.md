@@ -4,6 +4,12 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.2 — Cycle F wave A (web): manageable multi-track timeline
+- **Track-header gutter** on the timeline: per-track **rename** (double-click), kind badge, and toggles for **hide/show**, **lock**, **mute**, **solo**, a **reorder drag-handle** (z-order), and **remove** (guarded on the base/non-empty track). A **+ Video / + Audio** control adds tracks.
+- **Drag clips between tracks** — cross-lane drag retargets via `moveClipToTrack` (magnetic main lane gap-closes; overlay/free lanes keep the snapped start); locked tracks refuse edits; drop indicators show the destination.
+- State reflected visually: hidden/soloed-out lanes dim, locked lanes hatch + click-through, active toggles amber. All routed through the undoable commit path (Undo/redo + live preview). Directly closes the "no multi-track management / hide-show" gap.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **8/8** (incl. a tour-assertion fix now that the DB is live).
+
 ### S4.1 — Cycle F wave A (engine): true multi-track layers
 - **Track metadata** (additive to `Track`, backward-compatible): `name?`, `hidden`, `locked`, `muted`, `solo`. Array order stays the single source of z-order.
 - **Layers honored across renderers:** `activeClipsAt` skips `hidden` visual tracks (canvas + Stage + preview get it free); **ffmpeg export reworked to composite visual tracks by z-order** — base = lowest visual track, upper layers overlaid in order through the existing overlay/blend/chroma/mask path. The single-visual-track fast path is byte-identical (all prior checks unchanged). Audio honors `muted`/`solo`.

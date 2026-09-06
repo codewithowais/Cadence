@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { docDurationSec, parseEditDoc, type EditDoc, type MediaAsset } from "@cadence/core";
+import { docDurationSec, parseEditDoc, type EditDoc, type MediaAsset, type TrackKind } from "@cadence/core";
+import { addTrack, removeTrack, setTrack, reorderTrack, moveClipToTrack } from "@cadence/director";
+import type { TrackFlag } from "./CutsStrip";
 import type { Transcript } from "@cadence/understanding";
 import { RoomsRail, type RoomKey } from "./RoomsRail";
 import { RoomPanel } from "./RoomPanel";
@@ -812,6 +814,62 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     commit(setClipVolume(doc, clipId, volume), { coalesce: coalesceKey });
   }
 
+  // ---- Track management (all pure @cadence/director fns → commit → undo) -----
+
+  /** Add an empty visual/overlay or audio track (undoable). Visual layers are
+   *  kept grouped above the base footage and below the audio tracks. */
+  function addTrackOfKind(kind: TrackKind) {
+    setPlaying(false);
+    if (kind === "visual") {
+      // Insert just above the topmost visual track so visuals stay contiguous.
+      let lastVisual: string | undefined;
+      for (const t of doc.tracks) if (t.kind === "visual") lastVisual = t.id;
+      commit(addTrack(doc, { kind, afterTrackId: lastVisual }));
+    } else {
+      commit(addTrack(doc, { kind }));
+    }
+  }
+
+  /** Remove a track and its clips (undoable); the header guards base/non-empty. */
+  function removeTrackById(trackId: string) {
+    setPlaying(false);
+    try {
+      commit(removeTrack(doc, trackId));
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't remove that track.", "error");
+    }
+  }
+
+  /** Rename a track (header label only) — undoable. */
+  function renameTrack(trackId: string, name: string) {
+    commit(setTrack(doc, trackId, { name }));
+  }
+
+  /** Toggle one of a track's boolean flags (hidden/locked/muted/solo) — undoable. */
+  function setTrackFlag(trackId: string, flag: TrackFlag, value: boolean) {
+    commit(setTrack(doc, trackId, { [flag]: value }));
+  }
+
+  /** Move a track to a new z-index in the doc's `tracks` array — undoable. */
+  function reorderTrackTo(trackId: string, toIndex: number) {
+    setPlaying(false);
+    try {
+      commit(reorderTrack(doc, trackId, toIndex));
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't reorder that track.", "error");
+    }
+  }
+
+  /** Move a clip onto another track at a (snapped) start — undoable. */
+  function moveClipToTrackAt(clipId: string, toTrackId: string, toStartSec?: number) {
+    setPlaying(false);
+    try {
+      commit(moveClipToTrack(doc, clipId, toTrackId, toStartSec));
+    } catch (err) {
+      say("director", err instanceof Error ? err.message : "Couldn't move that clip.", "error");
+    }
+  }
+
   /** Add/remove editor-only markers (jump targets) at the playhead. */
   function addMarker() {
     const t = Math.round(timeSec * 1000) / 1000;
@@ -1008,6 +1066,12 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               markers,
               onAddMarker: addMarker,
               onRemoveMarker: removeMarker,
+              onAddTrack: addTrackOfKind,
+              onRemoveTrack: removeTrackById,
+              onRenameTrack: renameTrack,
+              onSetTrackFlag: setTrackFlag,
+              onReorderTrack: reorderTrackTo,
+              onMoveClipToTrack: moveClipToTrackAt,
             }}
           />
         </div>

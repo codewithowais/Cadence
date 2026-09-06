@@ -43,7 +43,7 @@ test("page tour: landing → login → dashboard → settings → editor", async
   await page.waitForURL("**/dashboard", { timeout: 30_000 });
 
   // ---- /dashboard ----
-  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
   await page.waitForLoadState("networkidle");
   await shot(page, "04-dashboard");
 
