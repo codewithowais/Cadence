@@ -23,7 +23,7 @@ const config: NextConfig = {
   // list; we pin it explicitly so the intent survives config changes. `@cadence/db`
   // itself ships TS source and stays in transpilePackages (a different package —
   // no Turbopack both-lists conflict).
-  serverExternalPackages: ["@napi-rs/canvas", "pg"],
+  serverExternalPackages: ["@napi-rs/canvas", "pg", "ffmpeg-static"],
 };
 
 export default config;

@@ -4,6 +4,38 @@
  * gracefully (HTTP 501 + install hint) when ffmpeg isn't present.
  */
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+
+/**
+ * Resolve the bundled `ffmpeg-static` binary path, or null if unavailable
+ * (package not installed / unsupported platform). Lazy + guarded so the module
+ * stays safe to import in environments without it. Cached after first lookup.
+ */
+let staticBinCache: string | null | undefined;
+function ffmpegStaticBin(): string | null {
+  if (staticBinCache !== undefined) return staticBinCache;
+  try {
+    const require = createRequire(import.meta.url);
+    const p = require("ffmpeg-static") as unknown;
+    staticBinCache = typeof p === "string" && p.length > 0 ? p : null;
+  } catch {
+    staticBinCache = null;
+  }
+  return staticBinCache;
+}
+
+/**
+ * The ffmpeg binary to use, in priority order:
+ *   1. `FFMPEG_PATH` env (operator override / Docker),
+ *   2. the bundled `ffmpeg-static` binary (free, no system install needed),
+ *   3. `ffmpeg` on PATH.
+ * This makes export work out of the box locally without Docker or a system install.
+ */
+export function resolveFfmpegBin(): string {
+  const env = process.env.FFMPEG_PATH?.trim();
+  if (env) return env;
+  return ffmpegStaticBin() ?? "ffmpeg";
+}
 
 export interface FfmpegInfo {
   available: boolean;
@@ -26,7 +58,7 @@ export const FFMPEG_MISSING_MESSAGE =
  * Probe `ffmpeg -version`. Resolves (never rejects) with availability + version.
  * `bin` defaults to $FFMPEG_PATH or "ffmpeg".
  */
-export function detectFfmpeg(bin = process.env.FFMPEG_PATH || "ffmpeg"): Promise<FfmpegInfo> {
+export function detectFfmpeg(bin = resolveFfmpegBin()): Promise<FfmpegInfo> {
   return new Promise((resolve) => {
     let out = "";
     let settled = false;

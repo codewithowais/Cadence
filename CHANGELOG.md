@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.21 — fix: real .mp4 export works locally (bundled ffmpeg)
+- Added **`ffmpeg-static`** (free, prebuilt binary) and a shared `resolveFfmpegBin()` (FFMPEG_PATH → bundled ffmpeg-static → system `ffmpeg`) used by both `detectFfmpeg` and `runExport`. **Export now works out of the box** — no Docker or system install needed (the host has no system ffmpeg, which is why export was failing). Marked `ffmpeg-static` a `serverExternalPackage`.
+- *verified:* real end-to-end encode via the bundled ffmpeg 6.1.1 (rendered a proof `.mp4`); typecheck (root+web) + verify + `next build` clean.
+
 ### S4.20 — light theme (modern, soft off-white)
 - Re-themed the whole app dark → **light**: soft warm off-white base (`#f6f3ee`, not pure white), near-white cards, warm hairline borders + soft shadows for elevation, near-black warm text, and the coral accent **deepened to `#bc4029`** so it passes AA both as text and as a button surface (new `--color-onaccent` foreground). Teal secondary deepened for light.
 - Retuned all dark-first surfaces: radial glow, selection, focus ring, scrollbar, range slider, shadows, Stage letterbox, code drawer. Left video *content* colors (chroma, text-preset/demo backgrounds, waveform) dark by design — they render into the export, not the UI.

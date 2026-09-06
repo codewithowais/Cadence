@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { configFromEnv, selectProvider, type EnhanceResult } from "@cadence/enhance";
 import type { EditDoc } from "@cadence/core";
 import { buildExportPlan, type ResolveMediaPath } from "./plan";
-import { detectFfmpeg, FFMPEG_MISSING_MESSAGE, type FfmpegInfo } from "./detect";
+import { detectFfmpeg, resolveFfmpegBin, FFMPEG_MISSING_MESSAGE, type FfmpegInfo } from "./detect";
 
 export interface RunExportOptions {
   resolveMediaPath: ResolveMediaPath;
@@ -49,7 +49,7 @@ export class FfmpegNotFoundError extends Error {
  * with a clear install hint if ffmpeg is missing.
  */
 export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<ExportOutcome> {
-  const bin = opts.bin || process.env.FFMPEG_PATH || "ffmpeg";
+  const bin = opts.bin || resolveFfmpegBin();
 
   const ffmpeg = opts.skipDetect ? { available: true, bin } : await detectFfmpeg(bin);
   if (!ffmpeg.available) throw new FfmpegNotFoundError();
