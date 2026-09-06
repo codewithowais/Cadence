@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S3.9 — Cycle E wave 4 (engine): VFX + color + audio depth
+- **Chroma key** (green screen, `chromakey`+`despill`), **blend modes** (screen/multiply/overlay/add/soft-light), **blur/pixelate regions** (hide a face/plate), **masks** (rect/ellipse + feather/invert), **color curves + HSL hue-shift**, and **audio depth** (per-clip fade in/out, pan, doc-level LUFS `loudnorm`). Each = schema (optional/defaulted) → Director tool + routing → canvas + ffmpeg → verify. Compositing tools target the overlay/b-roll track.
+- *verified:* typecheck (root+web) + test:unit 44/44 + verify **49/49** + evals 5/5 + `next build` clean. (Hardened `appendVideos` to push minimal input clips so future schema fields never break it.)
+
 ### S3.8 — Cycle E wave 3: craft foundations (keyframes, delivery, subtitles)
 - **Keyframe engine:** animate `x/y/scale/rotation/opacity` (+ `volume`) via `{prop,t,value,easing}` + a pure `valueAt()` (linear/ease-in/out/in-out); canvas + Stage full support, ffmpeg for scale (`zoompan`) + volume (`volume:eval=frame`) (x/y/rotation/opacity keyframes are preview-only on export, documented). Tools `animate`/`add_keyframe`.
 - **Reverse** clips (`reverse`/`areverse`), **freeze-frame** (`trim`+`tpad`), **markers** (`EditDoc.markers`, add via UI/tool).

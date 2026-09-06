@@ -12,12 +12,18 @@ import type { TransitionType } from "@cadence/core";
 import {
   addCalloutTool,
   addMarkerTool,
+  addMaskTool,
   adjustColorTool,
+  adjustCurvesTool,
+  adjustHslTool,
   animateTool,
+  audioFadeTool,
   autoMixTool,
+  blurRegionTool,
   brollTool,
   buildDemoTool,
   captionsTool,
+  chromaKeyTool,
   createHighlightTool,
   emphasisTool,
   fadesTool,
@@ -26,10 +32,14 @@ import {
   kineticTitleTool,
   lookTool,
   musicTool,
+  normalizeLoudnessTool,
+  pixelateRegionTool,
   platformTool,
   qualityTool,
   reframeTool,
   reverseClipTool,
+  setBlendTool,
+  setPanTool,
   slideshowTool,
   speedTool,
   styleCaptionsTool,
@@ -42,7 +52,7 @@ import {
 import { currentGrade } from "./edits";
 import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle } from "./edits";
 import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
-import type { KeyframeEasing, KeyframeProp } from "@cadence/core";
+import type { BlendMode, CurvePoint, KeyframeEasing, KeyframeProp } from "@cadence/core";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -384,6 +394,124 @@ function parseQuality(req: string): { preset: QualityKey; aiUpscale: boolean } |
   return null;
 }
 
+/**
+ * Parse a chroma-key request ("green screen", "remove the green/blue background",
+ * "key out the green"). Picks blue when the request names blue, else green.
+ */
+function parseChroma(req: string): { color: string } | null {
+  const isChroma =
+    /green.?screen|blue.?screen|chroma.?key|\bkey(ing)? out\b|key out the|remove (the )?(green|blue)\s*(background|screen|bg)|drop (the )?(green|blue)\s*(background|screen)/.test(
+      req,
+    );
+  if (!isChroma) return null;
+  const color = /\bblue\b/.test(req) ? "#0047ff" : "#00d000";
+  return { color };
+}
+
+/** Parse a blend-mode request ("screen blend", "multiply the layer", "blend mode overlay"). */
+function parseBlend(req: string): BlendMode | null {
+  const wantsBlend =
+    /\bblend\b/.test(req) || /(screen|multiply|overlay|soft.?light|additive)\s+(mode|layer)/.test(req);
+  if (!wantsBlend) return null;
+  if (/soft.?light/.test(req)) return "soft-light";
+  if (/screen/.test(req)) return "screen";
+  if (/multiply/.test(req)) return "multiply";
+  if (/overlay/.test(req)) return "overlay";
+  if (/\bnormal\b/.test(req)) return "normal";
+  if (/\badd(itive)?\b/.test(req)) return "add";
+  return "screen"; // a sensible default for a bare "blend it"
+}
+
+/**
+ * Parse a region blur/pixelate request ("blur the face", "pixelate the plate",
+ * "hide the license plate", "censor the logo") → a centered default region.
+ */
+function parseRegionFx(
+  req: string,
+  doc: EditDoc,
+): { type: "blur" | "pixelate"; x: number; y: number; w: number; h: number } | null {
+  const isPixel = /pixel(ate|ize|ated|ise)|mosaic|censor/.test(req);
+  const isBlur = /\bblur\b/.test(req);
+  const isHide = /hide (the )?(face|plate|licen[cs]e|number ?plate|logo|sign)/.test(req);
+  if (!isPixel && !isBlur && !isHide) return null;
+  const W = doc.meta.width;
+  const H = doc.meta.height;
+  return {
+    type: isPixel ? "pixelate" : "blur",
+    x: round(W * 0.35),
+    y: round(H * 0.28),
+    w: round(W * 0.3),
+    h: round(H * 0.34),
+  };
+}
+
+/** Parse a mask request ("mask to a circle", "reveal only the center", "invert mask"). */
+function parseMask(
+  req: string,
+  doc: EditDoc,
+): { shape: "rect" | "ellipse"; x: number; y: number; w: number; h: number; invert: boolean } | null {
+  if (!/\bmask\b|reveal only|spotlight (on|the)/.test(req)) return null;
+  const shape: "rect" | "ellipse" = /circle|ellipse|oval|round|spotlight/.test(req) ? "ellipse" : "rect";
+  const invert = /invert|outside|everything (else|except)|all but/.test(req);
+  const W = doc.meta.width;
+  const H = doc.meta.height;
+  return { shape, x: round(W * 0.25), y: round(H * 0.2), w: round(W * 0.5), h: round(H * 0.6), invert };
+}
+
+/**
+ * Parse a curves request ("add an s-curve", "lift the mids", "crush the blacks").
+ * Returns default master control points for the requested shape.
+ */
+function parseCurves(req: string): { master?: CurvePoint[] } | null {
+  if (!/\bcurves?\b|s-?curve|lift (the )?mids|crush (the )?blacks|contrast curve/.test(req)) return null;
+  if (/lift (the )?mids|raise (the )?mids|brighten (the )?mids/.test(req)) {
+    return { master: [[0, 0], [0.5, 0.62], [1, 1]] };
+  }
+  if (/crush (the )?blacks|deepen (the )?blacks|lower (the )?blacks/.test(req)) {
+    return { master: [[0, 0], [0.25, 0.12], [1, 1]] };
+  }
+  // Default: a gentle S-curve (more contrast).
+  return { master: [[0, 0], [0.25, 0.17], [0.75, 0.83], [1, 1]] };
+}
+
+/** Parse an HSL request ("shift the hue by 40", "hue shift", "rotate the hue"). */
+function parseHsl(req: string): { hueShift: number } | null {
+  if (!/hue.?shift|shift (the )?hue|rotate (the )?hue|hue rotation|shift (the )?colou?rs?/.test(req)) return null;
+  const m = req.match(/(-?\d+(?:\.\d+)?)\s*(?:deg|degrees|°)?/);
+  const deg = m ? parseFloat(m[1]!) : 30;
+  return { hueShift: deg };
+}
+
+/** Parse an audio-fade request ("fade in the music", "fade the audio out"). */
+function parseAudioFade(req: string): { fadeInSec?: number; fadeOutSec?: number } | null {
+  if (!/(music|audio|sound|song|voice.?over)/.test(req)) return null;
+  if (!/\bfade/.test(req)) return null;
+  const fin = /fade\s*(in|up)/.test(req);
+  const fout = /fade\s*(out|down)/.test(req);
+  const out: { fadeInSec?: number; fadeOutSec?: number } = {};
+  if (fin) out.fadeInSec = 1.5;
+  if (fout) out.fadeOutSec = 1.5;
+  if (!fin && !fout) {
+    out.fadeInSec = 1.5;
+    out.fadeOutSec = 1.5;
+  }
+  return out;
+}
+
+/** Parse a pan request ("pan left", "pan the audio right", "hard left"). */
+function parsePan(req: string): number | null {
+  if (!/\bpan\b/.test(req)) return null;
+  if (/left/.test(req)) return -1;
+  if (/right/.test(req)) return 1;
+  if (/cent(er|re)/.test(req)) return 0;
+  return null;
+}
+
+/** Parse a loudness-normalize request ("normalize loudness", "match loudness", "LUFS"). */
+function parseLoudness(req: string): boolean {
+  return /loudnorm|loudness|normali[sz]e (the )?(audio|loudness|sound|mix)|\blufs\b/.test(req);
+}
+
 export class StubDirector {
   readonly mode = "stub" as const;
 
@@ -632,6 +760,63 @@ export class StubDirector {
       });
     }
 
+    // Chroma key (green/blue screen) — composites the overlay over the base.
+    const chroma = parseChroma(req);
+    if (chroma) {
+      steps.push({
+        run: (p) => chromaKeyTool.execute(chroma, { project: p }),
+        call: { name: chromaKeyTool.name, input: chroma },
+      });
+    }
+
+    // Blend mode ("screen blend", "multiply the layer").
+    const blend = parseBlend(req);
+    if (blend) {
+      const input = { mode: blend };
+      steps.push({
+        run: (p) => setBlendTool.execute(input, { project: p }),
+        call: { name: setBlendTool.name, input },
+      });
+    }
+
+    // Blur / pixelate a region ("blur the face", "pixelate the plate").
+    const region = parseRegionFx(req, project.doc);
+    if (region) {
+      const tool = region.type === "pixelate" ? pixelateRegionTool : blurRegionTool;
+      const input = region.type === "pixelate" ? { x: region.x, y: region.y, w: region.w, h: region.h } : region;
+      steps.push({
+        run: (p) => tool.execute(input as never, { project: p }),
+        call: { name: tool.name, input },
+      });
+    }
+
+    // Shape mask ("mask to a circle", "reveal only the center").
+    const mask = parseMask(req, project.doc);
+    if (mask) {
+      steps.push({
+        run: (p) => addMaskTool.execute(mask, { project: p }),
+        call: { name: addMaskTool.name, input: mask },
+      });
+    }
+
+    // Color curves ("s-curve", "lift the mids").
+    const curves = parseCurves(req);
+    if (curves) {
+      steps.push({
+        run: (p) => adjustCurvesTool.execute(curves, { project: p }),
+        call: { name: adjustCurvesTool.name, input: curves },
+      });
+    }
+
+    // HSL ("shift the hue by 40").
+    const hsl = parseHsl(req);
+    if (hsl) {
+      steps.push({
+        run: (p) => adjustHslTool.execute(hsl, { project: p }),
+        call: { name: adjustHslTool.name, input: hsl },
+      });
+    }
+
     // Background music (added before auto-mix so ducking applies to it).
     if (/\bmusic\b|background (track|music|song)|soundtrack|\bsong\b|add (a )?track|score it/.test(req)) {
       steps.push({
@@ -640,10 +825,22 @@ export class StubDirector {
       });
     }
 
-    // Fade from/to black — but not "fade the title", which is a keyframe animation.
+    // Audio fade in/out on the music/VO ("fade the music out") — parsed before the
+    // black-fade branch so it doesn't add black solids for an audio-fade request.
+    const audioFadeReq = parseAudioFade(req);
+    if (audioFadeReq) {
+      steps.push({
+        run: (p) => audioFadeTool.execute(audioFadeReq, { project: p }),
+        call: { name: audioFadeTool.name, input: audioFadeReq },
+      });
+    }
+
+    // Fade from/to black — but not "fade the title" (keyframe animation) or an
+    // audio fade ("fade the music"), which is handled by audio_fade above.
     if (
       /\bfades?\b|fade in|fade out|from black|to black|intro and outro/.test(req) &&
-      !(animateReq && animateReq.track === "titles")
+      !(animateReq && animateReq.track === "titles") &&
+      !audioFadeReq
     ) {
       steps.push({
         run: (p) => fadesTool.execute({}, { project: p }),
@@ -651,10 +848,29 @@ export class StubDirector {
       });
     }
 
+    // Stereo pan ("pan the audio left").
+    const pan = parsePan(req);
+    if (pan !== null) {
+      const input = { pan };
+      steps.push({
+        run: (p) => setPanTool.execute(input, { project: p }),
+        call: { name: setPanTool.name, input },
+      });
+    }
+
     if (/auto.?mix|\bmix\b|level (the )?audio|balance (the )?audio|duck|louder|quieter|sound/.test(req)) {
       steps.push({
         run: (p) => autoMixTool.execute({}, { project: p }),
         call: { name: autoMixTool.name, input: {} },
+      });
+    }
+
+    // Loudness normalization ("normalize the loudness", "hit -14 LUFS").
+    if (parseLoudness(req)) {
+      const input = { on: true };
+      steps.push({
+        run: (p) => normalizeLoudnessTool.execute(input, { project: p }),
+        call: { name: normalizeLoudnessTool.name, input },
       });
     }
 

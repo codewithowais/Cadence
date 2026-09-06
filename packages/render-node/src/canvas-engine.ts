@@ -14,6 +14,7 @@
 import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
 import {
   activeClipsAt,
+  blendCompositeOperation,
   calloutScreenRect,
   calloutTransform,
   clipProgress,
@@ -34,6 +35,7 @@ import {
   type CursorClip,
   type EditDoc,
   type ImageClip,
+  type Mask,
   type RenderedFrame,
   type RenderEngine,
   type SolidClip,
@@ -218,6 +220,26 @@ function drawCallout(ctx: SKRSContext2D, clip: CalloutClip, frameW: number, fram
   }
 }
 
+/**
+ * Clip the context to a mask shape (in composition coords), so subsequent drawing
+ * is revealed only inside the shape (or outside it when `invert`). Approximation of
+ * the export's geq alpha: rect/ellipse + invert are exact; feather is drawn as a
+ * hard edge on the canvas (the export feathers). Call INSIDE a ctx.save() block,
+ * before the clip's own translate/scale.
+ */
+function applyMaskClip(ctx: SKRSContext2D, mask: Mask, frameW: number, frameH: number): void {
+  ctx.beginPath();
+  if (mask.invert) ctx.rect(0, 0, frameW, frameH); // outer path for the even-odd cut-out
+  if (mask.shape === "ellipse") {
+    const cx = mask.x + mask.w / 2;
+    const cy = mask.y + mask.h / 2;
+    ctx.ellipse(cx, cy, Math.max(1, mask.w / 2), Math.max(1, mask.h / 2), 0, 0, Math.PI * 2);
+  } else {
+    ctx.rect(mask.x, mask.y, mask.w, mask.h);
+  }
+  ctx.clip(mask.invert ? "evenodd" : "nonzero");
+}
+
 function drawMedia(
   ctx: SKRSContext2D,
   clip: VideoClip | ImageClip,
@@ -244,11 +266,20 @@ function drawMedia(
   const panY = motion ? motion.panYFrac * frameH : 0;
 
   ctx.save();
+  // Mask (if any) clips in COMPOSITION coords, before the clip's own transform —
+  // reveal only inside the shape (or outside when inverted). Shared shape with the
+  // export's geq alpha; feather is a hard edge here (documented approximation).
+  if (clip.mask) applyMaskClip(ctx, clip.mask, frameW, frameH);
   // Slide transition offsets the whole frame (composition px, pre-scale).
   ctx.translate(kfs.x + panX + tm.dx, kfs.y + panY + tm.dy);
   if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
   if (effScale !== 1) ctx.scale(effScale, effScale);
   ctx.globalAlpha = op;
+  // Blend mode: how this clip composites over what's already painted beneath.
+  // Shared with the export's blend=all_mode= (screen/multiply/overlay/soft-light/add).
+  if (clip.blendMode && clip.blendMode !== "normal") {
+    ctx.globalCompositeOperation = blendCompositeOperation(clip.blendMode);
+  }
 
   // Wipe transition: reveal the frame left→right by clipping to a growing rect.
   if (tm.wipeFrac < 1) {
@@ -261,7 +292,15 @@ function drawMedia(
   ctx.filter = cssFilter(clip.look);
   ctx.fillStyle = fill;
   ctx.beginPath();
-  ctx.roundRect(-frameW / 2, -frameH / 2, frameW, frameH, 0);
+  if (clip.chroma) {
+    // Chroma key approximation: the keyed background is dropped, so the layer
+    // BENEATH shows through. On the placeholder tile we draw only a centered
+    // "subject" band instead of the full frame (the export uses real chromakey).
+    const sw = frameW * 0.5;
+    ctx.roundRect(-sw / 2, -frameH / 2, sw, frameH, 0);
+  } else {
+    ctx.roundRect(-frameW / 2, -frameH / 2, frameW, frameH, 0);
+  }
   ctx.fill();
   ctx.filter = "none";
 
@@ -289,6 +328,32 @@ function drawMedia(
       0,
       44,
     );
+  }
+
+  // Region blur/pixelate approximation: obscure a rectangle (hide a face/plate).
+  // Region coords are composition px; here they're drawn relative to the frame's
+  // centered local space (exact for a centered full-frame clip — the common case;
+  // the export crops+blurs/pixelizes the real region). Faithful: obscures only.
+  if (clip.regionFx) {
+    const rf = clip.regionFx;
+    const lx = rf.x - frameW / 2;
+    const ly = rf.y - frameH / 2;
+    ctx.globalAlpha = op;
+    if (rf.type === "pixelate") {
+      // A mosaic of blocks sampled from the tile tint — a coarse pixelation look.
+      const block = Math.max(6, Math.round(12 + rf.amount * 48));
+      for (let by = 0; by < rf.h; by += block) {
+        for (let bx = 0; bx < rf.w; bx += block) {
+          const shade = ((bx / block + by / block) % 2 === 0) ? 0.35 : 0.55;
+          ctx.fillStyle = `rgba(20,24,30,${shade.toFixed(2)})`;
+          ctx.fillRect(lx + bx, ly + by, Math.min(block, rf.w - bx), Math.min(block, rf.h - by));
+        }
+      }
+    } else {
+      // Blur: a frosted translucent panel over the region.
+      ctx.fillStyle = "rgba(230,235,240,0.55)";
+      ctx.fillRect(lx, ly, rf.w, rf.h);
+    }
   }
   ctx.restore();
 }

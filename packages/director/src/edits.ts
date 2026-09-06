@@ -9,12 +9,19 @@ import {
   parseEditDoc,
   sourceSpanSec,
   sourceTimeAt,
+  type BlendMode,
+  type ChromaKey,
   type ColorGrade,
+  type Curves,
+  type CurvePoint,
   type EditDoc,
+  type ImageClip,
   type KeyframeEasing,
   type KeyframeProp,
+  type Mask,
   type MediaAsset,
   type TransitionType,
+  type VideoClip,
 } from "@cadence/core";
 import type { Transcript } from "@cadence/understanding";
 
@@ -174,6 +181,7 @@ export function adjustColor(doc: EditDoc, partial: Partial<ColorGrade>): EditDoc
       if (clip.kind !== "video" && clip.kind !== "image") continue;
       const g = clip.look;
       clip.look = {
+        ...g, // keep hueShift / curves when nudging brightness/contrast/etc.
         brightness: round(clamp(partial.brightness ?? g.brightness, 0, 4)),
         contrast: round(clamp(partial.contrast ?? g.contrast, 0, 4)),
         saturation: round(clamp(partial.saturation ?? g.saturation, 0, 4)),
@@ -1125,6 +1133,271 @@ export function setPlatform(doc: EditDoc, platform: PlatformKey): EditDoc {
   const clone: EditDoc = structuredClone(graded);
   clone.meta.fps = preset.fps;
   clone.quality.fps = preset.fps;
+  return parseEditDoc(clone);
+}
+
+// ---- VFX compositing: chroma key / blend mode / mask -----------------------
+
+/**
+ * The clips a compositing effect (chroma / blend / mask) should target: the
+ * OVERLAY (b-roll) media clips when present (they composite over the base — the
+ * canonical green-screen / shaped-reveal / blend-layer case), otherwise the MAIN
+ * visual media clips (canvas previews them; the export honors the effect on the
+ * overlay path). Returns mutable references INSIDE `clone`.
+ */
+function compositeTargets(clone: EditDoc): (VideoClip | ImageClip)[] {
+  const broll = clone.tracks.find((t) => t.id === "broll");
+  const brollMedia = (broll?.clips ?? []).filter(
+    (c): c is VideoClip | ImageClip => c.kind === "video" || c.kind === "image",
+  );
+  if (brollMedia.length > 0) return brollMedia;
+  const out: (VideoClip | ImageClip)[] = [];
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind === "video" || clip.kind === "image") out.push(clip);
+    }
+  }
+  return out;
+}
+
+/**
+ * Chroma key (green/blue screen) on the compositing clip(s): the key `color` is
+ * made transparent so the layer beneath shows through. Pure + re-parsed. Best on an
+ * OVERLAY (b-roll) clip; on export the keyed clip composites through the overlay
+ * path (ffmpeg chromakey + optional despill). Faithful: removes a background color.
+ */
+export function chromaKey(
+  doc: EditDoc,
+  opts: { color?: string; similarity?: number; blend?: number; spill?: number } = {},
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const targets = compositeTargets(clone);
+  if (targets.length === 0) throw new Error("Add a clip to key first — green screen needs a visual clip (ideally an overlay).");
+  const chroma: ChromaKey = {
+    color: opts.color ?? "#00d000",
+    similarity: clamp(opts.similarity ?? 0.3, 0.01, 1),
+    blend: clamp(opts.blend ?? 0.1, 0, 1),
+    spill: clamp(opts.spill ?? 0, 0, 1),
+  };
+  for (const clip of targets) clip.chroma = chroma;
+  return parseEditDoc(clone);
+}
+
+/** Set the blend mode on the compositing clip(s) (how they blend over the base). */
+export function setBlend(doc: EditDoc, mode: BlendMode): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const targets = compositeTargets(clone);
+  if (targets.length === 0) throw new Error("Add a clip first — a blend mode needs a visual clip (ideally an overlay).");
+  for (const clip of targets) clip.blendMode = mode;
+  return parseEditDoc(clone);
+}
+
+/**
+ * Add a shape mask (rect/ellipse, optional feather + invert) to the compositing
+ * clip(s): reveal only inside the shape (or outside when inverted). Pure +
+ * re-parsed. Canvas clips to the shape; export builds a geq alpha over the overlay.
+ */
+export function addMask(
+  doc: EditDoc,
+  opts: { shape?: "rect" | "ellipse"; x: number; y: number; w: number; h: number; feather?: number; invert?: boolean },
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const targets = compositeTargets(clone);
+  if (targets.length === 0) throw new Error("Add a clip first — a mask needs a visual clip (ideally an overlay).");
+  const mask: Mask = {
+    shape: opts.shape ?? "rect",
+    x: round(opts.x),
+    y: round(opts.y),
+    w: round(Math.max(1, opts.w)),
+    h: round(Math.max(1, opts.h)),
+    feather: Math.max(0, opts.feather ?? 0),
+    invert: opts.invert ?? false,
+  };
+  for (const clip of targets) clip.mask = mask;
+  return parseEditDoc(clone);
+}
+
+// ---- Region blur / pixelate (hide a face/plate/logo) -----------------------
+
+/**
+ * Blur or pixelate a rectangular REGION of the main video clip(s) — hide a face,
+ * plate, or logo. Coordinates are composition px. Applies to the main visual clip
+ * active at `atSec` (or all main visual clips). Pure + re-parsed. Export crops the
+ * region, runs boxblur/pixelize, and overlays it back; canvas approximates.
+ */
+export function regionBlur(
+  doc: EditDoc,
+  opts: { type?: "blur" | "pixelate"; x: number; y: number; w: number; h: number; amount?: number; atSec?: number },
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video" && clip.kind !== "image") continue;
+      if (opts.atSec !== undefined && !(opts.atSec >= clip.start && opts.atSec < clip.start + clip.duration)) continue;
+      clip.regionFx = {
+        type: opts.type ?? "blur",
+        x: round(opts.x),
+        y: round(opts.y),
+        w: round(Math.max(1, opts.w)),
+        h: round(Math.max(1, opts.h)),
+        amount: clamp(opts.amount ?? 0.5, 0, 1),
+      };
+      changed++;
+    }
+  }
+  if (changed === 0) throw new Error("Add a video or photos first — blur/pixelate needs a visual clip.");
+  return parseEditDoc(clone);
+}
+
+// ---- Color: curves + HSL ---------------------------------------------------
+
+/**
+ * Set RGB tone curves on the main visual clip(s). Each channel is a list of
+ * control points [x, y] in 0..1. Merges with the clip's current look (other grade
+ * fields untouched). Pure + re-parsed. Export uses the ffmpeg `curves` filter.
+ */
+export function adjustCurves(
+  doc: EditDoc,
+  curves: { master?: CurvePoint[]; r?: CurvePoint[]; g?: CurvePoint[]; b?: CurvePoint[] },
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const norm = (pts?: CurvePoint[]): CurvePoint[] | undefined =>
+    pts && pts.length ? pts.map(([x, y]) => [clamp(x, 0, 1), clamp(y, 0, 1)] as CurvePoint) : undefined;
+  const c: Curves = {
+    master: norm(curves.master),
+    r: norm(curves.r),
+    g: norm(curves.g),
+    b: norm(curves.b),
+  };
+  const hasAny = c.master || c.r || c.g || c.b;
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video" && clip.kind !== "image") continue;
+      clip.look = { ...clip.look, curves: hasAny ? c : undefined };
+      changed++;
+    }
+  }
+  if (changed === 0) throw new Error("Add a video or photos first — curves need a visual clip.");
+  return parseEditDoc(clone);
+}
+
+/**
+ * Simple HSL grade on the main visual clip(s): `hueShift` (degrees) rotates hue and
+ * `saturation` (multiplier, 1 = neutral) scales it. Merges with the current look.
+ * Pure + re-parsed. Export uses ffmpeg `hue` (hueShift) + eq saturation. NOTE:
+ * per-hue-range (secondary) saturation is deferred — this is a GLOBAL HSL nudge.
+ */
+export function adjustHsl(
+  doc: EditDoc,
+  opts: { hueShift?: number; saturation?: number },
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video" && clip.kind !== "image") continue;
+      clip.look = {
+        ...clip.look,
+        hueShift: opts.hueShift !== undefined ? round(((opts.hueShift % 360) + 360) % 360) : clip.look.hueShift,
+        saturation: opts.saturation !== undefined ? round(clamp(opts.saturation, 0, 4)) : clip.look.saturation,
+      };
+      changed++;
+    }
+  }
+  if (changed === 0) throw new Error("Add a video or photos first — HSL needs a visual clip.");
+  return parseEditDoc(clone);
+}
+
+// ---- Audio depth: fades / pan / loudness -----------------------------------
+
+/**
+ * Set an audio fade-in / fade-out on audio clips (music/VO) and, when there are
+ * none, on the main video clips. Seconds; 0 clears. Pure + re-parsed. Export uses
+ * ffmpeg `afade`. Faithful: levels only.
+ */
+export function audioFade(
+  doc: EditDoc,
+  opts: { fadeInSec?: number; fadeOutSec?: number; track?: string } = {},
+): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const setFade = (clip: { fadeInSec: number; fadeOutSec: number }): void => {
+    if (opts.fadeInSec !== undefined) clip.fadeInSec = Math.max(0, round(opts.fadeInSec));
+    if (opts.fadeOutSec !== undefined) clip.fadeOutSec = Math.max(0, round(opts.fadeOutSec));
+  };
+  let changed = 0;
+  // Prefer audio clips (music / VO); if a specific track is named, only that one.
+  const audioTracks = clone.tracks.filter(
+    (t) => t.kind === "audio" && (!opts.track || t.id === opts.track),
+  );
+  for (const track of audioTracks) {
+    for (const clip of track.clips) {
+      if (clip.kind === "audio") {
+        setFade(clip);
+        changed++;
+      }
+    }
+  }
+  if (changed === 0) {
+    // No audio clips → fade the main video clips' audio instead.
+    for (const track of clone.tracks) {
+      if (!isMainVisualTrack(track.id)) continue;
+      for (const clip of track.clips) {
+        if (clip.kind === "video") {
+          setFade(clip);
+          changed++;
+        }
+      }
+    }
+  }
+  if (changed === 0) throw new Error("Add audio or a video first — a fade needs an audio or video clip.");
+  return parseEditDoc(clone);
+}
+
+/**
+ * Set the stereo pan (-1 left … 0 center … 1 right) on audio clips (music/VO), or
+ * the main video clips when there are none. Pure + re-parsed. Export uses ffmpeg
+ * `pan`. Faithful: repositions in the stereo field only.
+ */
+export function setPan(doc: EditDoc, pan: number, opts: { track?: string } = {}): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const p = round(clamp(pan, -1, 1));
+  let changed = 0;
+  const audioTracks = clone.tracks.filter(
+    (t) => t.kind === "audio" && (!opts.track || t.id === opts.track),
+  );
+  for (const track of audioTracks) {
+    for (const clip of track.clips) {
+      if (clip.kind === "audio") {
+        clip.pan = p;
+        changed++;
+      }
+    }
+  }
+  if (changed === 0) {
+    for (const track of clone.tracks) {
+      if (!isMainVisualTrack(track.id)) continue;
+      for (const clip of track.clips) {
+        if (clip.kind === "video") {
+          clip.pan = p;
+          changed++;
+        }
+      }
+    }
+  }
+  if (changed === 0) throw new Error("Add audio or a video first — panning needs an audio or video clip.");
+  return parseEditDoc(clone);
+}
+
+/** Toggle EBU R128 loudness normalization of the final mix (ffmpeg loudnorm). */
+export function normalizeLoudness(doc: EditDoc, on = true): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  clone.loudnorm = on;
   return parseEditDoc(clone);
 }
 

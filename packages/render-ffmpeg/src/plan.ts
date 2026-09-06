@@ -19,12 +19,17 @@ import {
   cursorPositionAt,
   docDurationSec,
   sourceSpanSec,
+  type BlendMode,
   type CalloutClip,
+  type ChromaKey,
   type Clip,
   type ColorGrade,
+  type Curves,
   type CursorClip,
   type EditDoc,
   type ImageClip,
+  type Mask,
+  type RegionFx,
   type SolidClip,
   type TextClip,
   type TransitionType,
@@ -91,14 +96,166 @@ export function warmColorbalance(warmth: number): string | null {
   return `colorbalance=rm=${rm}:bm=${bm}:rh=${rh}:bh=${bh}`;
 }
 
-/** The per-clip look chain (eq + warm), as filter segments (may be empty). */
+/**
+ * Format tone-curve control points as the ffmpeg `curves` points string
+ * "x0/y0 x1/y1 …" (verified against ffmpeg-filters.html `curves`). Space-separated,
+ * slash-joined — no commas, so it is graph-safe inside a single-quoted value.
+ */
+function curvePointsStr(points: [number, number][]): string {
+  return points.map(([x, y]) => `${r3(x)}/${r3(y)}`).join(" ");
+}
+
+/**
+ * The ffmpeg `curves` filter for a set of RGB tone curves (master + per-channel),
+ * or null when empty. curves=master/red/green/blue='pts' — every option name
+ * verified against ffmpeg-filters.html. Faithful: a tonal remap only.
+ */
+export function curvesFilter(c: Curves): string | null {
+  const parts: string[] = [];
+  if (c.master && c.master.length) parts.push(`master='${curvePointsStr(c.master)}'`);
+  if (c.r && c.r.length) parts.push(`red='${curvePointsStr(c.r)}'`);
+  if (c.g && c.g.length) parts.push(`green='${curvePointsStr(c.g)}'`);
+  if (c.b && c.b.length) parts.push(`blue='${curvePointsStr(c.b)}'`);
+  return parts.length ? `curves=${parts.join(":")}` : null;
+}
+
+/** The per-clip look chain (eq + warm + hue + curves), as filter segments. */
 function lookFilters(look: ColorGrade): string[] {
   const out: string[] = [];
   const eq = eqFromLook(look);
   if (eq) out.push(eq);
   const warm = warmColorbalance(look.warmth);
   if (warm) out.push(warm);
+  // Hue rotation (degrees) → ffmpeg `hue=h=` (verified against ffmpeg-filters.html).
+  if (look.hueShift && look.hueShift !== 0) out.push(`hue=h=${r3(look.hueShift)}`);
+  // RGB tone curves → ffmpeg `curves` (exact; canvas can't preview curves).
+  if (look.curves) {
+    const cf = curvesFilter(look.curves);
+    if (cf) out.push(cf);
+  }
   return out;
+}
+
+// --- chroma key / blend / mask / region (compositing) -----------------------
+
+/**
+ * Chroma-key filter segments for a keyed clip: `chromakey=color:similarity:blend`
+ * (makes the key color transparent) plus an optional `despill=type=…:mix=spill`
+ * spill-suppression pass. Every option verified against ffmpeg-filters.html
+ * (chromakey: color/similarity/blend; despill: type/mix). The keyed stream carries
+ * alpha, so overlaying it composites over the layer beneath. Faithful: removes a
+ * background color only.
+ */
+export function chromaFilters(chroma: ChromaKey): string[] {
+  const { color } = hexToFfColor(chroma.color);
+  const out = [
+    `chromakey=color=${color}:similarity=${r3(clamp(chroma.similarity, 0.01, 1))}:blend=${r3(clamp(chroma.blend, 0, 1))}`,
+  ];
+  if (chroma.spill > 0) {
+    // despill type must match the key color family (green/blue screen).
+    const h = chroma.color.replace(/^#/, "");
+    const b = parseInt(h.slice(4, 6) || "0", 16);
+    const g = parseInt(h.slice(2, 4) || "0", 16);
+    const type = b > g ? "blue" : "green";
+    out.push(`despill=type=${type}:mix=${r3(clamp(chroma.spill, 0, 1))}`);
+  }
+  return out;
+}
+
+/**
+ * Map a BlendMode to the ffmpeg `blend` filter's `all_mode` name — every name
+ * verified against ffmpeg-filters.html (screen/multiply/overlay/addition/softlight).
+ * "normal" has no blend equivalent (a plain overlay is used instead).
+ */
+export function ffBlendMode(mode: BlendMode): string {
+  switch (mode) {
+    case "screen":
+      return "screen";
+    case "multiply":
+      return "multiply";
+    case "overlay":
+      return "overlay";
+    case "soft-light":
+      return "softlight";
+    case "add":
+      return "addition";
+    case "normal":
+    default:
+      return "normal";
+  }
+}
+
+/**
+ * A `geq` alpha expression (0..255) for a mask shape over a FULL-frame clip. The
+ * shape is a rect or ellipse in composition px; `feather` softens the edge; `invert`
+ * reveals the outside. When `withChroma`, the mask MULTIPLIES the existing alpha
+ * (a(X,Y), from a prior chromakey) so the two combine. All commas are escaped for
+ * the filtergraph. (Ellipse/feather via geq is the documented approach; the canvas
+ * previews the same shape with a clip path + feather.)
+ */
+function maskAlphaExpr(mask: Mask, withChroma: boolean): string {
+  const x = r3(mask.x);
+  const y = r3(mask.y);
+  const w = r3(Math.max(1, mask.w));
+  const h = r3(Math.max(1, mask.h));
+  const f = Math.max(0, mask.feather);
+  const esc = (e: string): string => e.replace(/,/g, "\\,");
+  // A 0..1 "inside" fraction for the shape (feathered).
+  let frac: string;
+  if (mask.shape === "ellipse") {
+    const cx = r3(mask.x + mask.w / 2);
+    const cy = r3(mask.y + mask.h / 2);
+    const rx = r3(Math.max(1, mask.w / 2));
+    const ry = r3(Math.max(1, mask.h / 2));
+    // Normalized radial distance d (=1 at the edge); inside when d<=1.
+    const d = `sqrt(pow((X-${cx})/${rx}\\,2)+pow((Y-${cy})/${ry}\\,2))`;
+    if (f > 0) {
+      // Feather band as a fraction of the radius: ramp 1→0 across [1-fb, 1].
+      const fb = r3(Math.min(0.9, f / Math.max(1, mask.w / 2)));
+      frac = esc(`clip((1-${d})/${r3(fb)},0,1)`);
+    } else {
+      frac = esc(`if(lte(${d},1),1,0)`);
+    }
+  } else {
+    // Rect: distance to the nearest edge (px); inside when all four are >= 0.
+    const dist = `min(min(X-${x}\\,${x}+${w}-X)\\,min(Y-${y}\\,${y}+${h}-Y))`;
+    if (f > 0) {
+      frac = esc(`clip(${dist}/${r3(f)},0,1)`);
+    } else {
+      frac = esc(`if(gte(${dist},0),1,0)`);
+    }
+  }
+  if (mask.invert) frac = `(1-(${frac}))`;
+  return withChroma ? `a(X\\,Y)*(${frac})` : `255*(${frac})`;
+}
+
+/** The `geq` filter that applies a shape mask's alpha, preserving RGB. */
+function maskGeqFilter(mask: Mask, withChroma: boolean): string {
+  return `geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)':a='${maskAlphaExpr(mask, withChroma)}'`;
+}
+
+/**
+ * Graph entries that blur/pixelate a rectangular REGION of a clip: split the
+ * stream, crop the region, run `boxblur` (blur) or `pixelize` (pixelate/mosaic) on
+ * it, then overlay it back at the same position. Filter names verified against
+ * ffmpeg-filters.html (split/crop/boxblur/pixelize/overlay). `inLabel`→`outLabel`.
+ * Faithful: obscures a region only.
+ */
+function regionFxGraph(rf: RegionFx, inLabel: string, outLabel: string): string[] {
+  const x = Math.round(rf.x);
+  const y = Math.round(rf.y);
+  const w = Math.max(2, Math.round(rf.w));
+  const h = Math.max(2, Math.round(rf.h));
+  const amt = clamp(rf.amount, 0, 1);
+  const reg =
+    rf.type === "blur"
+      ? `boxblur=${Math.max(2, Math.round(2 + amt * 30))}:1`
+      : `pixelize=w=${Math.max(2, Math.round(4 + amt * 60))}:h=${Math.max(2, Math.round(4 + amt * 60))}`;
+  return [
+    `[${inLabel}]split[${inLabel}m][${inLabel}r]`,
+    `[${inLabel}r]crop=${w}:${h}:${x}:${y},${reg}[${inLabel}b]`,
+    `[${inLabel}m][${inLabel}b]overlay=${x}:${y}[${outLabel}]`,
+  ];
 }
 
 // --- speed ramp (setpts / atempo) -------------------------------------------
@@ -428,6 +585,33 @@ function keyframeVolumeFilter(clip: VideoClip | Extract<Clip, { kind: "audio" }>
 }
 
 /**
+ * A stereo `pan` filter placing the clip in the stereo field: -1 hard left, 0
+ * center, +1 hard right. Left gain = 1-max(0,pan), right gain = 1+min(0,pan), so
+ * center is unchanged and the ends silence the opposite channel.
+ * `pan=stereo|c0=…|c1=…` (c0=left, c1=right) verified against ffmpeg-filters.html.
+ * Null when centered. Faithful: repositions, no content change.
+ */
+export function panFilter(pan: number): string | null {
+  if (!pan) return null;
+  const p = clamp(pan, -1, 1);
+  const lg = r3(1 - Math.max(0, p));
+  const rg = r3(1 + Math.min(0, p));
+  return `pan=stereo|c0=${lg}*c0|c1=${rg}*c1`;
+}
+
+/**
+ * `afade` in/out segments over an audio clip of `segDur` seconds. Fade-in ramps
+ * from the head; fade-out ends at the tail. Options t/st/d verified against
+ * ffmpeg-filters.html. Empty when there are no fades. Faithful: levels only.
+ */
+export function afadeFilters(fadeIn: number, fadeOut: number, segDur: number): string[] {
+  const out: string[] = [];
+  if (fadeIn > 0) out.push(`afade=t=in:st=0:d=${r3(fadeIn)}`);
+  if (fadeOut > 0) out.push(`afade=t=out:st=${r3(Math.max(0, segDur - fadeOut))}:d=${r3(fadeOut)}`);
+  return out;
+}
+
+/**
  * Filter segments for one cursor clip: a single drawtext whose x/y are time
  * expressions gliding a pointer glyph along the waypoints (with a dark box behind
  * it so the marker stays visible under any font fallback), plus, for each click,
@@ -468,6 +652,27 @@ function cursorFilters(clip: CursorClip): string[] {
     }
   }
   return out;
+}
+
+/**
+ * Push a base visual clip's video chain into the graph, applying an optional
+ * region blur/pixelate AFTER it (split → crop → boxblur/pixelize → overlay). Keeps
+ * the four base paths (all-video / slideshow / generic video / generic image)
+ * consistent so regionFx works wherever a clip lives.
+ */
+function pushVideoChain(
+  filters: string[],
+  head: string,
+  chain: string[],
+  regionFx: RegionFx | undefined,
+  outName: string,
+): void {
+  if (regionFx) {
+    filters.push(`[${head}]${chain.join(",")}[${outName}pre]`);
+    filters.push(...regionFxGraph(regionFx, `${outName}pre`, outName));
+  } else {
+    filters.push(`[${head}]${chain.join(",")}[${outName}]`);
+  }
 }
 
 // --- clip collection --------------------------------------------------------
@@ -641,13 +846,17 @@ export function buildExportPlan(
       );
       return `[${silIdx}:a]asetpts=PTS-STARTPTS,${AUDIO_FORMAT}[a${i}]`;
     }
+    const pan = panFilter(c.pan);
     const aChain = [
       "asetpts=PTS-STARTPTS",
       // Reversed clip → reverse its audio too (areverse), keeping A/V locked.
       ...(c.reversed ? ["areverse"] : []),
       // Constant volume, or a keyframed volume expression (volume=…:eval=frame).
       keyframeVolumeFilter(c),
+      ...(pan ? [pan] : []),
       ...atempoChain(c.speed),
+      // afade after atempo so fade times are in output (timeline) seconds.
+      ...afadeFilters(c.fadeInSec, c.fadeOutSec, c.duration),
       AUDIO_FORMAT,
     ];
     return `[${srcIdx}:a]${aChain.join(",")}[a${i}]`;
@@ -709,7 +918,7 @@ export function buildExportPlan(
       // xfade needs both inputs on the same timebase/framerate to blend cleanly.
       const idx = videoClipInput(c);
       const vChain = videoClipVChain(c, useXfade);
-      filters.push(`[${idx}:v]${vChain.join(",")}[v${i}]`);
+      pushVideoChain(filters, `${idx}:v`, vChain, c.regionFx, `v${i}`);
       filters.push(audioSegmentFilter(c, idx, i));
     });
     if (base.length === 1) {
@@ -762,7 +971,7 @@ export function buildExportPlan(
         "format=yuv420p",
         `fps=${fps}`,
       ];
-      filters.push(`[${idx}:v]${vChain.join(",")}[v${i}]`);
+      pushVideoChain(filters, `${idx}:v`, vChain, c.regionFx, `v${i}`);
     });
     // Chain xfades, accumulating offsets. Each transition's TYPE comes from the
     // incoming clip (crossfade→fade, dip-to-black→fadeblack, slide→slideleft,
@@ -788,7 +997,7 @@ export function buildExportPlan(
       if (c.kind === "video") {
         // Video: reuse the shared helpers (reverse/freeze/speed/zoom/keyframes).
         const idx = videoClipInput(c);
-        filters.push(`[${idx}:v]${videoClipVChain(c, true).join(",")}[v${i}]`);
+        pushVideoChain(filters, `${idx}:v`, videoClipVChain(c, true), c.regionFx, `v${i}`);
         segLabels.push(`[v${i}]`);
         return;
       }
@@ -805,7 +1014,7 @@ export function buildExportPlan(
         "format=yuv420p",
         `fps=${fps}`,
       ];
-      filters.push(`[${idx}:v]${vChain.join(",")}[v${i}]`);
+      pushVideoChain(filters, `${idx}:v`, vChain, c.regionFx, `v${i}`);
       segLabels.push(`[v${i}]`);
     });
     if (base.length === 1) {
@@ -827,34 +1036,63 @@ export function buildExportPlan(
     videoLabel = "vbg";
   }
 
-  // ---- B-roll / PiP overlays (scaled + positioned, time-gated) ------------
+  // ---- B-roll / overlay compositing ---------------------------------------
+  // A plain b-roll is a corner PiP (scaled + positioned, time-gated overlay). A
+  // b-roll carrying a compositing effect becomes a FULL-FRAME layer over the base:
+  //   • chroma / mask → alpha-composited via overlay (green-screen / shaped reveal);
+  //   • blendMode     → blended over the base via blend=all_mode=… (a texture /
+  //                     double-exposure / leak layer that spans the timeline).
+  // (Documented: on the base track these effects preview on the canvas; on export
+  // they composite through this overlay path — put the clip on the b-roll track.)
   const broll = collectBroll(doc);
   broll.forEach((clip, i) => {
-    const boxW = Math.max(2, Math.round(W * clip.transform.scale));
-    const boxH = Math.max(2, Math.round(H * clip.transform.scale));
+    const blend = clip.blendMode ?? "normal";
+    const chroma = clip.chroma;
+    const mask = clip.mask;
+    const isBlend = blend !== "normal";
+    const isAlpha = !!chroma || !!mask; // overlay with an alpha (chroma/mask)
+    const isFull = isBlend || isAlpha; // any compositing effect ⇒ full-frame layer
+    const boxW = isFull ? W : Math.max(2, Math.round(W * clip.transform.scale));
+    const boxH = isFull ? H : Math.max(2, Math.round(H * clip.transform.scale));
     const st = r3(clip.start);
     const en = r3(clip.start + clip.duration);
+    // A blend layer spans the whole timeline so both blend inputs are equal length.
+    const inDur = isBlend ? total || clip.duration : clip.duration;
     const idx =
       clip.kind === "image"
-        ? addInput(["-loop", "1", "-t", String(r3(clip.duration))], resolveMediaPath(clip.mediaId))
+        ? addInput(["-loop", "1", "-t", String(r3(inDur))], resolveMediaPath(clip.mediaId))
         : addInput(
-            ["-ss", String(r3((clip as VideoClip).sourceIn)), "-t", String(r3(clip.duration))],
+            ["-ss", String(r3((clip as VideoClip).sourceIn)), "-t", String(r3(inDur))],
             resolveMediaPath(clip.mediaId),
           );
-    const ovChain = [
+    const chain: string[] = [
       `scale=${boxW}:${boxH}:force_original_aspect_ratio=increase`,
       `crop=${boxW}:${boxH}`,
       ...lookFilters(clip.look),
-      "format=yuv420p",
-      // Present the b-roll aligned to its timeline start, so it plays from its head.
-      `setpts=PTS-STARTPTS+${st}/TB`,
     ];
-    filters.push(`[${idx}:v]${ovChain.join(",")}[bov${i}]`);
-    // transform.x/y is the box CENTER; overlay x/y is its top-left.
-    const ox = Math.round(clip.transform.x - boxW / 2);
-    const oy = Math.round(clip.transform.y - boxH / 2);
+    if (isAlpha) {
+      // Alpha path: operate in rgba so chroma transparency + the geq mask survive.
+      chain.push("format=rgba");
+      if (chroma) chain.push(...chromaFilters(chroma));
+      if (mask) chain.push(maskGeqFilter(mask, !!chroma));
+      // A blend layer's PTS starts at 0 (spans the timeline); an overlay aligns to start.
+      chain.push(`setpts=PTS-STARTPTS+${st}/TB`);
+    } else if (isBlend) {
+      chain.push("format=yuv420p", "setpts=PTS-STARTPTS");
+    } else {
+      chain.push("format=yuv420p", `setpts=PTS-STARTPTS+${st}/TB`);
+    }
+    filters.push(`[${idx}:v]${chain.join(",")}[bov${i}]`);
     const out = `vbr${i}`;
-    filters.push(`[${videoLabel}][bov${i}]overlay=${ox}:${oy}:enable='between(t\\,${st}\\,${en})'[${out}]`);
+    if (isBlend) {
+      const op = r3(clip.transform.opacity);
+      filters.push(`[${videoLabel}][bov${i}]blend=all_mode=${ffBlendMode(blend)}:all_opacity=${op}[${out}]`);
+    } else {
+      // Full-frame alpha layers overlay at 0:0; a PiP at its box center.
+      const ox = isFull ? 0 : Math.round(clip.transform.x - boxW / 2);
+      const oy = isFull ? 0 : Math.round(clip.transform.y - boxH / 2);
+      filters.push(`[${videoLabel}][bov${i}]overlay=${ox}:${oy}:enable='between(t\\,${st}\\,${en})'[${out}]`);
+    }
     videoLabel = out;
   });
 
@@ -961,11 +1199,15 @@ export function buildExportPlan(
       resolveMediaPath(clip.mediaId),
     );
     const delayMs = Math.round(clip.start * 1000);
+    const pan = panFilter(clip.pan);
     // Music ducks under speech (auto-mix already sets volume in the doc); a
-    // keyframed volume rides the level over time (volume=…:eval=frame).
+    // keyframed volume rides the level over time (volume=…:eval=frame). Fades/pan
+    // apply in clip-local time BEFORE the adelay that places it on the timeline.
     const chain = [
       "asetpts=PTS-STARTPTS",
       keyframeVolumeFilter(clip),
+      ...(pan ? [pan] : []),
+      ...afadeFilters(clip.fadeInSec, clip.fadeOutSec, clip.duration),
       `adelay=${delayMs}|${delayMs}`,
     ];
     filters.push(`[${idx}:a]${chain.join(",")}[m${i}]`);
@@ -976,6 +1218,15 @@ export function buildExportPlan(
     const mixInputs = (audioLabel ? [`[${audioLabel}]`] : []).concat(extraAudioLabels);
     filters.push(`${mixInputs.join("")}amix=inputs=${mixInputs.length}:normalize=0[amix]`);
     audioLabel = "amix";
+  }
+
+  // ---- Loudness normalization (EBU R128) ----------------------------------
+  // Normalize the final mix to a streaming loudness target via `loudnorm`
+  // (I/TP/LRA verified against ffmpeg-filters.html). Single-pass, applied last so
+  // it sees the whole mix. Faithful: gain only, no content change.
+  if (audioLabel && doc.loudnorm) {
+    filters.push(`[${audioLabel}]loudnorm=I=-14:TP=-1.5:LRA=11[aout]`);
+    audioLabel = "aout";
   }
 
   // ---- Assemble argv -------------------------------------------------------

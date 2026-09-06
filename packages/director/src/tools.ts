@@ -8,6 +8,8 @@ import { z } from "zod";
 import {
   docDurationSec,
   EditDoc,
+  type BlendMode,
+  type CurvePoint,
   type EditDoc as EditDocT,
   type KeyframeEasing,
   type KeyframeProp,
@@ -30,18 +32,27 @@ import {
   addKeyframe,
   addKineticTitle,
   addMarker,
+  addMask,
   addMusic,
   addTitle,
   adjustColor,
+  adjustCurves,
+  adjustHsl,
   animate,
   applyLook,
   applyVfx,
+  audioFade,
   autoMix,
   carryOverAudio,
+  chromaKey,
   freezeFrame,
+  normalizeLoudness,
   reframe,
   reframeTo,
+  regionBlur,
   reverseClip,
+  setBlend,
+  setPan,
   setPlatform,
   setQuality,
   setSpeed,
@@ -799,6 +810,205 @@ export const platformTool: DirectorTool<{ platform: PlatformKey }> = {
   },
 };
 
+// ---- chroma_key (green screen) ---------------------------------------------
+
+export const chromaKeyTool: DirectorTool<{ color?: string; similarity?: number; blend?: number; spill?: number }> = {
+  name: "chroma_key",
+  description:
+    "Green-screen / chroma key: remove a background color from the overlay clip (or the main clip) so the layer beneath shows through. color (hex, default green), similarity (0.01–1), blend (0–1 edge softness), spill (0–1 spill suppression). Best on a b-roll overlay clip. Faithful — removes a background color only.",
+  inputSchema: z.object({
+    color: z.string().optional(),
+    similarity: z.number().min(0.01).max(1).optional(),
+    blend: z.number().min(0).max(1).optional(),
+    spill: z.number().min(0).max(1).optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = chromaKey(ctx.project.doc, input);
+    return commit(ctx.project, doc, `Keyed out the ${input.color ?? "green"} background (composites over the layer beneath).`);
+  },
+};
+
+// ---- set_blend (blend modes) -----------------------------------------------
+
+export const setBlendTool: DirectorTool<{ mode: BlendMode }> = {
+  name: "set_blend",
+  description:
+    "Set how the overlay clip (or main clip) blends over the layer beneath: normal, screen, multiply, overlay, add, or soft-light. A non-normal blend makes the overlay a full-frame blend layer (a texture / double-exposure / leak).",
+  inputSchema: z.object({
+    mode: z.enum(["normal", "screen", "multiply", "overlay", "add", "soft-light"]),
+  }),
+  async execute(input, ctx) {
+    const doc = setBlend(ctx.project.doc, input.mode);
+    return commit(ctx.project, doc, `Set the blend mode to ${input.mode}.`);
+  },
+};
+
+// ---- blur_region / pixelate_region -----------------------------------------
+
+export const blurRegionTool: DirectorTool<{ type?: "blur" | "pixelate"; x: number; y: number; w: number; h: number; amount?: number; atSec?: number }> = {
+  name: "blur_region",
+  description:
+    "Blur (or pixelate) a rectangular region {x,y,w,h} (composition px) of the main video — hide a face, plate, or logo. type: blur (default) or pixelate; amount 0–1 strength. Faithful — obscures a region only.",
+  inputSchema: z.object({
+    type: z.enum(["blur", "pixelate"]).optional(),
+    x: z.number(),
+    y: z.number(),
+    w: z.number().positive(),
+    h: z.number().positive(),
+    amount: z.number().min(0).max(1).optional(),
+    atSec: z.number().nonnegative().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = regionBlur(ctx.project.doc, input);
+    return commit(
+      ctx.project,
+      doc,
+      `${input.type === "pixelate" ? "Pixelated" : "Blurred"} a ${Math.round(input.w)}×${Math.round(input.h)} region at (${Math.round(input.x)}, ${Math.round(input.y)}).`,
+    );
+  },
+};
+
+export const pixelateRegionTool: DirectorTool<{ x: number; y: number; w: number; h: number; amount?: number; atSec?: number }> = {
+  name: "pixelate_region",
+  description: "Pixelate (mosaic) a rectangular region {x,y,w,h} (composition px) of the main video — a compliance staple for hiding faces/plates.",
+  inputSchema: z.object({
+    x: z.number(),
+    y: z.number(),
+    w: z.number().positive(),
+    h: z.number().positive(),
+    amount: z.number().min(0).max(1).optional(),
+    atSec: z.number().nonnegative().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = regionBlur(ctx.project.doc, { ...input, type: "pixelate" });
+    return commit(ctx.project, doc, `Pixelated a ${Math.round(input.w)}×${Math.round(input.h)} region at (${Math.round(input.x)}, ${Math.round(input.y)}).`);
+  },
+};
+
+// ---- add_mask --------------------------------------------------------------
+
+export const addMaskTool: DirectorTool<{ shape?: "rect" | "ellipse"; x: number; y: number; w: number; h: number; feather?: number; invert?: boolean }> = {
+  name: "add_mask",
+  description:
+    "Mask the overlay clip (or main clip) to a shape {x,y,w,h} (composition px): reveal only inside the shape (rect or ellipse), or outside it with invert. feather softens the edge. Best on a b-roll overlay for a shaped reveal over the footage.",
+  inputSchema: z.object({
+    shape: z.enum(["rect", "ellipse"]).optional(),
+    x: z.number(),
+    y: z.number(),
+    w: z.number().positive(),
+    h: z.number().positive(),
+    feather: z.number().min(0).optional(),
+    invert: z.boolean().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = addMask(ctx.project.doc, input);
+    return commit(
+      ctx.project,
+      doc,
+      `Masked to a ${input.shape ?? "rect"} ${Math.round(input.w)}×${Math.round(input.h)}${input.invert ? " (outside)" : ""}.`,
+    );
+  },
+};
+
+// ---- adjust_curves ---------------------------------------------------------
+
+export const adjustCurvesTool: DirectorTool<{ master?: CurvePoint[]; r?: CurvePoint[]; g?: CurvePoint[]; b?: CurvePoint[] }> = {
+  name: "adjust_curves",
+  description:
+    "Set RGB tone curves on the main clips. Each channel is a list of control points [input, output] in 0..1 (e.g. master: [[0,0],[0.5,0.6],[1,1]] lifts mids). Provide master and/or per-channel r/g/b. Faithful — a tonal remap.",
+  inputSchema: z.object({
+    master: z.array(z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)])).optional(),
+    r: z.array(z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)])).optional(),
+    g: z.array(z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)])).optional(),
+    b: z.array(z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)])).optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = adjustCurves(ctx.project.doc, input);
+    return commit(ctx.project, doc, "Adjusted the tone curves.");
+  },
+};
+
+// ---- adjust_hsl ------------------------------------------------------------
+
+export const adjustHslTool: DirectorTool<{ hueShift?: number; saturation?: number }> = {
+  name: "adjust_hsl",
+  description:
+    "Simple HSL grade on the main clips: hueShift (degrees, rotates all hues) and saturation (multiplier, 1 = neutral). Faithful — hue/saturation only. (Per-hue-range secondary saturation is not yet supported — this is a global nudge.)",
+  inputSchema: z
+    .object({
+      hueShift: z.number().optional(),
+      saturation: z.number().min(0).max(4).optional(),
+    })
+    .refine((v) => v.hueShift !== undefined || v.saturation !== undefined, {
+      message: "provide a hueShift or a saturation",
+    }),
+  async execute(input, ctx) {
+    const doc = adjustHsl(ctx.project.doc, input);
+    const parts: string[] = [];
+    if (input.hueShift !== undefined) parts.push(`hue ${input.hueShift}°`);
+    if (input.saturation !== undefined) parts.push(`saturation ${input.saturation}`);
+    return commit(ctx.project, doc, `Adjusted HSL (${parts.join(", ")}).`);
+  },
+};
+
+// ---- audio_fade ------------------------------------------------------------
+
+export const audioFadeTool: DirectorTool<{ fadeInSec?: number; fadeOutSec?: number; track?: string }> = {
+  name: "audio_fade",
+  description:
+    "Add an audio fade-in and/or fade-out (seconds) to the music/voice-over clips, or the main video audio when there is none. Optionally target a track id (e.g. music). Faithful — levels only.",
+  inputSchema: z
+    .object({
+      fadeInSec: z.number().nonnegative().optional(),
+      fadeOutSec: z.number().nonnegative().optional(),
+      track: z.string().optional(),
+    })
+    .refine((v) => v.fadeInSec !== undefined || v.fadeOutSec !== undefined, {
+      message: "provide a fadeInSec or fadeOutSec",
+    }),
+  async execute(input, ctx) {
+    const doc = audioFade(ctx.project.doc, input);
+    const parts: string[] = [];
+    if (input.fadeInSec !== undefined) parts.push(`in ${input.fadeInSec}s`);
+    if (input.fadeOutSec !== undefined) parts.push(`out ${input.fadeOutSec}s`);
+    return commit(ctx.project, doc, `Added an audio fade (${parts.join(", ")}).`);
+  },
+};
+
+// ---- set_pan ---------------------------------------------------------------
+
+export const setPanTool: DirectorTool<{ pan: number; track?: string }> = {
+  name: "set_pan",
+  description:
+    "Pan audio in the stereo field: -1 hard left, 0 center, 1 hard right. Applies to the music/voice-over clips, or the main video audio when there is none.",
+  inputSchema: z.object({ pan: z.number().min(-1).max(1), track: z.string().optional() }),
+  async execute(input, ctx) {
+    const doc = setPan(ctx.project.doc, input.pan, { track: input.track });
+    const where = input.pan < 0 ? "left" : input.pan > 0 ? "right" : "center";
+    return commit(ctx.project, doc, `Panned audio ${input.pan} (${where}).`);
+  },
+};
+
+// ---- normalize_loudness ----------------------------------------------------
+
+export const normalizeLoudnessTool: DirectorTool<{ on?: boolean }> = {
+  name: "normalize_loudness",
+  description:
+    "Toggle loudness normalization of the final mix to a streaming target (EBU R128, -14 LUFS) on export via ffmpeg loudnorm. On by default. (Applied at export — the preview is unchanged.)",
+  inputSchema: z.object({ on: z.boolean().optional() }),
+  async execute(input, ctx) {
+    const on = input.on ?? true;
+    const doc = normalizeLoudness(ctx.project.doc, on);
+    return commit(
+      ctx.project,
+      doc,
+      on
+        ? "Loudness normalization on — the export will hit ~-14 LUFS. (Applied at export.)"
+        : "Loudness normalization off.",
+    );
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
   create_highlight: createHighlightTool,
@@ -831,4 +1041,14 @@ export const DIRECTOR_TOOLS = {
   freeze_frame: freezeFrameTool,
   add_marker: addMarkerTool,
   set_platform: platformTool,
+  chroma_key: chromaKeyTool,
+  set_blend: setBlendTool,
+  blur_region: blurRegionTool,
+  pixelate_region: pixelateRegionTool,
+  add_mask: addMaskTool,
+  adjust_curves: adjustCurvesTool,
+  adjust_hsl: adjustHslTool,
+  audio_fade: audioFadeTool,
+  set_pan: setPanTool,
+  normalize_loudness: normalizeLoudnessTool,
 } as const;

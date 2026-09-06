@@ -120,27 +120,25 @@ export function appendVideos(doc: EditDoc, medias: MediaAsset[]): EditDoc {
   for (const clip of track.clips) {
     if (clip.kind === "video" || clip.kind === "image") pos = Math.max(pos, clip.start + clip.duration);
   }
+  // Push MINIMAL input clips (only non-defaulted fields) and let parseEditDoc
+  // fill every default — resilient to new VideoClip fields added by the engine
+  // (speed/look/transition/reversed/blendMode/fade/pan/keyframes/…).
+  const newClips: Record<string, unknown>[] = [];
   medias.forEach((m, i) => {
     const duration = m.durationSec ?? 10;
-    track.clips.push({
+    newClips.push({
       id: `src-${Date.now()}-${i}`,
       kind: "video",
       start: round(pos),
       duration: round(duration),
       mediaId: m.id,
       sourceIn: 0,
-      speed: 1,
-      volume: 1,
-      transform: { x: width / 2, y: height / 2, scale: 1, rotation: 0, opacity: 1 },
-      look: { brightness: 1, contrast: 1, saturation: 1, warmth: 0 },
-      transitionInSec: 0,
-      transitionOutSec: 0,
-      transitionType: "crossfade",
-      reversed: false,
+      transform: { x: width / 2, y: height / 2 },
     });
     pos += duration;
     if (!clone.media.some((x) => x.id === m.id)) clone.media.push(m);
   });
+  (track.clips as unknown as Record<string, unknown>[]).push(...newClips);
   return parseEditDoc(clone);
 }
 

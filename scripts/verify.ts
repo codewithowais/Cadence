@@ -42,6 +42,7 @@ import {
   cursorRipples,
   calloutScreenRect,
   calloutTransform,
+  blendCompositeOperation,
   valueAt,
   toSrt,
   toVtt,
@@ -71,15 +72,20 @@ import {
   StubDirector,
   runDirectorLoop,
   adjustColor,
+  adjustCurves,
+  adjustHsl,
   addCaptions,
   addMarker,
   addMusic,
   animate,
   applyVfx,
+  audioFade,
   freezeFrame,
+  normalizeLoudness,
   reframe,
   reframeTo,
   reverseClip,
+  setPan,
   setPlatform,
   setQuality,
   setSpeed,
@@ -96,6 +102,7 @@ import {
   atempoChain,
   buildExportPlan,
   detectFfmpeg,
+  ffBlendMode,
   runExport,
   xfadeTransition,
   FfmpegNotFoundError,
@@ -1556,6 +1563,259 @@ async function checkPlatform(): Promise<void> {
   console.log(`  [32m✔[0m check 43 (platform presets): tiktok 1080×1920/high/30 · youtube 1920×1080 · ig-feed 1080×1350; 'export for tiktok/youtube/reels' → set_platform (frame ${n}b)`);
 }
 
+async function checkChromaKey(): Promise<void> {
+  // A base video + a keyed b-roll overlay (green screen) composites over the base.
+  const doc = parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080, fps: 30 },
+    media: [
+      { id: "bg", kind: "video", src: "/media/bg.mp4" },
+      { id: "fg", kind: "video", src: "/media/fg.mp4" },
+    ],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 5, mediaId: "bg", transform: { x: 960, y: 540 } }] },
+      {
+        id: "broll",
+        kind: "visual",
+        clips: [
+          { id: "k0", kind: "video", start: 0, duration: 5, mediaId: "fg", transform: { x: 960, y: 540 }, chroma: { color: "#00d000", similarity: 0.3, blend: 0.1, spill: 0.2 } },
+        ],
+      },
+    ],
+  });
+  const kc = doc.tracks.find((t) => t.id === "broll")!.clips[0]!;
+  assert(kc.kind === "video" && !!kc.chroma, "expected a keyed b-roll clip");
+
+  // Canvas approximates the key (background dropped → beneath shows); it changes pixels.
+  const withKey = await renderBytes(doc, 2.5);
+  writeFileSync(resolve(OUT_DIR, "verify-chroma.png"), withKey);
+  const noKeyDoc = structuredCloneDoc(doc);
+  for (const t of noKeyDoc.tracks) for (const c of t.clips) delete (c as { chroma?: unknown }).chroma;
+  const withoutKey = await renderBytes(parseEditDoc(noKeyDoc), 2.5);
+  assert(withKey.subarray(0, 4).equals(PNG_MAGIC), "chroma frame should be a real PNG");
+  assert(!withKey.equals(withoutKey), "the chroma key should change the rendered frame");
+
+  // Export: chromakey (+ despill) on the overlay before it composites via overlay.
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/chroma.mp4");
+  assert(plan.filterComplex.includes("chromakey=color=0x00d000:similarity=0.3:blend=0.1"), "chroma: expected chromakey on export");
+  assert(plan.filterComplex.includes("despill=type=green:mix=0.2"), "chroma: expected despill spill suppression");
+  assert(plan.filterComplex.includes("overlay="), "chroma: keyed clip should composite via overlay");
+
+  // StubDirector routing: "remove the green background" → chroma_key.
+  const project = videoProject();
+  project.media.push({ id: "insert", kind: "image", src: "uploads/insert.jpg", width: 1920, height: 1080, label: "insert.jpg" });
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 15 second highlight", project);
+  await new StubDirector().interpret("add b-roll", project);
+  const r = await new StubDirector().interpret("remove the green background", project);
+  assert(r.toolCalls.some((c) => c.name === "chroma_key"), "expected chroma_key from 'remove the green background'");
+  console.log(`  [32m✔[0m check 44 (chroma key): keyed overlay changes the frame (${withKey.length}b) + chromakey/despill/overlay on export; 'remove the green background' → chroma_key`);
+}
+
+async function checkBlendMode(): Promise<void> {
+  // A base video + a screen-blend b-roll layer over it.
+  const doc = parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080, fps: 30 },
+    media: [
+      { id: "bg", kind: "video", src: "/media/bg.mp4" },
+      { id: "tex", kind: "image", src: "/media/tex.jpg", width: 1920, height: 1080 },
+    ],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 5, mediaId: "bg", transform: { x: 960, y: 540 } }] },
+      { id: "broll", kind: "visual", clips: [{ id: "b0", kind: "image", start: 0, duration: 5, mediaId: "tex", transform: { x: 960, y: 540 }, blendMode: "screen" }] },
+    ],
+  });
+  const bc = doc.tracks.find((t) => t.id === "broll")!.clips[0]!;
+  assert(bc.kind === "image" && bc.blendMode === "screen", "expected a screen-blend b-roll clip");
+
+  // Canvas composites via globalCompositeOperation → changes pixels vs normal.
+  const withBlend = await renderBytes(doc, 2.5);
+  writeFileSync(resolve(OUT_DIR, "verify-blend.png"), withBlend);
+  const normalDoc = structuredCloneDoc(doc);
+  for (const t of normalDoc.tracks) for (const c of t.clips) if ("blendMode" in c) (c as { blendMode?: string }).blendMode = "normal";
+  const withNormal = await renderBytes(parseEditDoc(normalDoc), 2.5);
+  assert(!withBlend.equals(withNormal), "the blend mode should change the rendered frame");
+
+  // Export: blend=all_mode=screen over the base.
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/blend.mp4");
+  assert(plan.filterComplex.includes("blend=all_mode=screen:all_opacity="), "blend: expected blend=all_mode=screen on export");
+  // enum → ffmpeg/canvas mappings are exact.
+  assert(ffBlendMode("add") === "addition" && ffBlendMode("soft-light") === "softlight" && ffBlendMode("multiply") === "multiply", "blend: ffmpeg mode names exact");
+  assert(blendCompositeOperation("add") === "lighter" && blendCompositeOperation("screen") === "screen", "blend: canvas op mapping exact");
+
+  // StubDirector routing: "screen blend" → set_blend (screen).
+  const project = videoProject();
+  project.media.push({ id: "insert", kind: "image", src: "uploads/insert.jpg", width: 1920, height: 1080 });
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 15 second highlight", project);
+  await new StubDirector().interpret("add b-roll", project);
+  const r = await new StubDirector().interpret("use a screen blend", project);
+  const call = r.toolCalls.find((c) => c.name === "set_blend");
+  assert(call && (call.input as { mode: string }).mode === "screen", "expected set_blend (screen) from 'use a screen blend'");
+  console.log(`  [32m✔[0m check 45 (blend modes): screen blend changes the frame (${withBlend.length}b) + blend=all_mode=screen on export; mappings exact; 'screen blend' → set_blend`);
+}
+
+async function checkRegionFx(): Promise<void> {
+  // Blur a region of a single base video clip.
+  const doc = parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "v", kind: "video", src: "/media/v.mp4" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 5, mediaId: "v", transform: { x: 960, y: 540 }, regionFx: { type: "blur", x: 700, y: 300, w: 500, h: 400, amount: 0.6 } }] }],
+  });
+  const withBlur = await renderBytes(doc, 2.5);
+  writeFileSync(resolve(OUT_DIR, "verify-region-blur.png"), withBlur);
+  const plainDoc = structuredCloneDoc(doc);
+  for (const t of plainDoc.tracks) for (const c of t.clips) delete (c as { regionFx?: unknown }).regionFx;
+  const withoutBlur = await renderBytes(parseEditDoc(plainDoc), 2.5);
+  assert(!withBlur.equals(withoutBlur), "the region blur should change the rendered frame");
+
+  // Export: split → crop the region → boxblur → overlay back.
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/region.mp4");
+  assert(plan.filterComplex.includes("split"), "region: expected a split to branch the region");
+  assert(plan.filterComplex.includes("crop=500:400:700:300"), "region: expected the region crop");
+  assert(plan.filterComplex.includes("boxblur="), "region: expected boxblur on the region");
+  assert(plan.filterComplex.includes("overlay="), "region: expected the region overlaid back");
+
+  // Pixelate variant → pixelize.
+  const pix = parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "v", kind: "video", src: "/media/v.mp4" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 5, mediaId: "v", transform: { x: 960, y: 540 }, regionFx: { type: "pixelate", x: 100, y: 100, w: 300, h: 300, amount: 0.5 } }] }],
+  });
+  const pixPlan = buildExportPlan(pix, (id) => `/media/${id}.mp4`, "/out/pix.mp4");
+  assert(pixPlan.filterComplex.includes("pixelize=w="), "region: expected pixelize for pixelate");
+
+  // StubDirector routing: "blur the face" → blur_region; "pixelate the plate" → pixelate_region.
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 15 second highlight", project);
+  const rb = await new StubDirector().interpret("blur the face", project);
+  assert(rb.toolCalls.some((c) => c.name === "blur_region"), "expected blur_region from 'blur the face'");
+  const rp = await new StubDirector().interpret("pixelate the license plate", project);
+  assert(rp.toolCalls.some((c) => c.name === "pixelate_region"), "expected pixelate_region from 'pixelate the license plate'");
+  console.log(`  [32m✔[0m check 46 (blur/pixelate region): region blur changes the frame (${withBlur.length}b) + split/crop/boxblur/overlay & pixelize on export; 'blur the face'/'pixelate the plate' route`);
+}
+
+async function checkMask(): Promise<void> {
+  // An ellipse mask on a b-roll overlay reveals only inside the shape.
+  const doc = parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080, fps: 30 },
+    media: [
+      { id: "bg", kind: "video", src: "/media/bg.mp4" },
+      { id: "fg", kind: "video", src: "/media/fg.mp4" },
+    ],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 5, mediaId: "bg", transform: { x: 960, y: 540 } }] },
+      { id: "broll", kind: "visual", clips: [{ id: "m0", kind: "video", start: 0, duration: 5, mediaId: "fg", transform: { x: 960, y: 540 }, mask: { shape: "ellipse", x: 560, y: 240, w: 800, h: 600, feather: 40, invert: false } }] },
+    ],
+  });
+  const withMask = await renderBytes(doc, 2.5);
+  writeFileSync(resolve(OUT_DIR, "verify-mask.png"), withMask);
+  const noMaskDoc = structuredCloneDoc(doc);
+  for (const t of noMaskDoc.tracks) for (const c of t.clips) delete (c as { mask?: unknown }).mask;
+  const withoutMask = await renderBytes(parseEditDoc(noMaskDoc), 2.5);
+  assert(!withMask.equals(withoutMask), "the mask should change the rendered frame (shape reveal)");
+
+  // Export: a geq shaped alpha on the overlay, then it composites via overlay.
+  const plan = buildExportPlan(doc, (id) => `/media/${id}.mp4`, "/out/mask.mp4");
+  assert(plan.filterComplex.includes("geq="), "mask: expected a geq alpha on export");
+  assert(plan.filterComplex.includes("overlay="), "mask: masked clip should composite via overlay");
+
+  // StubDirector routing: "mask to a circle" → add_mask (ellipse).
+  const project = videoProject();
+  project.media.push({ id: "insert", kind: "image", src: "uploads/insert.jpg", width: 1920, height: 1080 });
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 15 second highlight", project);
+  await new StubDirector().interpret("add b-roll", project);
+  const r = await new StubDirector().interpret("mask it to a circle", project);
+  const call = r.toolCalls.find((c) => c.name === "add_mask");
+  assert(call && (call.input as { shape?: string }).shape === "ellipse", "expected add_mask (ellipse) from 'mask it to a circle'");
+  console.log(`  [32m✔[0m check 47 (mask): shape mask changes the frame (${withMask.length}b) + geq alpha + overlay on export; 'mask it to a circle' → add_mask (ellipse)`);
+}
+
+async function checkCurvesHsl(): Promise<void> {
+  // Base highlight, then curves + HSL applied to the main clips.
+  const project = videoProject();
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  const hl = await new StubDirector().interpret("cut a 15 second highlight", project);
+
+  // (a) PURE adjustCurves + adjustHsl set the grade and render.
+  const curved = adjustCurves(hl.doc, { master: [[0, 0], [0.5, 0.62], [1, 1]] });
+  const cv = curved.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(cv && !!cv.look.curves && !!cv.look.curves.master, "adjustCurves should set a master curve");
+  const hsl = adjustHsl(curved, { hueShift: 40, saturation: 1.2 });
+  const hv = hsl.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(hv && hv.look.hueShift === 40 && hv.look.saturation === 1.2, "adjustHsl should set hueShift + saturation");
+  // curves survive the HSL nudge (merge, not replace).
+  assert(hv!.look.curves?.master, "HSL should preserve the earlier curves");
+  const n = await renderAndAssert(hsl, docDurationSec(hsl) / 2, "verify-curves-hsl.png");
+
+  // (b) Export: curves + hue filters.
+  const plan = buildExportPlan(hsl, (id) => `/media/${id}.mp4`, "/out/curves.mp4");
+  assert(plan.filterComplex.includes("curves=master='0/0 0.5/0.62 1/1'"), "curves: expected the ffmpeg curves points string on export");
+  assert(plan.filterComplex.includes("hue=h=40"), "hsl: expected hue=h=40 on export");
+
+  // (c) StubDirector routing.
+  const rc = await new StubDirector().interpret("add an s-curve for contrast", project);
+  assert(rc.toolCalls.some((c) => c.name === "adjust_curves"), "expected adjust_curves from 's-curve'");
+  const rh = await new StubDirector().interpret("shift the hue by 40 degrees", project);
+  const hcall = rh.toolCalls.find((c) => c.name === "adjust_hsl");
+  assert(hcall && (hcall.input as { hueShift?: number }).hueShift === 40, "expected adjust_hsl (hueShift 40) from 'shift the hue by 40'");
+  console.log(`  [32m✔[0m check 48 (curves + HSL): adjustCurves/adjustHsl set the grade + render (${n}b); curves points + hue=h= on export; 's-curve'/'shift the hue' route`);
+}
+
+async function checkAudioDepth(): Promise<void> {
+  // (a) A base video clip with an audio fade + hard-left pan.
+  const clipDoc = parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "v", kind: "video", src: "/media/v.mp4" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 6, mediaId: "v", transform: { x: 960, y: 540 }, fadeInSec: 1, fadeOutSec: 1.5, pan: -1 }] }],
+  });
+  const cp = buildExportPlan(clipDoc, (id) => `/media/${id}.mp4`, "/out/afade.mp4");
+  assert(cp.filterComplex.includes("afade=t=in:st=0:d=1"), "audio: expected an afade-in on the clip");
+  assert(cp.filterComplex.includes("afade=t=out:st=4.5:d=1.5"), "audio: expected an afade-out ending at the tail");
+  assert(cp.filterComplex.includes("pan=stereo|c0=1*c0|c1=0*c1"), "audio: expected a hard-left pan");
+
+  // (b) Music with a fade (extra audio track) + doc-level loudnorm.
+  const song: MediaAsset = { id: "song", kind: "audio", src: "s.mp3", durationSec: 60, label: "bed.mp3" };
+  const musicDoc = addMusic(clipDoc, song, { durationSec: 6 });
+  const faded = audioFadeTargetToMusic(musicDoc);
+  const normalized = { ...faded, loudnorm: true } as EditDoc;
+  const mp = buildExportPlan(parseEditDoc(normalized), (id) => `/media/${id}.mp4`, "/out/loud.mp4");
+  assert(mp.filterComplex.includes("afade=t=out:st="), "audio: expected an afade on the music track");
+  assert(mp.filterComplex.includes("loudnorm=I=-14:TP=-1.5:LRA=11"), "audio: expected loudnorm on the final mix");
+
+  // (c) PURE helpers + StubDirector routing.
+  const panned = setPan(clipDoc, 1);
+  const pc = panned.tracks.flatMap((t) => t.clips).find((c): c is VideoClip => c.kind === "video");
+  assert(pc && pc.pan === 1, "setPan should set pan on the video clip");
+  assert(normalizeLoudness(clipDoc).loudnorm === true, "normalizeLoudness should toggle the doc flag");
+
+  const project = videoProject();
+  project.media.push({ id: "song2", kind: "audio", src: "uploads/song.mp3", durationSec: 120, label: "bed.mp3" });
+  project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
+  await new StubDirector().interpret("cut a 15 second highlight", project);
+  await new StubDirector().interpret("add background music", project);
+  const rf = await new StubDirector().interpret("fade the music out", project);
+  assert(rf.toolCalls.some((c) => c.name === "audio_fade"), "expected audio_fade from 'fade the music out'");
+  assert(!rf.toolCalls.some((c) => c.name === "add_fades"), "'fade the music' should not add black fades");
+  const rp = await new StubDirector().interpret("pan the audio left", project);
+  assert(rp.toolCalls.some((c) => c.name === "set_pan"), "expected set_pan from 'pan the audio left'");
+  const rl = await new StubDirector().interpret("normalize the loudness", project);
+  assert(rl.toolCalls.some((c) => c.name === "normalize_loudness"), "expected normalize_loudness from 'normalize the loudness'");
+  console.log(`  [32m✔[0m check 49 (audio depth): clip afade/pan + music afade + loudnorm on export; 'fade the music out'/'pan left'/'normalize loudness' route (no black fades)`);
+}
+
+/** Apply a fade-out to the music track of a doc (helper for the audio-depth check). */
+function audioFadeTargetToMusic(doc: EditDoc): EditDoc {
+  return audioFade(doc, { fadeOutSec: 2, track: "music" });
+}
+
 async function main(): Promise<void> {
   console.log("running verify gate…");
   await checkTrivial();
@@ -1597,6 +1857,12 @@ async function main(): Promise<void> {
   await checkMarkers();
   await checkCaptionSidecar();
   await checkPlatform();
+  await checkChromaKey();
+  await checkBlendMode();
+  await checkRegionFx();
+  await checkMask();
+  await checkCurvesHsl();
+  await checkAudioDepth();
   await checkWhisperParse();
   await checkTranscriberFactory();
   await checkAgenticLoop();

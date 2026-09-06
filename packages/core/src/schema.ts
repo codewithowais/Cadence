@@ -34,11 +34,47 @@ export type Transform = z.infer<typeof Transform>;
  * brightness/contrast/saturation are multipliers (1 = neutral); warmth 0..1 adds
  * a warm overlay.
  */
+/**
+ * A tone-curve control point `[x, y]` in 0..1 (input level → output level).
+ * Curves are a list of these, resolved to the ffmpeg `curves` filter's
+ * "x0/y0 x1/y1 …" points string on export. Endpoints (0,*) and (1,*) anchor the
+ * curve; interior points bend it. Faithful: a tonal remap, never a content change.
+ */
+export const CurvePoint = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]);
+export type CurvePoint = z.infer<typeof CurvePoint>;
+
+/**
+ * RGB tone curves — a master (all-channel) curve and optional per-channel curves.
+ * Each is a list of control points resolved to the ffmpeg `curves` filter
+ * (curves=master/red/green/blue='x/y …'). Optional + all-absent by default so
+ * existing docs stay valid. CSS has no curve primitive, so the canvas preview
+ * approximates curves (documented); the export is exact.
+ */
+export const Curves = z.object({
+  master: z.array(CurvePoint).optional(),
+  r: z.array(CurvePoint).optional(),
+  g: z.array(CurvePoint).optional(),
+  b: z.array(CurvePoint).optional(),
+});
+export type Curves = z.infer<typeof Curves>;
+
 export const ColorGrade = z.object({
   brightness: z.number().min(0).default(1),
   contrast: z.number().min(0).default(1),
   saturation: z.number().min(0).default(1),
   warmth: z.number().min(0).max(1).default(0),
+  /**
+   * Hue rotation in DEGREES (0/absent = neutral). Previews via CSS/canvas
+   * `hue-rotate()` and exports via the ffmpeg `hue=h=` filter. Optional so existing
+   * docs/grades stay valid. Faithful: rotates hue only.
+   */
+  hueShift: z.number().optional(),
+  /**
+   * Optional RGB tone curves (master + per-channel), resolved to the ffmpeg
+   * `curves` filter on export. Optional so existing docs stay valid; the canvas
+   * approximates them (no CSS curve primitive — documented limit).
+   */
+  curves: Curves.optional(),
 });
 export type ColorGrade = z.infer<typeof ColorGrade>;
 
@@ -206,6 +242,77 @@ export const TransitionType = z.enum([
 export type TransitionType = z.infer<typeof TransitionType>;
 const transitionType = TransitionType.default("crossfade");
 
+/**
+ * Chroma key (green/blue screen) on a visual clip: the `color` is made
+ * transparent so the layer BENEATH shows through. Resolved to the ffmpeg
+ * `chromakey` filter (color:similarity:blend, verified against ffmpeg-filters.html)
+ * plus an optional `despill=type=…:mix=spill` pass. Optional so existing docs stay
+ * valid. Composites best when the keyed clip is an OVERLAY (b-roll) over the main
+ * footage; the canvas preview approximates the key by dropping the fill. Faithful:
+ * removes a background color, never alters the subject.
+ */
+export const ChromaKey = z.object({
+  /** The key color to remove (green screen by default). */
+  color: HexColor.default("#00d000"),
+  /** 0.01 (exact color only) .. 1 (matches everything) — ffmpeg chromakey `similarity`. */
+  similarity: z.number().min(0.01).max(1).default(0.3),
+  /** 0 (hard edge) .. 1 (soft edge) — ffmpeg chromakey `blend`. */
+  blend: z.number().min(0).max(1).default(0.1),
+  /** 0 (off) .. 1 — spill suppression strength (ffmpeg `despill` mix); 0 skips despill. */
+  spill: z.number().min(0).max(1).default(0),
+});
+export type ChromaKey = z.infer<typeof ChromaKey>;
+
+/**
+ * How a visual clip composites over the layer beneath it. Canvas maps these to
+ * `globalCompositeOperation`; the ffmpeg export maps them to `blend=all_mode=…`
+ * (screen/multiply/overlay/addition/softlight — every name verified against
+ * ffmpeg-filters.html). "normal" is a plain over-composite (the default; how every
+ * clip behaved before). A non-normal blend on an OVERLAY (b-roll) clip covers the
+ * frame and blends over the base — a finishing/texture/double-exposure layer.
+ */
+export const BlendMode = z.enum(["normal", "screen", "multiply", "overlay", "add", "soft-light"]);
+export type BlendMode = z.infer<typeof BlendMode>;
+
+/**
+ * Blur or pixelate (mosaic) a rectangular REGION of a clip — hiding a face, plate,
+ * or logo. Coordinates are composition px, top-left anchored. Resolved on export by
+ * cropping the region, running `boxblur` (blur) or `pixelize` (pixelate) on it, and
+ * overlaying it back (all verified against ffmpeg-filters.html). The canvas preview
+ * approximates the obscured region. Faithful: obscures a region, no content change.
+ */
+export const RegionFx = z.object({
+  type: z.enum(["blur", "pixelate"]),
+  x: z.number(),
+  y: z.number(),
+  w: z.number().positive(),
+  h: z.number().positive(),
+  /** 0..1 strength (blur radius / mosaic block size scale). */
+  amount: z.number().min(0).max(1).default(0.5),
+});
+export type RegionFx = z.infer<typeof RegionFx>;
+
+/**
+ * A mask that reveals only PART of a visual clip — inside the shape (or outside it
+ * when `invert`). Coordinates are composition px, top-left anchored. The canvas
+ * previews it with a clip path + a feathered edge; the ffmpeg export builds a
+ * shaped alpha with `geq` (rect/ellipse, feather, invert) so the masked clip
+ * composites over the layer beneath (best on an OVERLAY/b-roll clip). Optional so
+ * existing docs stay valid. Faithful: hides part of the frame, no content change.
+ */
+export const Mask = z.object({
+  shape: z.enum(["rect", "ellipse"]).default("rect"),
+  x: z.number(),
+  y: z.number(),
+  w: z.number().positive(),
+  h: z.number().positive(),
+  /** Feather (soft edge) width in composition px (0 = hard edge). */
+  feather: z.number().min(0).default(0),
+  /** Reveal the OUTSIDE of the shape instead of the inside. */
+  invert: z.boolean().default(false),
+});
+export type Mask = z.infer<typeof Mask>;
+
 /** A clip that plays a slice of a video asset. */
 export const VideoClip = z.object({
   ...clipBase,
@@ -247,6 +354,19 @@ export const VideoClip = z.object({
    * clones it with `tpad=stop_mode=clone`.
    */
   freezeAtSec: z.number().nonnegative().optional(),
+  /** Optional chroma key (green/blue screen) — composites over the layer beneath. */
+  chroma: ChromaKey.optional(),
+  /** How this clip composites over the layer beneath ("normal" = plain over). */
+  blendMode: BlendMode.default("normal"),
+  /** Optional blur/pixelate over a rectangular region (hide a face/plate/logo). */
+  regionFx: RegionFx.optional(),
+  /** Optional shape mask — reveal only inside (or outside) the shape. */
+  mask: Mask.optional(),
+  /** Audio fade-in / fade-out over the clip edges, in seconds (0 = none; ffmpeg afade). */
+  fadeInSec: z.number().nonnegative().default(0),
+  fadeOutSec: z.number().nonnegative().default(0),
+  /** Stereo pan: -1 hard left … 0 center … 1 hard right (ffmpeg pan). */
+  pan: z.number().min(-1).max(1).default(0),
 });
 export type VideoClip = z.infer<typeof VideoClip>;
 
@@ -263,6 +383,14 @@ export const ImageClip = z.object({
   transitionType,
   /** Optional animation keyframes (x/y/scale/rotation/opacity), resolved by `valueAt`. */
   keyframes: z.array(Keyframe).optional(),
+  /** Optional chroma key (green/blue screen) — composites over the layer beneath. */
+  chroma: ChromaKey.optional(),
+  /** How this clip composites over the layer beneath ("normal" = plain over). */
+  blendMode: BlendMode.default("normal"),
+  /** Optional blur/pixelate over a rectangular region (hide a face/plate/logo). */
+  regionFx: RegionFx.optional(),
+  /** Optional shape mask — reveal only inside (or outside) the shape. */
+  mask: Mask.optional(),
 });
 export type ImageClip = z.infer<typeof ImageClip>;
 
@@ -342,6 +470,11 @@ export const AudioClip = z.object({
   volume: z.number().min(0).max(1).default(1),
   /** Optional volume keyframes (0..1), resolved by `valueAt`; e.g. audio fades/ducks. */
   keyframes: z.array(Keyframe).optional(),
+  /** Audio fade-in / fade-out over the clip edges, in seconds (0 = none; ffmpeg afade). */
+  fadeInSec: z.number().nonnegative().default(0),
+  fadeOutSec: z.number().nonnegative().default(0),
+  /** Stereo pan: -1 hard left … 0 center … 1 hard right (ffmpeg pan). */
+  pan: z.number().min(-1).max(1).default(0),
 });
 export type AudioClip = z.infer<typeof AudioClip>;
 
@@ -539,6 +672,13 @@ export const EditDoc = z.object({
   vfx: Vfx.prefault({}),
   /** Timeline markers (chapter points / beats / notes); empty by default. */
   markers: z.array(Marker).default([]),
+  /**
+   * Normalize the final mix to a broadcast/streaming loudness target (EBU R128)
+   * on export via the ffmpeg `loudnorm` filter (I=-14 LUFS, TP=-1.5 dBTP, LRA=11 —
+   * a sensible streaming target). Off by default so existing docs/exports are
+   * unchanged. Faithful: levels only, no content change.
+   */
+  loudnorm: z.boolean().default(false),
 });
 export type EditDoc = z.infer<typeof EditDoc>;
 

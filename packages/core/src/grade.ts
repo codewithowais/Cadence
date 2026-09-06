@@ -6,6 +6,7 @@
  * trustworthy.
  */
 import type {
+  BlendMode,
   CalloutClip,
   ColorGrade,
   CursorClip,
@@ -86,8 +87,45 @@ export function cssFilter(look: ColorGrade): string {
   if (look.brightness !== 1) parts.push(`brightness(${round(look.brightness)})`);
   if (look.contrast !== 1) parts.push(`contrast(${round(look.contrast)})`);
   if (look.saturation !== 1) parts.push(`saturate(${round(look.saturation)})`);
+  // Hue rotation previews via CSS/canvas hue-rotate(); export uses ffmpeg hue=h=.
+  if (look.hueShift && look.hueShift !== 0) parts.push(`hue-rotate(${round(look.hueShift)}deg)`);
   if (look.warmth > 0) parts.push(`sepia(${round(look.warmth * 0.45)})`);
+  // NOTE: `curves` has no CSS filter equivalent, so it is not previewed here — the
+  // ffmpeg export applies it exactly (documented preview limit).
   return parts.length ? parts.join(" ") : "none";
+}
+
+/**
+ * Map a BlendMode to a canvas `globalCompositeOperation`. Pure + deterministic,
+ * the single mapping the canvas shares (the ffmpeg export mirrors it via
+ * `blend=all_mode=…`): screen/multiply/overlay/soft-light map to the identically
+ * named composite ops, "add" maps to "lighter" (additive), and "normal" is the
+ * default "source-over".
+ */
+export type CanvasBlendOp =
+  | "source-over"
+  | "screen"
+  | "multiply"
+  | "overlay"
+  | "soft-light"
+  | "lighter";
+
+export function blendCompositeOperation(mode: BlendMode): CanvasBlendOp {
+  switch (mode) {
+    case "screen":
+      return "screen";
+    case "multiply":
+      return "multiply";
+    case "overlay":
+      return "overlay";
+    case "soft-light":
+      return "soft-light";
+    case "add":
+      return "lighter";
+    case "normal":
+    default:
+      return "source-over";
+  }
 }
 
 /** Resolve a keyframe segment easing to its 0..1 curve. Pure + deterministic. */
