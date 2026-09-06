@@ -27,6 +27,8 @@ import {
   rollEdit,
   slipEdit,
   slideEdit,
+  setSpeedRamp,
+  type SpeedRampPreset,
 } from "@cadence/director";
 import type { TrackFlag } from "./CutsStrip";
 import type { Transcript } from "@cadence/understanding";
@@ -65,6 +67,8 @@ import {
   duplicateClip,
   setClipVolume,
   setClipFade,
+  setClipSpeed,
+  clearClipSpeedRamp,
   addMarkerAt,
   removeMarkerAt,
   addMarkersAt,
@@ -1174,6 +1178,52 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     }, { coalesce: coalesceKey });
   }
 
+  // ---- Speed ramp (time remap / CapCut "Curve") -----------------------------
+  // Applying a ramp routes through the pure engine op `setSpeedRamp`; a live
+  // curve drag reads the freshest doc via the functional commit form and
+  // coalesces the whole gesture into one undo step. Clearing / setting a constant
+  // speed use the small pure web ops (edit-ops.ts). All swallow a pure-fn throw
+  // (e.g. a mid-drag miss) as a no-op so a fast drag never breaks the history.
+
+  /**
+   * Apply a speed ramp (a named preset or explicit `[progress, multiplier]`
+   * control points) to ONE video clip. We target the clip by the time at its
+   * MIDPOINT — unambiguous even when transitions overlap clips at their edges —
+   * and let the engine retime it (timeline duration is preserved; the source
+   * mapping integrates the curve, so preview + export agree).
+   */
+  function setClipSpeedRamp(
+    clipId: string,
+    arg: { preset?: SpeedRampPreset; points?: [number, number][] },
+    coalesceKey?: string,
+  ) {
+    setPlaying(false);
+    const found = findClip(doc, clipId);
+    if (!found || found.clip.kind !== "video") return;
+    const atSec = found.clip.start + found.clip.duration / 2;
+    commit(
+      (prev) => {
+        try {
+          return setSpeedRamp(prev, { ...arg, atSec });
+        } catch {
+          return prev;
+        }
+      },
+      coalesceKey ? { coalesce: coalesceKey } : undefined,
+    );
+  }
+
+  /** Set a video clip's CONSTANT speed (also clears any ramp); coalesced per clip. */
+  function setClipConstantSpeed(clipId: string, speed: number, coalesceKey: string) {
+    setPlaying(false);
+    commit(setClipSpeed(doc, clipId, speed), { coalesce: coalesceKey });
+  }
+
+  /** Clear a clip's speed ramp — revert to its constant `speed`. */
+  function clearClipRamp(clipId: string) {
+    commit(clearClipSpeedRamp(doc, clipId));
+  }
+
   // ---- On-preview placement (Walkthrough room) ------------------------------
 
   /**
@@ -1553,6 +1603,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onRoll: rollClipBy,
               onSlip: slipClipBy,
               onSlide: slideClipBy,
+              onSetSpeedRamp: setClipSpeedRamp,
+              onSetConstantSpeed: setClipConstantSpeed,
+              onClearSpeedRamp: clearClipRamp,
               onDropMedia: dropMediaToTrack,
             }}
           />

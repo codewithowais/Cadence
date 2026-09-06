@@ -243,6 +243,42 @@ export function setClipFade(
   return parseEditDoc(clone);
 }
 
+// ---- Speed (constant) / speed-ramp clear -----------------------------------
+
+/**
+ * Set a single VIDEO clip's CONSTANT playback speed (0.25..4) and drop any speed
+ * ramp on it, so the clip plays back at one steady multiplier. The clip keeps its
+ * timeline duration; only how much source it consumes changes (see `sourceTimeAt`
+ * in core). Non-video clips are a no-op. Pure + re-parsed through the schema.
+ *
+ * A scalar `speed` and a `speedRamp` are mutually exclusive in the engine (the
+ * ramp overrides the scalar), so setting a constant speed also removes the ramp —
+ * this is the "Constant speed" escape hatch from a curve.
+ */
+export function setClipSpeed(doc: EditDoc, clipId: string, speed: number): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const found = findClip(clone, clipId);
+  if (found && found.clip.kind === "video") {
+    found.clip.speed = clamp(round(speed), 0.25, 4);
+    delete found.clip.speedRamp;
+  }
+  return parseEditDoc(clone);
+}
+
+/**
+ * Remove a VIDEO clip's speed RAMP (time-remap curve), reverting it to its scalar
+ * constant `speed`. Non-video clips / clips with no ramp are a no-op. Pure +
+ * re-parsed through the schema.
+ */
+export function clearClipSpeedRamp(doc: EditDoc, clipId: string): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const found = findClip(clone, clipId);
+  if (found && found.clip.kind === "video") {
+    delete found.clip.speedRamp;
+  }
+  return parseEditDoc(clone);
+}
+
 // ---- Trim ------------------------------------------------------------------
 
 export type TrimEdge = "left" | "right";

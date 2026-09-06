@@ -4,6 +4,15 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.17 — speed-ramp UI (time-remap curve)
+- A **Speed** section in the clip inspector (video clips): the five `SPEED_RAMP_PRESETS` (ease-in-out / ramp-up / ramp-down / hero / bullet-time) + a **draggable speed curve** (progress × multiplier, log Y, add/drag/remove points, coalesced undo) + a constant-speed slider and a "Constant speed" clear. Wired to the committed `setSpeedRamp` engine via the undoable commit path.
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **17/17**.
+
+### S4.16 — LUT import + adjustment layers (engine)
+- **LUT:** additive `ColorGrade.lut` (a `.cube` path); ffmpeg appends `lut3d=file=` last (resolved through the media whitelist + escaped; export-only, canvas skips gracefully). Pure `applyLut` + `apply_lut` tool.
+- **Adjustment layers:** new `adjustment` clip kind (carries a `ColorGrade` + optional `Vfx`) on a topmost "adjustments" track; grades the final composite **time-gated** (`enable='between(t,a,b)'`) on export, and re-grades the whole frame in canvas during its window. Pure `addAdjustment` + `add_adjustment` tool. Both additive/backward-compatible.
+- *verified:* typecheck + test:unit 49 + verify **62/62** (+checks 61,62) + evals 5/5.
+
 ### S4.15 — 55-transition gallery UI (grouped + searchable)
 - The per-cut ◇ picker now shows all **55** transitions from the engine (`TRANSITION_TYPES`/`TRANSITION_GROUPS`), **grouped by family** with headings, a live **search** box, and a scrollable body (flips on overflow). Keeps duration + hard-cut + fade edges; preview honors every type.
 - *verified:* typecheck (root+web) + `next build` + Playwright e2e **17/17** (transitions.spec labels updated to directional names).

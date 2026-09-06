@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   clipProgress,
+  speedRampIntegral,
   valueAt,
   TRANSITION_GROUPS,
   TRANSITION_TYPES,
@@ -14,7 +15,7 @@ import {
   type TrackKind,
   type TransitionType,
 } from "@cadence/core";
-import { clipKeyframes } from "@cadence/director";
+import { clipKeyframes, SPEED_RAMP_PRESETS, type SpeedRampPreset } from "@cadence/director";
 import { fmtTime } from "@/lib/format";
 import { computeWaveform } from "@/lib/waveform";
 import { findClip, isMainSequentialTrack, maxTimelineDuration, MIN_CLIP_SEC, type TrimEdge } from "@/lib/edit-ops";
@@ -107,6 +108,21 @@ export interface TimelineEdit {
   onSlip: (clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) => void;
   /** Slide the clip along the timeline; its neighbours absorb the move. */
   onSlide: (clipId: string, deltaSec: number, coalesceKey: string, baseDoc?: EditDoc) => void;
+  // ---- Speed ramp / time remap (CapCut "Curve") ---------------------------
+  /**
+   * Apply a speed ramp to a VIDEO clip: a named `preset` or explicit
+   * `[clipProgress 0..1, speedMultiplier]` control points. During a live curve
+   * drag pass a `coalesceKey` so the whole gesture collapses into one undo step.
+   */
+  onSetSpeedRamp: (
+    clipId: string,
+    arg: { preset?: SpeedRampPreset; points?: [number, number][] },
+    coalesceKey?: string,
+  ) => void;
+  /** Set a video clip's CONSTANT speed (clears any ramp); coalesced per clip. */
+  onSetConstantSpeed: (clipId: string, speed: number, coalesceKey: string) => void;
+  /** Remove a video clip's speed ramp — revert to its constant speed. */
+  onClearSpeedRamp: (clipId: string) => void;
   // ---- Drag-and-drop from the Media grid (B4) ------------------------------
   /**
    * Drop a Media-grid tile onto a lane: insert that media as a clip on `trackId`
@@ -545,6 +561,8 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   >(null);
   // Whether the selected clip's keyframe editor is expanded (tucked by default).
   const [kfOpen, setKfOpen] = useState(false);
+  // Whether the selected video clip's speed-ramp editor is expanded (tucked).
+  const [speedOpen, setSpeedOpen] = useState(false);
   // Timeline trim mode (Wave E): Normal · Roll · Slip · Slide. Local to the strip.
   const [trimMode, setTrimMode] = useState<TrimMode>("normal");
 
@@ -1401,8 +1419,15 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
             edit={edit}
             kfOpen={kfOpen}
             onToggleKf={() => setKfOpen((o) => !o)}
+            speedOpen={speedOpen}
+            onToggleSpeed={() => setSpeedOpen((o) => !o)}
           />
           {kfOpen && <KeyframeEditor clip={selected.clip} timeSec={timeSec} edit={edit} />}
+          {speedOpen &&
+            selected.clip.kind === "video" &&
+            isMainSequentialTrack(selected.track) && (
+              <SpeedRampEditor clip={selected.clip} edit={edit} />
+            )}
         </>
       )}
 
@@ -1831,6 +1856,8 @@ function ClipInspector({
   edit,
   kfOpen,
   onToggleKf,
+  speedOpen,
+  onToggleSpeed,
 }: {
   doc: EditDoc;
   found: NonNullable<ReturnType<typeof findClip>>;
@@ -1838,10 +1865,17 @@ function ClipInspector({
   edit: TimelineEdit;
   kfOpen: boolean;
   onToggleKf: () => void;
+  speedOpen: boolean;
+  onToggleSpeed: () => void;
 }) {
   const { clip, track } = found;
   const canKeyframe = animatableProps(clip).length > 0;
   const kfCount = "keyframes" in clip && clip.keyframes ? clip.keyframes.length : 0;
+  // Speed ramp is video-only and retimes the MAIN footage (the engine skips
+  // overlay lanes), so offer it only for a video clip on a main sequential track.
+  const canSpeedRamp = clip.kind === "video" && isMainSequentialTrack(track);
+  const hasRamp = clip.kind === "video" && !!clip.speedRamp && clip.speedRamp.length >= 2;
+  const constSpeed = clip.kind === "video" ? clip.speed ?? 1 : 1;
   const hasVolume = clip.kind === "video" || clip.kind === "audio";
   const volume = hasVolume ? clip.volume : 1;
   const muted = hasVolume && clip.volume === 0;
@@ -1957,6 +1991,21 @@ function ClipInspector({
           ⬦ Keyframes{kfCount > 0 ? ` (${kfCount})` : ""}
         </button>
       )}
+      {canSpeedRamp && (
+        <button
+          type="button"
+          onClick={onToggleSpeed}
+          aria-pressed={speedOpen}
+          aria-label={speedOpen ? "Hide speed ramp" : "Show speed ramp"}
+          title="Speed ramp (time remap): a fast → slow → fast speed curve"
+          className={[
+            "rounded-md border px-2 py-1 transition",
+            speedOpen ? "border-amber/40 bg-amber/10 text-amber" : "border-line bg-panel text-muted hover:text-text",
+          ].join(" ")}
+        >
+          ⏩ Speed{hasRamp ? " · curve" : ` · ${constSpeed}×`}
+        </button>
+      )}
 
       {/* Advanced trims (Wave E) — discoverable ±0.1s nudges so users don't have
           to find the drag modes. Disabled when the op can't apply to this clip. */}
@@ -2015,6 +2064,365 @@ function ClipInspector({
       >
         Delete
       </button>
+    </div>
+  );
+}
+
+// ---- speed-ramp (time remap / CapCut "Curve") editor -----------------------
+
+/** A clamped video clip type (the only kind that carries a `speedRamp`). */
+type SpeedClip = Extract<Clip, { kind: "video" }>;
+
+/** Speed axis of the curve editor: 0.1×–4× on a LOG scale (so 0.5× / 2× sit
+ *  symmetrically around 1×, matching how the multiplier actually reads). */
+const SPEED_MIN = 0.1;
+const SPEED_MAX = 4;
+const SPEED_LOG_MIN = Math.log(SPEED_MIN);
+const SPEED_LOG_SPAN = Math.log(SPEED_MAX) - SPEED_LOG_MIN;
+
+const clampN = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
+const clamp01N = (n: number): number => clampN(n, 0, 1);
+const r3 = (n: number): number => Math.round(n * 1000) / 1000;
+
+/** speed multiplier → 0..1 fraction up the (log) Y axis. */
+const speedToFrac = (m: number): number =>
+  (Math.log(clampN(m, SPEED_MIN, SPEED_MAX)) - SPEED_LOG_MIN) / SPEED_LOG_SPAN;
+/** 0..1 fraction up the Y axis → speed multiplier. */
+const fracToSpeed = (f: number): number => Math.exp(SPEED_LOG_MIN + clamp01N(f) * SPEED_LOG_SPAN);
+
+/** Nice labels for the engine's speed-ramp presets, in a sensible display order. */
+const SPEED_RAMP_PRESET_META: { key: SpeedRampPreset; label: string }[] = [
+  { key: "ease-in-out", label: "Ease in-out" },
+  { key: "ramp-up", label: "Ramp up" },
+  { key: "ramp-down", label: "Ramp down" },
+  { key: "hero", label: "Hero" },
+  { key: "bullet-time", label: "Bullet time" },
+];
+
+/** Stable signature of a set of ramp points, for preset-active detection + sync. */
+const rampSig = (pts?: readonly (readonly [number, number])[] | null): string =>
+  pts && pts.length ? pts.map(([p, m]) => `${r3(p)},${r3(m)}`).join(" ") : "";
+
+/** Plain-language sketch of a ramp's shape, e.g. "fast → slow → fast". */
+function describeRamp(pts: readonly (readonly [number, number])[]): string {
+  const word = (m: number): string => (m < 0.85 ? "slow" : m > 1.2 ? "fast" : "normal");
+  const words: string[] = [];
+  for (const [, m] of pts) {
+    const w = word(m);
+    if (words[words.length - 1] !== w) words.push(w);
+  }
+  return words.length ? words.join(" → ") : "constant";
+}
+
+/**
+ * A compact, draggable speed-curve editor for the selected VIDEO clip (CapCut's
+ * "Curve" / time remap). X = clip progress 0→1, Y = speed multiplier 0.1×–4× on a
+ * log scale. Preset buttons seed a whole curve; dragging a point (or adding one by
+ * clicking the plot, removing one by right-click / Delete) edits the control
+ * points — every change routes through `edit.onSetSpeedRamp`, coalesced into one
+ * undo step per gesture. "Constant speed" clears the ramp back to a scalar speed.
+ *
+ * Handles are HTML buttons positioned by percentage over an SVG that draws the
+ * curve, so they stay crisp and keyboard-focusable at any width (the tone-curve
+ * editor's interaction pattern, generalized to draggable X + add/remove).
+ */
+function SpeedRampEditor({ clip, edit }: { clip: SpeedClip; edit: TimelineEdit }) {
+  const constSpeed = clip.speed ?? 1;
+  const ramp = clip.speedRamp;
+  const hasRamp = !!ramp && ramp.length >= 2;
+  // The doc's current control points, or a flat line at the constant speed when
+  // there's no ramp yet (so the first drag turns a constant into a curve).
+  const docSig = rampSig(ramp) + `|${constSpeed}`;
+  const plotRef = useRef<HTMLDivElement>(null);
+  const [pts, setPts] = useState<[number, number][]>(() =>
+    hasRamp ? ramp!.map(([p, m]) => [p, m] as [number, number]) : [[0, constSpeed], [1, constSpeed]],
+  );
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [selIdx, setSelIdx] = useState<number | null>(null);
+
+  // Re-sync from the doc when it changes (preset applied, undo/redo, cleared) and
+  // we're not mid-drag — mirrors the tone-curve editor's sig-driven resync.
+  useEffect(() => {
+    if (dragIdx !== null) return;
+    const cur = clip.speedRamp;
+    setPts(
+      cur && cur.length >= 2
+        ? cur.map(([p, m]) => [p, m] as [number, number])
+        : [[0, clip.speed ?? 1], [1, clip.speed ?? 1]],
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docSig, dragIdx]);
+
+  const emit = useCallback(
+    (next: [number, number][]) => {
+      const sorted = [...next].sort((a, b) => a[0] - b[0]);
+      edit.onSetSpeedRamp(clip.id, { points: sorted }, `speed-${clip.id}`);
+    },
+    [edit, clip.id],
+  );
+
+  // Live point drag: endpoints keep their X (0 / 1); interior points move freely
+  // in X within their neighbours. Attached while an index is being dragged.
+  useEffect(() => {
+    if (dragIdx === null) return;
+    const move = (e: PointerEvent) => {
+      const rect = plotRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const px = clamp01N((e.clientX - rect.left) / rect.width);
+      const py = clamp01N(1 - (e.clientY - rect.top) / rect.height);
+      const m = fracToSpeed(py);
+      setPts((prev) => {
+        const next = prev.map((pt) => [...pt] as [number, number]);
+        const isFirst = dragIdx === 0;
+        const isLast = dragIdx === next.length - 1;
+        let p = px;
+        if (isFirst) p = 0;
+        else if (isLast) p = 1;
+        else p = clampN(px, next[dragIdx - 1]![0] + 0.001, next[dragIdx + 1]![0] - 0.001);
+        next[dragIdx] = [r3(p), r3(m)];
+        emit(next);
+        return next;
+      });
+    };
+    const up = () => setDragIdx(null);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    // Attach once per drag; `emit`/geometry are stable for the gesture's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragIdx]);
+
+  // Add a point where the plot background is clicked (unless it lands on top of
+  // an existing point's X). Interior points are fully draggable afterwards.
+  const addPointAt = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const rect = plotRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const p = clamp01N((e.clientX - rect.left) / rect.width);
+    const m = fracToSpeed(clamp01N(1 - (e.clientY - rect.top) / rect.height));
+    setPts((prev) => {
+      if (prev.some((pt) => Math.abs(pt[0] - p) < 0.02)) return prev;
+      const next = [...prev.map((pt) => [...pt] as [number, number]), [r3(p), r3(m)] as [number, number]].sort(
+        (a, b) => a[0] - b[0],
+      );
+      emit(next);
+      setSelIdx(next.findIndex((pt) => pt[0] === r3(p)));
+      return next;
+    });
+  };
+
+  // Remove an INTERIOR point (right-click / Delete). Endpoints are kept so the
+  // curve always spans the whole clip; a curve with only its two endpoints left
+  // is effectively a constant.
+  const removePoint = (idx: number) => {
+    setPts((prev) => {
+      if (idx === 0 || idx === prev.length - 1 || prev.length <= 2) return prev;
+      const next = prev.filter((_, i) => i !== idx);
+      emit(next);
+      return next;
+    });
+    setSelIdx(null);
+  };
+
+  const nudge = (idx: number, dP: number, dSpeedFrac: number) => {
+    setPts((prev) => {
+      const next = prev.map((pt) => [...pt] as [number, number]);
+      const isFirst = idx === 0;
+      const isLast = idx === next.length - 1;
+      let p = next[idx]![0];
+      if (!isFirst && !isLast && dP !== 0) {
+        p = clampN(p + dP, next[idx - 1]![0] + 0.001, next[idx + 1]![0] - 0.001);
+      }
+      const m = dSpeedFrac !== 0 ? fracToSpeed(clamp01N(speedToFrac(next[idx]![1]) + dSpeedFrac)) : next[idx]![1];
+      next[idx] = [r3(p), r3(m)];
+      emit(next);
+      return next;
+    });
+  };
+
+  const sorted = [...pts].sort((a, b) => a[0] - b[0]);
+  const activePreset = SPEED_RAMP_PRESET_META.find(
+    ({ key }) => rampSig(SPEED_RAMP_PRESETS[key]) === rampSig(hasRamp ? ramp : null),
+  );
+  // Source consumed by the ramp = timeline duration × mean multiplier (the
+  // integral of the curve). Honest readout: the clip's on-screen length is fixed.
+  const sourceUsed = hasRamp ? clip.duration * speedRampIntegral(sorted, 1) : clip.duration * constSpeed;
+
+  // Curve geometry in a 0..1000 viewBox (SVG scales to the plot; handles are HTML).
+  const VB = 1000;
+  const toVX = (p: number) => p * VB;
+  const toVY = (m: number) => (1 - speedToFrac(m)) * VB;
+  const curvePath = sorted
+    .map((pt, i) => `${i === 0 ? "M" : "L"}${toVX(pt[0]).toFixed(1)},${toVY(pt[1]).toFixed(1)}`)
+    .join(" ");
+  const oneY = toVY(1);
+
+  return (
+    <div className="mt-2 rounded-xl border border-line bg-elevated/40 px-3 py-2">
+      <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+        <span className="uppercase tracking-wider text-faint">Speed ramp</span>
+        <span className="text-line">·</span>
+        <span className="text-muted">
+          time remap — {hasRamp ? describeRamp(sorted) : "constant"}
+          {" · "}applies on preview + export
+        </span>
+      </div>
+
+      {/* Preset buttons + constant-speed clear */}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        {SPEED_RAMP_PRESET_META.map(({ key, label }) => {
+          const on = activePreset?.key === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => edit.onSetSpeedRamp(clip.id, { preset: key })}
+              aria-pressed={on}
+              title={`${label} speed ramp — ${describeRamp(SPEED_RAMP_PRESETS[key])}`}
+              className={[
+                "rounded-md border px-2 py-1 text-[11px] transition",
+                on ? "border-amber bg-amber/10 text-amber" : "border-line bg-panel text-muted hover:border-amber/40 hover:text-text",
+              ].join(" ")}
+            >
+              {label}
+            </button>
+          );
+        })}
+        <span className="mx-0.5 h-5 w-px bg-line" aria-hidden />
+        <button
+          type="button"
+          onClick={() => edit.onClearSpeedRamp(clip.id)}
+          disabled={!hasRamp}
+          aria-pressed={!hasRamp}
+          title="Remove the speed curve and play at a single constant speed"
+          className={[
+            "rounded-md border px-2 py-1 text-[11px] transition",
+            !hasRamp ? "border-amber/40 bg-amber/10 text-amber" : "border-line bg-panel text-muted hover:text-text",
+          ].join(" ")}
+        >
+          Constant speed
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-stretch gap-3">
+        {/* The draggable curve. Y labels sit to the left. */}
+        <div className="flex items-stretch gap-1.5">
+          <div className="flex w-8 shrink-0 flex-col justify-between py-0.5 text-right text-[9px] tabular-nums text-faint">
+            <span>{SPEED_MAX}×</span>
+            <span>1×</span>
+            <span>{SPEED_MIN}×</span>
+          </div>
+          <div
+            ref={plotRef}
+            role="group"
+            aria-label="Speed curve — click to add a point, drag points to shape, right-click a point to remove"
+            className="relative h-32 w-64 max-w-full shrink-0 cursor-copy touch-none rounded-lg border border-line bg-panel"
+            onPointerDown={addPointAt}
+          >
+            <svg
+              viewBox={`0 0 ${VB} ${VB}`}
+              preserveAspectRatio="none"
+              className="pointer-events-none absolute inset-0 h-full w-full"
+              aria-hidden
+              focusable="false"
+            >
+              {/* 1× reference + vertical thirds */}
+              <line x1={0} y1={oneY} x2={VB} y2={oneY} stroke="var(--color-line)" strokeWidth={2} strokeDasharray="10 10" />
+              <line x1={VB / 3} y1={0} x2={VB / 3} y2={VB} stroke="var(--color-line)" strokeWidth={1} strokeDasharray="6 10" opacity={0.5} />
+              <line x1={(2 * VB) / 3} y1={0} x2={(2 * VB) / 3} y2={VB} stroke="var(--color-line)" strokeWidth={1} strokeDasharray="6 10" opacity={0.5} />
+              <path d={curvePath} fill="none" stroke="var(--color-amber)" strokeWidth={6} vectorEffect="non-scaling-stroke" />
+            </svg>
+            {sorted.map((pt, i) => {
+              const isEnd = i === 0 || i === sorted.length - 1;
+              const isSel = selIdx === i;
+              return (
+                <button
+                  key={`${i}-${pt[0]}`}
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+                    setSelIdx(i);
+                    setDragIdx(i);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    removePoint(i);
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelIdx(i);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Delete" || e.key === "Backspace") {
+                      e.preventDefault();
+                      removePoint(i);
+                    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                      e.preventDefault();
+                      nudge(i, 0, e.key === "ArrowUp" ? 0.05 : -0.05);
+                    } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !isEnd) {
+                      e.preventDefault();
+                      nudge(i, e.key === "ArrowRight" ? 0.02 : -0.02, 0);
+                    }
+                  }}
+                  aria-label={`Speed point at ${Math.round(pt[0] * 100)}% of the clip, ${pt[1]}×${isEnd ? " (edge — speed only)" : ""}`}
+                  title={`${pt[1]}× @ ${Math.round(pt[0] * 100)}% · drag to shape${isEnd ? "" : " · right-click to remove"}`}
+                  className="absolute z-10 grid h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 cursor-grab place-items-center rounded-full border-2 border-panel bg-amber outline-none transition active:cursor-grabbing"
+                  style={{
+                    left: `${pt[0] * 100}%`,
+                    top: `${(1 - speedToFrac(pt[1])) * 100}%`,
+                    boxShadow: isSel ? "0 0 0 2px var(--color-amber)" : undefined,
+                  }}
+                />
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Right column: X-axis label, readout, and a constant-speed slider. */}
+        <div className="flex min-w-[180px] flex-1 flex-col justify-between gap-2 text-[11px]">
+          <div className="flex items-center justify-between text-[9px] uppercase tracking-wider text-faint">
+            <span>start</span>
+            <span>clip progress</span>
+            <span>end</span>
+          </div>
+          <p className="text-muted">
+            {hasRamp ? (
+              <>
+                Curve: <span className="text-text">{describeRamp(sorted)}</span>. The clip stays{" "}
+                <span className="tabular-nums">{fmtTime(clip.duration)}</span> long; it plays{" "}
+                <span className="tabular-nums">{fmtTime(sourceUsed)}</span> of source.
+              </>
+            ) : (
+              <>Add a point or pick a preset to build a speed curve. The clip keeps its {fmtTime(clip.duration)} length.</>
+            )}
+          </p>
+          <label className="flex items-center gap-2">
+            <span className="shrink-0 text-faint">Constant</span>
+            <input
+              type="range"
+              min={0.25}
+              max={4}
+              step={0.05}
+              value={hasRamp ? 1 : constSpeed}
+              onChange={(e) => edit.onSetConstantSpeed(clip.id, Number(e.target.value), `cspeed-${clip.id}`)}
+              aria-label={`Constant speed: ${hasRamp ? "1" : constSpeed}×`}
+              title="Set a single constant speed (clears the curve)"
+              style={{ accentColor: "var(--color-amber)" }}
+              className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-line"
+            />
+            <span className="w-9 shrink-0 text-right tabular-nums text-muted">
+              {hasRamp ? "—" : `${constSpeed}×`}
+            </span>
+          </label>
+        </div>
+      </div>
     </div>
   );
 }
