@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.30 — clean-audio UI (Audio room toggle)
+- A **"Clean audio (reduce noise)"** toggle in the Audio room next to Normalize loudness — reads `doc.cleanAudio`, toggles via `setCleanAudio` through the undoable commit; honest export-only helper. Reuses the existing wiring (no Editor changes).
+- *verified:* typecheck (root+web) + `next build` + Playwright e2e **19/19**.
+
 ### S4.29 — clean audio (noise reduction) on export
 - Additive doc-level `cleanAudio` flag (beside `loudnorm`). On export, inserts ffmpeg **`afftdn`** (FFT denoise ~12dB, no model) into the final audio chain before loudnorm (denoise → normalize); `arnndn=m=<path>` used instead when `ARNNDN_MODEL` is set (setup-gated). Off ⇒ byte-identical; audioless-safe. Pure `setCleanAudio` + `clean_audio` tool. Export-only (preview note). Real-encode check 64 covers it (13 docs).
 - *verified:* typecheck (root+web) + test:unit 49 + verify 64 + evals 5/5.

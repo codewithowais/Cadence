@@ -21,6 +21,7 @@ import {
   chromaKey,
   currentGrade,
   normalizeLoudness,
+  setCleanAudio,
   regionBlur,
   setBlend,
   setPan,
@@ -2053,6 +2054,7 @@ function AudioRoom({
   const musicClip = doc.tracks.find((t) => t.id === "music")?.clips.find((c): c is AudioClip => c.kind === "audio");
   const voiceClip = doc.tracks.find((t) => t.id === "voiceover")?.clips.find((c): c is AudioClip => c.kind === "audio");
   const loudnorm = doc.loudnorm === true;
+  const cleanAudio = doc.cleanAudio === true;
 
   const renderTrack = (trackId: "music" | "voiceover", label: string, clip: AudioClip) => {
     const fade = trackFade(doc, trackId) ?? { fadeInSec: 0, fadeOutSec: 0 };
@@ -2153,6 +2155,16 @@ function AudioRoom({
         </Pill>
         <span className="text-[11px] text-faint">
           {loudnorm ? "Final mix normalized to −14 LUFS on export (EBU R128)." : "Even out the overall level to a −14 LUFS target on export."}
+        </span>
+      </Row>
+
+      {/* Doc-level noise reduction (→ setCleanAudio) */}
+      <Row label="clean audio">
+        <Pill onClick={() => onApplyDoc(setCleanAudio(doc, !cleanAudio))} disabled={busy} active={cleanAudio}>
+          {cleanAudio ? "Clean audio: on" : "Clean audio (reduce noise)"}
+        </Pill>
+        <span className="text-[11px] text-faint">
+          Reduces background hiss/hum on export — the preview is unchanged.
         </span>
       </Row>
 
