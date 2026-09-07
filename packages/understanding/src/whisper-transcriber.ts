@@ -114,7 +114,10 @@ export async function assertLocalMediaPath(
 
   let real: string;
   try {
-    real = await realpath(src);
+    // turbopackIgnore: this is a runtime SSRF-guard resolution of a caller-supplied
+    // media path, NOT a static asset reference. Without the opt-out Turbopack traces
+    // the WHOLE project into the serverless function, blowing Vercel's size limit.
+    real = await realpath(/* turbopackIgnore: true */ src);
   } catch {
     throw new Error("invalid media path: does not resolve to an existing file");
   }
@@ -132,7 +135,7 @@ export async function assertLocalMediaPath(
   // Containment: only enforced when a base dir is itself resolvable.
   let base: string | null = null;
   try {
-    base = await realpath(await mediaBaseDir(env));
+    base = await realpath(/* turbopackIgnore: true */ await mediaBaseDir(env));
   } catch {
     base = null; // no configured/existing base → rely on the checks above.
   }

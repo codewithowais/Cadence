@@ -1391,8 +1391,12 @@ export const generateVoiceoverTool: DirectorTool<{ text: string; voice?: string;
     volume: z.number().min(0).max(1).optional(),
   }),
   async execute(input, ctx) {
-    // Lazy-imported (server-only) — keeps the understanding barrel out of client bundles.
-    const { selectTtsProvider, ttsConfigFromEnv, estimateSpeechSec } = await import("@cadence/understanding");
+    // Lazy-imported from the narrow ./tts subpath (NOT the barrel) — the barrel
+    // re-exports whisper-transcriber.ts (node builtins + fs.realpath), and Turbopack
+    // traces even dynamic imports through the client graph (Editor.tsx → director
+    // barrel → tools.ts), which pulled the transcriber into the client bundle and
+    // tripped the "dynamic filesystem access → trace whole project" build failure.
+    const { selectTtsProvider, ttsConfigFromEnv, estimateSpeechSec } = await import("@cadence/understanding/tts");
     const provider = selectTtsProvider(ttsConfigFromEnv());
     if (!(await provider.isAvailable())) {
       // Graceful, honest gate — surfaced verbatim by the Director.
