@@ -27,6 +27,7 @@ import {
   regionBlur,
   setBlend,
   setPan,
+  setStabilize,
   LOOK_KEYS,
   LOOK_PRESETS,
   NEUTRAL_GRADE,
@@ -1848,6 +1849,14 @@ function AdvancedFx({
     );
   };
 
+  // Stabilization — export-only vidstab; toggled on every main-track video clip.
+  const stabilized = doc.tracks
+    .filter((t) => !["titles", "captions", "broll", "fades", "music", "cursor", "callouts", "demo-text", "adjustments", "shapes"].includes(t.id))
+    .flatMap((t) => t.clips)
+    .some((c) => c.kind === "video" && (c as { stabilize?: boolean }).stabilize);
+  const hasVideo = mediaList.some((m) => m.kind === "video");
+  const toggleStabilize = () => onApplyDoc(setStabilize(doc, !stabilized));
+
   return (
     <div aria-label="Advanced FX" className="flex flex-col gap-2">
       {!hasVisual && (
@@ -1855,6 +1864,13 @@ function AdvancedFx({
           Add a video or photo to use chroma key, blend, blur and masks.
         </p>
       )}
+      {/* Stabilize footage (→ setStabilize; applied on export via vidstab) */}
+      <Row label="stabilize">
+        <Pill onClick={toggleStabilize} disabled={busy || !hasVideo} active={stabilized}>
+          {stabilized ? "Stabilizing" : "Stabilize footage"}
+        </Pill>
+        <span className="text-[10px] text-faint">Smooths shaky video on export.</span>
+      </Row>
       {/* Chroma key (→ chromaKey / clearChroma) */}
       <Row label="chroma key">
         <Pill onClick={toggleChroma} disabled={disabled} active={!!chroma}>

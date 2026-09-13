@@ -1843,6 +1843,28 @@ export function removeKeyframe(doc: EditDoc, clipId: string, prop: KeyframeProp,
  * there is reversed; otherwise every main video clip is. The source-time mapping
  * reverses in core's `sourceTimeAt`; the ffmpeg export adds reverse/areverse.
  */
+/**
+ * Toggle EXPORT-TIME stabilization on video clips (ffmpeg vidstab two-pass at
+ * export; the preview is unchanged, like loudnorm/cleanAudio). Targets a clip at
+ * `atSec` when given, else every main-track video clip. `on` defaults to true.
+ * Faithful: smooths existing frames, invents nothing.
+ */
+export function setStabilize(doc: EditDoc, on = true, opts: { atSec?: number } = {}): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  let changed = 0;
+  for (const track of clone.tracks) {
+    if (!isMainVisualTrack(track.id)) continue;
+    for (const clip of track.clips) {
+      if (clip.kind !== "video") continue;
+      if (opts.atSec !== undefined && !(opts.atSec >= clip.start && opts.atSec < clip.start + clip.duration)) continue;
+      (clip as { stabilize?: boolean }).stabilize = on;
+      changed++;
+    }
+  }
+  if (changed === 0) throw new Error("Add a video first — stabilization needs footage.");
+  return parseEditDoc(clone);
+}
+
 export function reverseClip(doc: EditDoc, opts: { atSec?: number } = {}): EditDoc {
   const clone: EditDoc = structuredClone(doc);
   let changed = 0;

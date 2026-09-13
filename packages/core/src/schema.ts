@@ -542,6 +542,14 @@ export const VideoClip = z.object({
    * clones it with `tpad=stop_mode=clone`.
    */
   freezeAtSec: z.number().nonnegative().optional(),
+  /**
+   * Stabilize shaky footage on export (ffmpeg vidstab two-pass: `vidstabdetect`
+   * writes a per-clip transforms sidecar, `vidstabtransform` smooths). EXPORT-ONLY
+   * — the live preview is unchanged (like loudnorm / cleanAudio), a documented
+   * limitation. Optional + defaulted-off so existing docs are byte-identical.
+   * Faithful: smooths camera motion of the EXISTING frames, invents nothing.
+   */
+  stabilize: z.boolean().default(false),
   /** Optional chroma key (green/blue screen) — composites over the layer beneath. */
   chroma: ChromaKey.optional(),
   /** How this clip composites over the layer beneath ("normal" = plain over). */

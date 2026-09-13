@@ -15,7 +15,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configFromEnv, selectProvider, type EnhanceResult } from "@cadence/enhance";
-import type { EditDoc } from "@cadence/core";
+import { sourceSpanSec, type EditDoc } from "@cadence/core";
 import { buildExportPlan, type KaraokeOverlayMap, type ResolveMediaPath, type TextOverlayMap } from "./plan";
 import {
   renderTextOverlays,
@@ -75,19 +75,24 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
     let overlays: TextOverlayMap | undefined;
     let karaokeOverlays: KaraokeOverlayMap | undefined;
     let shapeOverlays: TextOverlayMap | undefined;
+    let stabilizeTransforms: Map<string, string> | undefined;
     const needsKaraoke = docNeedsKaraokeOverlays(doc);
     const needsShapes = docNeedsShapeOverlays(doc);
-    if (docNeedsTextOverlays(doc) || needsKaraoke || needsShapes) {
+    const needsStabilize = docNeedsStabilize(doc);
+    if (docNeedsTextOverlays(doc) || needsKaraoke || needsShapes || needsStabilize) {
       overlayDir = await mkdtemp(join(tmpdir(), "cadence-text-"));
       overlays = await renderTextOverlays(doc, overlayDir);
       if (needsKaraoke) karaokeOverlays = await renderKaraokeOverlays(doc, overlayDir);
       if (needsShapes) shapeOverlays = await renderShapeOverlays(doc, overlayDir);
+      // vidstab PRE-PASS: detect a smoothing sidecar for each stabilized clip on the
+      // SAME source window the main pass reads, so the transforms align frame-for-frame.
+      if (needsStabilize) stabilizeTransforms = await detectStabilize(bin, doc, opts.resolveMediaPath, overlayDir, opts.onLog);
     }
     // Detect which sources actually carry an audio stream (no ffprobe exists in
     // ffmpeg-static) so the pure plan substitutes silence for audioless inputs
     // instead of referencing a non-existent [idx:a] pad — the audioless-export fix.
     const mediaHasAudio = await detectMediaAudio(bin, doc, opts.resolveMediaPath);
-    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays, mediaHasAudio, karaokeOverlays, shapeOverlays);
+    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays, mediaHasAudio, karaokeOverlays, shapeOverlays, stabilizeTransforms);
     await spawnFfmpeg(bin, plan.args, opts.onLog);
 
     // Optional faithful AI enhancement pass (off by default; money/setup gated).
@@ -184,6 +189,69 @@ export async function detectMediaAudio(
       }
       map.set(asset.id, await probeHasAudio(bin, resolveMediaPath(asset.id)));
     }),
+  );
+  return map;
+}
+
+/** True when any (non-freeze) video clip in the doc requests stabilization. */
+export function docNeedsStabilize(doc: EditDoc): boolean {
+  return doc.tracks.some((t) =>
+    t.clips.some((c) => c.kind === "video" && c.stabilize && c.freezeAtSec === undefined),
+  );
+}
+
+/**
+ * Run a `vidstabdetect` PRE-PASS for every stabilized video clip and return
+ * clipId → transforms sidecar (.trf) path. Each detect reads the SAME source window
+ * the main export pass reads (`-ss sourceIn -t sourceSpan`) so the transforms align
+ * frame-for-frame with `vidstabtransform`. GRACEFUL: a clip whose detect fails (no
+ * vidstab, unreadable source) is simply omitted from the map — the main pass then
+ * encodes it un-stabilized instead of failing the whole export. Never rejects.
+ */
+export async function detectStabilize(
+  bin: string,
+  doc: EditDoc,
+  resolveMediaPath: ResolveMediaPath,
+  dir: string,
+  onLog?: (line: string) => void,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const clips: { id: string; mediaId: string; ss: number; span: number }[] = [];
+  for (const track of doc.tracks) {
+    for (const c of track.clips) {
+      if (c.kind === "video" && c.stabilize && c.freezeAtSec === undefined) {
+        clips.push({ id: c.id, mediaId: c.mediaId, ss: c.sourceIn, span: sourceSpanSec(c) });
+      }
+    }
+  }
+  await Promise.all(
+    clips.map(
+      (c) =>
+        new Promise<void>((resolve) => {
+          const trf = join(dir, `stab-${c.id.replace(/[^A-Za-z0-9_-]/g, "_")}.trf`);
+          const args = [
+            "-hide_banner", "-y",
+            "-ss", String(Math.max(0, c.ss)),
+            "-t", String(Math.max(0.1, c.span)),
+            "-i", resolveMediaPath(c.mediaId),
+            "-vf", `vidstabdetect=result=${trf}:shakiness=6:accuracy=15`,
+            "-f", "null", "-",
+          ];
+          let child;
+          try {
+            child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
+          } catch {
+            resolve();
+            return;
+          }
+          child.stderr?.on("data", (d: Buffer) => onLog?.(d.toString()));
+          child.on("error", () => resolve());
+          child.on("close", (code) => {
+            if (code === 0) map.set(c.id, trf);
+            resolve();
+          });
+        }),
+    ),
   );
   return map;
 }

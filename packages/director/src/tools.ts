@@ -76,6 +76,7 @@ import {
   setPlatform,
   setQuality,
   setSpeed,
+  setStabilize,
   setSpeedRamp,
   setTransition,
   setZoom,
@@ -916,6 +917,19 @@ export const addShapeTool: DirectorTool<{
   },
 };
 
+// ---- stabilize -------------------------------------------------------------
+
+export const stabilizeTool: DirectorTool<{ on?: boolean; atSec?: number }> = {
+  name: "stabilize",
+  description:
+    "Stabilize shaky footage on export (ffmpeg vidstab: detect + smooth, with auto-zoom to hide the shifted borders). Applies to the video clip at `atSec`, or all video clips. `on` defaults to true. Export-only — the live preview is unchanged. Faithful: smooths camera motion of the existing frames, invents nothing.",
+  inputSchema: z.object({ on: z.boolean().optional(), atSec: z.number().nonnegative().optional() }),
+  async execute(input, ctx) {
+    const doc = setStabilize(ctx.project.doc, input.on ?? true, { atSec: input.atSec });
+    return commit(ctx.project, doc, input.on === false ? "Turned off stabilization." : "Stabilization on (applied on export).");
+  },
+};
+
 // ---- apply_layout (PiP / split-screen) -------------------------------------
 
 export const applyLayoutTool: DirectorTool<{ layout: LayoutKind; clipIds?: string[] }> = {
@@ -1652,6 +1666,7 @@ export const DIRECTOR_TOOLS = {
   add_callout: addCalloutTool,
   add_shape: addShapeTool,
   apply_layout: applyLayoutTool,
+  stabilize: stabilizeTool,
   animate: animateTool,
   add_keyframe: addKeyframeTool,
   move_keyframe: moveKeyframeTool,

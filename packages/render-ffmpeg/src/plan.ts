@@ -1040,6 +1040,15 @@ export function buildExportPlan(
    * no shapes drawn (byte-identical to before for docs without shapes).
    */
   shapeOverlays?: TextOverlayMap,
+  /**
+   * clipId → per-clip vidstab transforms sidecar (.trf) path, for stabilized video
+   * clips. Produced by the impure driver (runExport → a `vidstabdetect` pre-pass on
+   * the SAME source window) BEFORE this pure builder runs; the builder only inserts
+   * `vidstabtransform=input=<trf>` into that clip's chain. A stabilized clip with no
+   * entry here (detect skipped/failed) simply isn't stabilized — export still works.
+   * Omitted ⇒ no stabilization (byte-identical to before).
+   */
+  stabilizeTransforms?: Map<string, string>,
 ): ExportPlan {
   const { width: W, height: H, fps } = doc.meta;
   const total = r3(docDurationSec(doc));
@@ -1134,10 +1143,16 @@ export function buildExportPlan(
   const videoClipVChain = (c: VideoClip, appendFps: boolean): string[] => {
     const emph = emphasisZoompan(c, W, H, fps);
     const kfZoom = keyframeScaleZoompan(c, W, H, fps);
+    // Stabilization runs on the raw decoded frames FIRST (before reverse/speed/scale),
+    // using the transforms sidecar detected on the same source window. `zoom=0` +
+    // `optzoom=1` lets vidstab auto-zoom just enough to hide the shifted borders;
+    // `smoothing=15` is a moderate default. Skipped when no sidecar was produced.
+    const trf = c.stabilize ? stabilizeTransforms?.get(c.id) : undefined;
+    const stab = trf ? [`vidstabtransform=input=${escapeFilterPath(trf)}:smoothing=15:optzoom=1:zoom=0`] : [];
     const head =
       c.freezeAtSec !== undefined
         ? ["trim=end_frame=1", "setpts=PTS-STARTPTS", `tpad=stop_mode=clone:stop_duration=${r3(c.duration)}`]
-        : [...(c.reversed ? ["reverse"] : []), speedSetpts(c.speed)];
+        : [...stab, ...(c.reversed ? ["reverse"] : []), speedSetpts(c.speed)];
     return [
       ...head,
       `scale=${W}:${H}:force_original_aspect_ratio=increase`,
