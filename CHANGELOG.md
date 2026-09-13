@@ -4,6 +4,20 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S4.36 — Wave G QA: shape export rest-time + port-agnostic e2e
+- Fixed a shape parity bug (a shape with `transitionOutSec>0` exported blank because `renderShapeClipPng` rendered at the zero-opacity clip end) → render at the mid-clip full-opacity plateau; verify guard decodes the PNG and asserts opaque pixels. Made every e2e spec port-agnostic (`EDITOR_URL` honors `CADENCE_E2E_PORT`) — no more hardcoded `localhost:3000`.
+- *verified:* typecheck, 54 unit, verify 64/64 (16 real encodes), **e2e 22/22**, web build.
+
+### S4.35 — Wave G: video stabilization (vidstab)
+- `VideoClip.stabilize` flag → export runs a `vidstabdetect` pre-pass (per-clip `.trf` sidecar on the same source window) then `vidstabtransform` (smoothing 15, auto-zoom). Export-only (preview unchanged, like loudnorm). Graceful: detect failure ⇒ un-stabilized, never breaks export. Pure `setStabilize` + `stabilize` tool + Design → Advanced "Stabilize footage" toggle. Faithful.
+- *verified:* real encode of a stabilized clip (detect→transform) in verify check 64 (doc 16/16).
+
+### S4.34 — Wave G: PiP / split-screen layouts
+- Pure `applyLayout(doc, "2up"|"3up"|"pip"|"grid")` arranges video/photo clips into fraction-of-frame cells (3% margin, 1.5% gap; PiP 30%/4%) via transform only — parity-safe, any aspect, no-op with <2 clips. `apply_layout` tool + Design → "Shapes · Layout" presets.
+
+### S4.33 — Wave G: vector shapes
+- New `shape` clip kind (rect/ellipse/line/arrow) with fill/fillOpacity, stroke/strokeWidth, corner radius, full transform + keyframes. Drawn by the shared canvas engine; exported as transparent PNG overlays (the text/callout path, works on the freetype-less ffmpeg); previewed live via an SVG shape layer in the Stage (composition-coordinate viewBox = exact parity). Pure `addShape` + `add_shape` tool + Design → "Shapes · Layout" room with a color picker. Verified visible in a real exported frame.
+
 ### S4.32 — karaoke UI (Words room)
 - A **"Karaoke (word highlight)"** control in the caption section: toggle + highlight color + **Color/Fill/Box** style, with a live preview chip showing a highlighted word. Enabling it ensures word timings (uses `setKaraoke` when captions already have `words`, else rebuilds via `addCaptions(..., {karaoke:true})`); respects "this caption only". Undoable.
 - *verified:* typecheck (root+web) + `next build` + Playwright e2e **19/19**.
