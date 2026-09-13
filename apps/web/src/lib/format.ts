@@ -12,12 +12,28 @@ export function download(name: string, text: string, type = "application/json"):
   downloadBlob(name, new Blob([text], { type }));
 }
 
-/** Trigger a client-side download of an arbitrary Blob (e.g. an exported .mp4). */
+/**
+ * Trigger a client-side download of an arbitrary Blob (e.g. an exported .mp4) to
+ * the user's Downloads folder — free, no server round-trip.
+ *
+ * ROBUSTNESS: the anchor is appended to the DOM before clicking (some browsers
+ * ignore a click on a detached anchor), and the object URL is revoked on a delay
+ * rather than synchronously. Revoking immediately after `.click()` can CANCEL the
+ * download of a multi-MB file before the browser has finished reading the blob —
+ * a common cause of "export doesn't download". The delayed cleanup still frees the
+ * memory once the download has started.
+ */
 export function downloadBlob(name: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    a.remove();
+  }, 60_000);
 }
