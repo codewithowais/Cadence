@@ -69,7 +69,7 @@ import {
   type TextClip,
   type VideoClip,
 } from "@cadence/core";
-import { CanvasRenderEngine, renderTextClipPng } from "@cadence/render-node";
+import { CanvasRenderEngine, renderTextClipPng, renderShapeClipPng } from "@cadence/render-node";
 import {
   StubTranscriber,
   WhisperTranscriber,
@@ -3534,6 +3534,32 @@ async function checkRealEncode(): Promise<void> {
       ] },
     ],
   });
+
+  // REGRESSION GUARD (shape rest-time): a shape with transitionOutSec>0 must still
+  // rasterize to a NON-BLANK PNG. Rendering at the exact clip end would hit the
+  // zero-opacity edge and export an invisible shape; renderShapeClipPng renders at
+  // the midpoint (full-opacity plateau) instead. Assert the PNG has opaque pixels.
+  {
+    const shapeDoc = parseEditDoc({
+      version: 1, meta: { title: "shrest", width: 320, height: 180, fps: 30, background: "#000000" },
+      media: [], tracks: [{ id: "shapes", kind: "visual", clips: [
+        { id: "s0", kind: "shape", shape: "rect", start: 0, duration: 2, transitionOutSec: 0.6, w: 200, h: 100, fill: "#2f6690", transform: { x: 160, y: 90 } },
+      ] }],
+    });
+    const shp = shapeDoc.tracks[0]!.clips[0]!;
+    const png = renderShapeClipPng(shapeDoc, shp as never);
+    assert(png.subarray(0, 4).equals(PNG_MAGIC), "shape overlay must be a PNG");
+    // Decode and require OPAQUE pixels — a blank (zero-opacity edge) frame would have none.
+    const { createCanvas: mkCanvas, loadImage } = await import("@napi-rs/canvas");
+    const img = await loadImage(png);
+    const cv = mkCanvas(img.width, img.height);
+    const cx = cv.getContext("2d");
+    cx.drawImage(img, 0, 0);
+    const px = cx.getImageData(0, 0, img.width, img.height).data;
+    let opaque = 0;
+    for (let i = 3; i < px.length; i += 4) if (px[i]! > 10) opaque++;
+    assert(opaque > 1000, `shape overlay (fade-out) rendered blank (${opaque} opaque px) — the zero-opacity rest-time bug`);
+  }
 
   // (o) WAVE G — STABILIZATION: a stabilized video clip must run the vidstab
   //     two-pass (detect sidecar → vidstabtransform) and encode to a real mp4.

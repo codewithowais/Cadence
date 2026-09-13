@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { test, expect, type Page } from "@playwright/test";
-import { ARTIFACT_DIR, generateFixtures, type Fixtures } from "./fixtures";
+import { ARTIFACT_DIR, generateFixtures, type Fixtures, EDITOR_URL } from "./fixtures";
 
 /** Artifacts: speed-ramp curve + Design-room LUT/adjustment controls. */
 const DIR = resolve(ARTIFACT_DIR, "ux-4");
@@ -13,14 +13,14 @@ let fixtures: Fixtures;
 test.beforeAll(async ({ browser }) => {
   mkdirSync(DIR, { recursive: true });
   const page = await browser.newPage();
-  await page.goto("http://localhost:3000/editor");
+  await page.goto(EDITOR_URL);
   await page.waitForLoadState("networkidle");
   fixtures = await generateFixtures(page);
   await page.close();
 });
 
 test("ux-4: speed-ramp curve + LUT/adjustment controls", async ({ page }) => {
-  await page.goto("http://localhost:3000/editor");
+  await page.goto(EDITOR_URL);
   await page.waitForLoadState("networkidle");
   await page.locator('input[type="file"]').first().setInputFiles(fixtures.videoPath);
   await expect(page.getByLabel("Applied edits")).toBeVisible({ timeout: 60_000 });

@@ -992,8 +992,12 @@ export function renderShapeClipPng(doc: EditDoc, clip: ShapeClip): Buffer {
   const { width, height } = doc.meta;
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
-  // Resting time = clip end (after any transition-in), matching textRestTime intent.
-  clipTimeCache = clip.start + clip.duration;
+  // Render at the clip MIDPOINT — the full-opacity plateau between transition-in and
+  // transition-out (like renderCalloutLabelPng). Rendering exactly at clip end would
+  // land on the zero-opacity edge whenever transitionOutSec>0, making drawShape early-
+  // return a BLANK PNG → the shape would be invisible for its whole span on export
+  // (the export overlays one static PNG per shape). The preview still fades per-frame.
+  clipTimeCache = clip.start + clip.duration / 2;
   drawShape(ctx, clip);
   return canvas.toBuffer("image/png");
 }

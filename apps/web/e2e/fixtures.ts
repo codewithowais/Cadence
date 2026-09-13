@@ -8,6 +8,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export const ARTIFACT_DIR = resolve(__dirname, "../../../test-artifacts");
 export const FIXTURE_DIR = resolve(ARTIFACT_DIR, "fixtures");
 
+/**
+ * Absolute base URL for specs that navigate with `browser.newPage()` in beforeAll
+ * (a raw page has no config baseURL). Honors CADENCE_E2E_PORT so the suite runs at
+ * any port (matches playwright.config.ts), instead of a hardcoded localhost:3000.
+ */
+export const BASE_URL = `http://localhost:${Number(process.env.CADENCE_E2E_PORT ?? 3000)}`;
+/** Convenience: the editor URL at the configured port. */
+export const EDITOR_URL = `${BASE_URL}/editor`;
+
 export interface Fixtures {
   videoPath: string;
   photoPaths: string[];

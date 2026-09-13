@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { test, expect, type Page } from "@playwright/test";
-import { ARTIFACT_DIR, generateFixtures, type Fixtures } from "./fixtures";
+import { ARTIFACT_DIR, generateFixtures, type Fixtures, EDITOR_URL } from "./fixtures";
 
 /**
  * Transitions, end-to-end on the REAL app. The reported bug: "transitions are
@@ -65,7 +65,7 @@ test.beforeAll(async ({ browser }) => {
   const page = await browser.newPage();
   // A page opened via browser.newPage() does NOT inherit the config baseURL, so
   // navigate with an absolute URL.
-  await page.goto("http://localhost:3000/editor");
+  await page.goto(EDITOR_URL);
   await page.waitForLoadState("networkidle");
   fixtures = await generateFixtures(page);
   await page.close();
@@ -75,7 +75,7 @@ test.beforeAll(async ({ browser }) => {
 // 1) Per-cut transitions on a photo slideshow: change the type + see it render.
 // ---------------------------------------------------------------------------
 test("per-cut: change the transition type and the preview honors it", async ({ page }) => {
-  await page.goto("http://localhost:3000/editor");
+  await page.goto(EDITOR_URL);
   await page.waitForLoadState("networkidle");
   await page.locator('input[type="file"]').first().setInputFiles(fixtures.photoPaths);
   await expect(applied(page)).toBeVisible({ timeout: 60_000 });
@@ -144,7 +144,7 @@ test("per-cut: change the transition type and the preview honors it", async ({ p
 // 2) Single-clip project: fade in from black + fade out to black (no interior cut).
 // ---------------------------------------------------------------------------
 test("single clip: fade in from black + fade out to black", async ({ page }) => {
-  await page.goto("http://localhost:3000/editor");
+  await page.goto(EDITOR_URL);
   await page.waitForLoadState("networkidle");
   // One photo = a single-clip project with NO interior cut.
   await page.locator('input[type="file"]').first().setInputFiles(fixtures.photoPaths[0]!);
