@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseEditDoc, type EditDoc } from "@cadence/core";
 import { detectFfmpeg, runExport, FFMPEG_MISSING_MESSAGE, FfmpegNotFoundError } from "@cadence/render-ffmpeg";
-import { resolveUploadPath } from "@/lib/uploads";
+import { resolveUploadPath, MediaNotOnServerError } from "@/lib/uploads";
 
 export const runtime = "nodejs";
 // Real encoding can take a while; give it room.
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
     // src ("/etc/passwd", "http://…") would be arbitrary-file-read / SSRF.
     const byId = new Map<string, string>();
     for (const m of doc.media) {
-      byId.set(m.id, await resolveUploadPath(m.src));
+      byId.set(m.id, await resolveUploadPath(m.src, m.label ?? m.id));
     }
 
     // LUT (.cube) paths are also client-supplied and reach ffmpeg via the SAME
@@ -89,6 +89,11 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     if (err instanceof FfmpegNotFoundError) {
       return Response.json({ error: err.message, code: "FFMPEG_NOT_FOUND" }, { status: 501 });
+    }
+    if (err instanceof MediaNotOnServerError) {
+      // Media isn't on the server's disk (cleared temp / different invocation).
+      // 422 so the UI shows the actionable "re-add & export" message, not a crash.
+      return Response.json({ error: err.message, code: err.code }, { status: 422 });
     }
     return Response.json(
       { error: err instanceof Error ? err.message : "export failed" },

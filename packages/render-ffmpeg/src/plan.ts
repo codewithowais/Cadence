@@ -1281,6 +1281,11 @@ export function buildExportPlan(
       const vChain = [
         `scale=${W}:${H}:force_original_aspect_ratio=increase`,
         `crop=${W}:${H}`,
+        // PERF: `-loop 1 -t` feeds ffmpeg many looped frames, and zoompan emits its
+        // `d=` frame count PER INPUT FRAME — that multiplication rendered ~7,680
+        // frames per still (a 5-minute encode). Trim to a SINGLE frame first so
+        // zoompan generates exactly `d` frames total (the canonical Ken Burns recipe).
+        "trim=end_frame=1",
         "setpts=PTS-STARTPTS",
         zoompanFor(c, W, H, fps),
         ...lookFilters(c.look, resolveMediaPath),
