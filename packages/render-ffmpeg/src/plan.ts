@@ -36,6 +36,7 @@ import {
   type ColorGrade,
   type Curves,
   type CursorClip,
+  type ShapeClip,
   type EditDoc,
   type ImageClip,
   type Keyframe,
@@ -860,6 +861,16 @@ function collectCursors(doc: EditDoc): CursorClip[] {
   return out;
 }
 
+/** Shape clips, in track/z order (a hidden track contributes nothing). */
+function collectShapes(doc: EditDoc): ShapeClip[] {
+  const out: ShapeClip[] = [];
+  for (const track of doc.tracks) {
+    if (track.hidden) continue;
+    for (const clip of track.clips) if (clip.kind === "shape") out.push(clip);
+  }
+  return out;
+}
+
 /**
  * Adjustment-layer clips, in start order. A `hidden` track contributes nothing (a
  * hidden adjustment layer is skipped, matching `activeClipsAt` / the canvas). All
@@ -1022,6 +1033,13 @@ export function buildExportPlan(
    * the single-PNG path, byte-identical to before).
    */
   karaokeOverlays?: KaraokeOverlayMap,
+  /**
+   * clipId → rendered transparent PNG path for SHAPE clips (rect/ellipse/line/arrow).
+   * Produced by `renderShapeOverlays` (canvas engine) BEFORE this pure builder runs;
+   * overlaid time-gated to each shape's span, exactly like text overlays. Omitted ⇒
+   * no shapes drawn (byte-identical to before for docs without shapes).
+   */
+  shapeOverlays?: TextOverlayMap,
 ): ExportPlan {
   const { width: W, height: H, fps } = doc.meta;
   const total = r3(docDurationSec(doc));
@@ -1516,6 +1534,17 @@ export function buildExportPlan(
     const png = textOverlays?.get(clip.id);
     if (!png) return;
     overlayPng(png, clip.start, clip.start + clip.duration, `vtext${i}`);
+  });
+
+  // ---- Vector shapes (rect / ellipse / line / arrow) ----------------------
+  // Each shape clip is rasterized to a transparent composition-sized PNG (canvas
+  // engine, so preview == export) and overlaid time-gated to its span — the SAME
+  // path as text/callout labels. No shapes ⇒ this loop is empty (byte-identical).
+  const shapes = collectShapes(doc);
+  shapes.forEach((clip, i) => {
+    const png = shapeOverlays?.get(clip.id);
+    if (!png) return;
+    overlayPng(png, clip.start, clip.start + clip.duration, `vshape${i}`);
   });
 
   // ---- Callout / highlight boxes (drawbox border + optional dim + label) ---

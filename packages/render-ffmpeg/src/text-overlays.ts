@@ -104,3 +104,31 @@ export async function renderKaraokeOverlays(doc: EditDoc, dir: string): Promise<
 export function docNeedsKaraokeOverlays(doc: EditDoc): boolean {
   return doc.tracks.some((t) => t.clips.some((c) => isKaraoke(c)));
 }
+
+/** True when a doc has any vector-shape clip needing a rasterized overlay. */
+export function docNeedsShapeOverlays(doc: EditDoc): boolean {
+  return doc.tracks.some((t) => t.clips.some((c) => c.kind === "shape"));
+}
+
+/**
+ * Render every SHAPE clip (rect/ellipse/line/arrow) in `doc` to a transparent
+ * composition-sized PNG under `dir`, returning clipId → path. `buildExportPlan`
+ * overlays these time-gated to each clip's span — the SAME PNG-overlay path text and
+ * callout labels use, so a shape looks identical in preview, node render, and export.
+ * Empty map when the doc has no shapes (byte-identical to before). Uses the same
+ * dynamic @cadence/render-node import so the native canvas never enters a client bundle.
+ */
+export async function renderShapeOverlays(doc: EditDoc, dir: string): Promise<TextOverlayMap> {
+  const map: TextOverlayMap = new Map();
+  const { renderShapeClipPng } = await import("@cadence/render-node");
+  for (const track of doc.tracks) {
+    for (const clip of track.clips) {
+      if (clip.kind !== "shape") continue;
+      const png = renderShapeClipPng(doc, clip);
+      const p = join(dir, `shape-${safe(clip.id)}.png`);
+      await writeFile(p, png);
+      map.set(clip.id, p);
+    }
+  }
+  return map;
+}

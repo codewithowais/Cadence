@@ -11,6 +11,8 @@ import {
   addCaptions,
   fillerCut,
   buildHighlightDoc,
+  addShape,
+  applyLayout,
 } from "@cadence/director";
 import { parseEditDoc, docDurationSec, type EditDoc, type MediaAsset } from "@cadence/core";
 import type { Transcript } from "@cadence/understanding";
@@ -154,4 +156,74 @@ test("buildHighlightDoc respects target duration and keeps word-accurate sourceI
   const videoEnd = clips.reduce((m, c) => Math.max(m, c.start + c.duration), 0);
   assert.equal(videoEnd, 4);
   assert.ok(docDurationSec(doc) >= 4);
+});
+
+// ---- Wave G: shapes + layouts ---------------------------------------------
+
+function twoClipDoc(): EditDoc {
+  return parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080 },
+    media: [
+      { id: "a", kind: "video", src: "a.mp4" },
+      { id: "b", kind: "video", src: "b.mp4" },
+    ],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 5, mediaId: "a" }] },
+      { id: "broll", kind: "visual", clips: [{ id: "c1", kind: "video", start: 0, duration: 5, mediaId: "b" }] },
+    ],
+  });
+}
+
+test("addShape places a rect on the shapes track with frame-centered defaults", () => {
+  const doc = addShape(parseEditDoc({ version: 1, meta: { width: 1280, height: 720 }, tracks: [] }), { shape: "rect" });
+  const track = doc.tracks.find((t) => t.id === "shapes")!;
+  assert.ok(track, "a shapes track is created");
+  const clip = track.clips[0]!;
+  assert.equal(clip.kind, "shape");
+  assert.equal(clip.kind === "shape" && clip.shape, "rect");
+  // Default center = frame center.
+  assert.equal(clip.kind === "shape" && clip.transform.x, 640);
+  assert.equal(clip.kind === "shape" && clip.transform.y, 360);
+  // Rect has a fill by default; line/arrow default to a stroke instead.
+  assert.ok(clip.kind === "shape" && clip.fill !== "");
+});
+
+test("addShape arrow uses a stroke (no fill) and a visible thickness", () => {
+  const doc = addShape(parseEditDoc({ version: 1, meta: { width: 1280, height: 720 }, tracks: [] }), { shape: "arrow" });
+  const clip = doc.tracks.find((t) => t.id === "shapes")!.clips[0]!;
+  assert.equal(clip.kind === "shape" && clip.shape, "arrow");
+  assert.equal(clip.kind === "shape" && clip.fill, "");
+  assert.ok(clip.kind === "shape" && clip.strokeWidth > 0);
+});
+
+test("applyLayout pip keeps clip 0 full-frame and insets clip 1 bottom-right", () => {
+  const out = applyLayout(twoClipDoc(), "pip");
+  const c0 = out.tracks.find((t) => t.id === "video")!.clips[0]!;
+  const c1 = out.tracks.find((t) => t.id === "broll")!.clips[0]!;
+  assert.equal(c0.kind === "video" && c0.transform.scale, 1); // base full-frame
+  assert.ok(c1.kind === "video" && c1.transform.scale < 0.5); // inset small
+  // Bottom-right quadrant.
+  assert.ok(c1.kind === "video" && c1.transform.x > 1920 / 2);
+  assert.ok(c1.kind === "video" && c1.transform.y > 1080 / 2);
+});
+
+test("applyLayout 2up puts the two clips left/right at ~half scale", () => {
+  const out = applyLayout(twoClipDoc(), "2up");
+  const c0 = out.tracks.find((t) => t.id === "video")!.clips[0]!;
+  const c1 = out.tracks.find((t) => t.id === "broll")!.clips[0]!;
+  assert.ok(c0.kind === "video" && c0.transform.x < 1920 / 2, "clip 0 on the left");
+  assert.ok(c1.kind === "video" && c1.transform.x > 1920 / 2, "clip 1 on the right");
+  assert.ok(c0.kind === "video" && c0.transform.scale > 0.4 && c0.transform.scale < 0.5);
+});
+
+test("applyLayout is a no-op with fewer than 2 clips (returns the doc unchanged)", () => {
+  const single = parseEditDoc({
+    version: 1,
+    meta: { width: 1920, height: 1080 },
+    media: [{ id: "a", kind: "video", src: "a.mp4" }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 5, mediaId: "a" }] }],
+  });
+  const out = applyLayout(single, "grid");
+  assert.deepEqual(out, single);
 });

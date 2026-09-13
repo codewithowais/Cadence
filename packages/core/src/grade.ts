@@ -15,6 +15,7 @@ import type {
   Keyframe,
   KeyframeEasing,
   KeyframeProp,
+  ShapeClip,
   SolidClip,
   TextClip,
   TransitionType,
@@ -227,7 +228,7 @@ export function clipProgress(
 
 /** Effective opacity including crossfade-in and -out ramps. */
 export function transitionOpacity(
-  clip: VideoClip | ImageClip | TextClip | SolidClip,
+  clip: VideoClip | ImageClip | TextClip | SolidClip | ShapeClip,
   timeSec: number,
 ): number {
   let op = clip.transform.opacity;

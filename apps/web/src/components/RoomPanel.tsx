@@ -13,9 +13,11 @@ import { cssFilter, docDurationSec } from "@cadence/core";
 import {
   addAdjustment,
   addMask,
+  addShape,
   adjustColor,
   adjustCurves,
   adjustHsl,
+  applyLayout,
   applyLut,
   audioFade,
   chromaKey,
@@ -28,6 +30,7 @@ import {
   LOOK_KEYS,
   LOOK_PRESETS,
   NEUTRAL_GRADE,
+  type LayoutKind,
   type LookKey,
 } from "@cadence/director";
 import {
@@ -800,7 +803,7 @@ function drawParade(cv: HTMLCanvasElement | null, data: Uint8ClampedArray, sw: n
 
 // ---- Design room (unified Looks · Color · Backgrounds · Text · Overlays) ----
 
-type DesignCategory = "looks" | "grade" | "backgrounds" | "text" | "overlays" | "advanced";
+type DesignCategory = "looks" | "grade" | "backgrounds" | "text" | "overlays" | "shapes" | "advanced";
 
 const DESIGN_CATEGORIES: { key: DesignCategory; label: string; hint: string }[] = [
   { key: "looks", label: "Looks", hint: "One-tap filters" },
@@ -808,6 +811,7 @@ const DESIGN_CATEGORIES: { key: DesignCategory; label: string; hint: string }[] 
   { key: "backgrounds", label: "Backgrounds", hint: "Fill behind the frame" },
   { key: "text", label: "Text styles", hint: "Titles & captions" },
   { key: "overlays", label: "Overlays / FX", hint: "B-roll, titles, grain" },
+  { key: "shapes", label: "Shapes · Layout", hint: "Boxes, arrows, PiP, grid" },
   { key: "advanced", label: "Advanced", hint: "Chroma, blend, mask" },
 ];
 
@@ -945,6 +949,7 @@ function DesignRoom({
           />
         )}
         {cat === "overlays" && <OverlaysSection mediaList={mediaList} busy={busy} onAction={onAction} />}
+        {cat === "shapes" && <ShapesSection doc={doc} busy={busy} onApplyDoc={onApplyDoc} />}
         {cat === "advanced" && (
           <AdvancedFx doc={doc} mediaList={mediaList} busy={busy} onApplyDoc={onApplyDoc} />
         )}
@@ -1669,6 +1674,77 @@ function OverlaysSection({
         <Pill onClick={() => onAction("add film grain")} disabled={noMedia}>Grain</Pill>
         <Pill onClick={() => onAction("add a light leak")} disabled={noMedia}>Light leak</Pill>
       </Row>
+    </div>
+  );
+}
+
+/**
+ * Shapes & Layout — add vector shapes (rect / ellipse / line / arrow) and arrange
+ * clips into PiP / split-screen layouts, both through the editor's undoable commit
+ * path (instant live preview via the Stage's SVG shape layer). Shapes use the pure
+ * `addShape`; layouts use the pure `applyLayout` (transform-only, parity-safe).
+ */
+function ShapesSection({
+  doc,
+  busy,
+  onApplyDoc,
+}: {
+  doc: EditDoc;
+  busy: boolean;
+  onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
+}) {
+  const [color, setColor] = useState("#2f6690");
+  const SHAPE_COLORS = ["#2f6690", "#0d7a6b", "#b42318", "#ffd54a", "#ffffff", "#101418"];
+  const visualClips = doc.tracks
+    .flatMap((t) => t.clips)
+    .filter((c) => c.kind === "video" || c.kind === "image").length;
+  const canLayout = !busy && visualClips >= 2;
+
+  const add = (shape: "rect" | "ellipse" | "line" | "arrow") => {
+    if (shape === "line" || shape === "arrow") onApplyDoc(addShape(doc, { shape, stroke: color }));
+    else onApplyDoc(addShape(doc, { shape, fill: color }));
+  };
+  const layout = (kind: LayoutKind) => onApplyDoc(applyLayout(doc, kind));
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-[11px] text-faint">
+        Vector shapes and clip layouts — added instantly and previewed live. Move &amp; resize on the
+        canvas after placing.
+      </p>
+
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] uppercase tracking-wide text-faint">Color</span>
+        <div className="flex flex-wrap gap-1.5">
+          {SHAPE_COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              aria-label={`shape color ${c}`}
+              onClick={() => setColor(c)}
+              className={`h-6 w-6 rounded-full border ${color === c ? "ring-2 ring-accent" : "border-white/20"}`}
+              style={{ background: c }}
+            />
+          ))}
+        </div>
+      </div>
+
+      <Row label="shapes">
+        <Pill onClick={() => add("rect")} disabled={busy}>▭ Rectangle</Pill>
+        <Pill onClick={() => add("ellipse")} disabled={busy}>◯ Ellipse</Pill>
+        <Pill onClick={() => add("line")} disabled={busy}>— Line</Pill>
+        <Pill onClick={() => add("arrow")} disabled={busy}>➤ Arrow</Pill>
+      </Row>
+
+      <Row label="layout">
+        <Pill onClick={() => layout("2up")} disabled={!canLayout}>▮▮ 2-up</Pill>
+        <Pill onClick={() => layout("3up")} disabled={!canLayout}>▮▮▮ 3-up</Pill>
+        <Pill onClick={() => layout("pip")} disabled={!canLayout}>◳ PiP</Pill>
+        <Pill onClick={() => layout("grid")} disabled={!canLayout}>▦ Grid</Pill>
+      </Row>
+      {!canLayout && (
+        <p className="text-[10px] text-faint">Layouts need at least 2 video/photo clips.</p>
+      )}
     </div>
   );
 }

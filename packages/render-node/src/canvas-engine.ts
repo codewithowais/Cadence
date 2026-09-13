@@ -40,6 +40,7 @@ import {
   type Mask,
   type RenderedFrame,
   type RenderEngine,
+  type ShapeClip,
   type SolidClip,
   type TextClip,
   type VideoClip,
@@ -56,7 +57,7 @@ const degToRad = (deg: number): number => (deg * Math.PI) / 180;
  * a MULTIPLIER on the base opacity, so it composes with the transition ramps.
  */
 function keyframeTransformState(
-  clip: VideoClip | ImageClip | TextClip | SolidClip,
+  clip: VideoClip | ImageClip | TextClip | SolidClip | ShapeClip,
 ): { x: number; y: number; scale: number; rotation: number; opacityMul: number } {
   const kf = clip.keyframes;
   const prog = clipProgress(clip, clipTimeCache);
@@ -652,6 +653,97 @@ function drawSolid(ctx: SKRSContext2D, clip: SolidClip, frameW: number, frameH: 
   ctx.restore();
 }
 
+/** A rounded-rectangle sub-path centered logic is done by the caller; this traces
+ * (x,y,w,h) with corner radius `r` (clamped) so both fill and stroke can use it. */
+function pathRoundRect(
+  ctx: SKRSContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.arcTo(x + w, y, x + w, y + rr, rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+  ctx.lineTo(x + rr, y + h);
+  ctx.arcTo(x, y + h, x, y + h - rr, rr);
+  ctx.lineTo(x, y + rr);
+  ctx.arcTo(x, y, x + rr, y, rr);
+  ctx.closePath();
+}
+
+/**
+ * Draw a vector SHAPE (rect / ellipse / line / arrow) centered on its transform.
+ * Mirrors drawText/drawSolid: keyframed transform + transition opacity, so the
+ * canvas preview, the node render, and (via renderShapeClipPng → PNG overlay) the
+ * ffmpeg export all agree. rect/ellipse honor fill (+fillOpacity) and stroke;
+ * line/arrow draw a stroked segment (arrow adds a filled head) using `w` as length
+ * and `strokeWidth` as thickness. Faithful: a synthetic overlay only.
+ */
+function drawShape(ctx: SKRSContext2D, clip: ShapeClip): void {
+  const kfs = keyframeTransformState(clip);
+  const op = transitionOpacity(clip, clipTimeCache) * kfs.opacityMul;
+  if (op <= 0 || clip.w <= 0 || clip.h <= 0) return;
+  ctx.save();
+  ctx.translate(kfs.x, kfs.y);
+  if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
+  if (kfs.scale !== 1) ctx.scale(kfs.scale, kfs.scale);
+
+  const w = clip.w;
+  const h = clip.h;
+  const hasFill = clip.fill !== "";
+  const hasStroke = clip.stroke !== "" && clip.strokeWidth > 0;
+
+  if (clip.shape === "rect" || clip.shape === "ellipse") {
+    if (clip.shape === "rect") pathRoundRect(ctx, -w / 2, -h / 2, w, h, clip.radius);
+    else {
+      ctx.beginPath();
+      ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
+    }
+    if (hasFill) {
+      ctx.globalAlpha = op * clip.fillOpacity;
+      ctx.fillStyle = clip.fill;
+      ctx.fill();
+    }
+    if (hasStroke) {
+      ctx.globalAlpha = op;
+      ctx.lineWidth = clip.strokeWidth;
+      ctx.strokeStyle = clip.stroke;
+      ctx.stroke();
+    }
+  } else {
+    // line / arrow: horizontal segment of length `w`, thickness `strokeWidth`.
+    const color = clip.stroke !== "" ? clip.stroke : clip.fill !== "" ? clip.fill : "#ffffff";
+    const thick = clip.strokeWidth > 0 ? clip.strokeWidth : 8;
+    const half = w / 2;
+    ctx.globalAlpha = op;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = thick;
+    ctx.lineCap = "round";
+    // Arrow head ≈ 3.2× stroke long, ~50° tip (half-width = headLen·tan25° ≈ 0.47).
+    const headLen = clip.shape === "arrow" ? Math.max(thick * 3.2, 20) : 0;
+    ctx.beginPath();
+    ctx.moveTo(-half, 0);
+    ctx.lineTo(half - headLen, 0);
+    ctx.stroke();
+    if (clip.shape === "arrow") {
+      ctx.beginPath();
+      ctx.moveTo(half, 0);
+      ctx.lineTo(half - headLen, -headLen * 0.47);
+      ctx.lineTo(half - headLen, headLen * 0.47);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
 /**
  * Whole-frame VFX finishing pass, painted AFTER every clip so it sits over the
  * fully composited frame. Mirrors the ffmpeg finishing chain (vignette / noise /
@@ -733,6 +825,9 @@ function drawContentClip(ctx: SKRSContext2D, clip: Clip, doc: EditDoc, width: nu
     }
     case "solid":
       drawSolid(ctx, clip, width, height);
+      break;
+    case "shape":
+      drawShape(ctx, clip);
       break;
     case "audio":
     case "cursor":
@@ -883,6 +978,23 @@ export function renderTextClipPng(doc: EditDoc, clip: TextClip): Buffer {
   // Transparent ground (no background fill) so only the glyphs/pill carry alpha.
   clipTimeCache = textRestTime(clip);
   drawText(ctx, clip);
+  return canvas.toBuffer("image/png");
+}
+
+/**
+ * Rasterize a SHAPE clip to a transparent composition-sized PNG for the ffmpeg
+ * export overlay (mirrors renderTextClipPng). Rendered at the clip's RESTING state
+ * (transitions/keyframes settled — one static PNG over the clip span), so an animated
+ * shape exports as its settled frame while the preview still animates (the same
+ * documented limitation as text). Transparent ground → only the shape carries alpha.
+ */
+export function renderShapeClipPng(doc: EditDoc, clip: ShapeClip): Buffer {
+  const { width, height } = doc.meta;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  // Resting time = clip end (after any transition-in), matching textRestTime intent.
+  clipTimeCache = clip.start + clip.duration;
+  drawShape(ctx, clip);
   return canvas.toBuffer("image/png");
 }
 

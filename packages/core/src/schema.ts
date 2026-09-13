@@ -933,6 +933,54 @@ export const AdjustmentClip = z.object({
 });
 export type AdjustmentClip = z.infer<typeof AdjustmentClip>;
 
+/** The vector shapes the Design room / `add_shape` can place. */
+export const SHAPE_KINDS = ["rect", "ellipse", "line", "arrow"] as const;
+export const ShapeKind = z.enum(SHAPE_KINDS);
+export type ShapeKind = z.infer<typeof ShapeKind>;
+
+/**
+ * A vector SHAPE overlay — rectangle, ellipse, line, or arrow — for annotations,
+ * lower-third backing bars, highlight boxes, progress bars, and pointers. Drawn by
+ * the SAME canvas engine that paints the live preview and (for export) rasterized to
+ * a transparent composition-sized PNG that ffmpeg overlays — so preview, node-canvas
+ * render, and export agree (the "one pure helper → three renderers" rule; shapes reuse
+ * the text/callout PNG-overlay path). Positioned by `transform` (center anchor), like
+ * every other visual clip, so keyframes/animation just work. Faithful: a synthetic
+ * overlay, never a content change.
+ *
+ * Geometry: `w`×`h` is the shape's box in composition px (centered on transform.x/y).
+ * For `line`/`arrow`, `w` is the length, the shape is horizontal before `rotation`,
+ * and `strokeWidth` is the thickness. `fill` paints rect/ellipse interiors (""=no
+ * fill, outline only); `stroke`+`strokeWidth` draw the outline (rect/ellipse) or the
+ * line/arrow itself; `radius` rounds rectangle corners. All additive/defaulted so
+ * existing docs are unaffected.
+ */
+export const ShapeClip = z.object({
+  ...clipBase,
+  kind: z.literal("shape"),
+  shape: ShapeKind.default("rect"),
+  /** Shape box in composition px (line/arrow: `w` is length, `strokeWidth` the thickness). */
+  w: z.number().positive().default(320),
+  h: z.number().positive().default(180),
+  /** Fill color for rect/ellipse. Empty string ⇒ no fill (outline only). */
+  fill: z.union([HexColor, z.literal("")]).default("#2f6690"),
+  /** Fill opacity 0..1 (independent of the transform's whole-shape opacity). */
+  fillOpacity: z.number().min(0).max(1).default(1),
+  /** Outline color (rect/ellipse), and the color of a line/arrow. "" ⇒ none. */
+  stroke: z.union([HexColor, z.literal("")]).default(""),
+  /** Outline / line thickness in px (line & arrow always draw with this). */
+  strokeWidth: z.number().min(0).default(0),
+  /** Rounded-corner radius for `rect` (px; ignored by other shapes). */
+  radius: z.number().min(0).default(0),
+  transform: Transform.prefault({}),
+  transitionInSec,
+  transitionOutSec,
+  transitionType,
+  /** Optional animation keyframes (x/y/scale/rotation/opacity), resolved by `valueAt`. */
+  keyframes: z.array(Keyframe).optional(),
+});
+export type ShapeClip = z.infer<typeof ShapeClip>;
+
 export const Clip = z.discriminatedUnion("kind", [
   VideoClip,
   ImageClip,
@@ -942,6 +990,7 @@ export const Clip = z.discriminatedUnion("kind", [
   CursorClip,
   CalloutClip,
   AdjustmentClip,
+  ShapeClip,
 ]);
 export type Clip = z.infer<typeof Clip>;
 

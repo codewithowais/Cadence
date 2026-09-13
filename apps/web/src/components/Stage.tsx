@@ -12,6 +12,7 @@ import {
   type AudioClip,
   type EditDoc,
   type ImageClip,
+  type ShapeClip,
   type TextClip,
   type VideoClip,
 } from "@cadence/core";
@@ -160,6 +161,7 @@ export function Stage(props: StageProps) {
     .map((c) => c.clip)
     .filter((c): c is ImageClip => c.kind === "image");
   const activeTexts = activeOnTracks.map((c) => c.clip).filter((c): c is TextClip => c.kind === "text");
+  const activeShapes = activeOnTracks.map((c) => c.clip).filter((c): c is ShapeClip => c.kind === "shape");
   // Every audio clip in the doc (music + voice-over across all tracks). Rendered
   // as always-present hidden <audio> elements so the playhead crossing into a
   // clip can start it — each one plays only while it's active.
@@ -303,6 +305,81 @@ export function Stage(props: StageProps) {
                 <img key={clip.id} src={url} alt="" className="will-change-transform" style={style} />
               );
             })}
+
+          {/* Vector shapes (rect / ellipse / line / arrow) — one SVG in composition
+              coordinates so it matches the canvas/export at any display size. */}
+          {activeShapes.length > 0 && (
+            <svg
+              className="pointer-events-none absolute inset-0 h-full w-full"
+              viewBox={`0 0 ${doc.meta.width} ${doc.meta.height}`}
+              preserveAspectRatio="none"
+            >
+              {activeShapes.map((s) => {
+                const op = transitionOpacity(s, timeSec);
+                if (op <= 0 || s.w <= 0 || s.h <= 0) return null;
+                const gt = `translate(${s.transform.x} ${s.transform.y}) rotate(${s.transform.rotation}) scale(${s.transform.scale})`;
+                const fill = s.fill === "" ? "none" : s.fill;
+                const hasStroke = s.stroke !== "" && s.strokeWidth > 0;
+                if (s.shape === "rect") {
+                  return (
+                    <g key={s.id} transform={gt} opacity={op}>
+                      <rect
+                        x={-s.w / 2}
+                        y={-s.h / 2}
+                        width={s.w}
+                        height={s.h}
+                        rx={s.radius}
+                        fill={fill}
+                        fillOpacity={s.fillOpacity}
+                        stroke={hasStroke ? s.stroke : "none"}
+                        strokeWidth={hasStroke ? s.strokeWidth : 0}
+                      />
+                    </g>
+                  );
+                }
+                if (s.shape === "ellipse") {
+                  return (
+                    <g key={s.id} transform={gt} opacity={op}>
+                      <ellipse
+                        cx={0}
+                        cy={0}
+                        rx={s.w / 2}
+                        ry={s.h / 2}
+                        fill={fill}
+                        fillOpacity={s.fillOpacity}
+                        stroke={hasStroke ? s.stroke : "none"}
+                        strokeWidth={hasStroke ? s.strokeWidth : 0}
+                      />
+                    </g>
+                  );
+                }
+                // line / arrow
+                const color = s.stroke !== "" ? s.stroke : s.fill !== "" ? s.fill : "#ffffff";
+                const thick = s.strokeWidth > 0 ? s.strokeWidth : 8;
+                const half = s.w / 2;
+                const headLen = s.shape === "arrow" ? Math.max(thick * 3.2, 20) : 0;
+                return (
+                  <g key={s.id} transform={gt} opacity={op}>
+                    <line
+                      x1={-half}
+                      y1={0}
+                      x2={half - headLen}
+                      y2={0}
+                      stroke={color}
+                      strokeWidth={thick}
+                      strokeLinecap="round"
+                    />
+                    {s.shape === "arrow" && (
+                      <polygon
+                        points={`${half},0 ${half - headLen},${-headLen * 0.47} ${half - headLen},${headLen * 0.47}`}
+                        fill={color}
+                      />
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
+          )}
 
           {/* Text / caption overlays */}
           {scale > 0 &&

@@ -20,8 +20,10 @@ import { buildExportPlan, type KaraokeOverlayMap, type ResolveMediaPath, type Te
 import {
   renderTextOverlays,
   renderKaraokeOverlays,
+  renderShapeOverlays,
   docNeedsTextOverlays,
   docNeedsKaraokeOverlays,
+  docNeedsShapeOverlays,
 } from "./text-overlays";
 import { detectFfmpeg, resolveFfmpegBin, FFMPEG_MISSING_MESSAGE, type FfmpegInfo } from "./detect";
 
@@ -72,17 +74,20 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
   try {
     let overlays: TextOverlayMap | undefined;
     let karaokeOverlays: KaraokeOverlayMap | undefined;
+    let shapeOverlays: TextOverlayMap | undefined;
     const needsKaraoke = docNeedsKaraokeOverlays(doc);
-    if (docNeedsTextOverlays(doc) || needsKaraoke) {
+    const needsShapes = docNeedsShapeOverlays(doc);
+    if (docNeedsTextOverlays(doc) || needsKaraoke || needsShapes) {
       overlayDir = await mkdtemp(join(tmpdir(), "cadence-text-"));
       overlays = await renderTextOverlays(doc, overlayDir);
       if (needsKaraoke) karaokeOverlays = await renderKaraokeOverlays(doc, overlayDir);
+      if (needsShapes) shapeOverlays = await renderShapeOverlays(doc, overlayDir);
     }
     // Detect which sources actually carry an audio stream (no ffprobe exists in
     // ffmpeg-static) so the pure plan substitutes silence for audioless inputs
     // instead of referencing a non-existent [idx:a] pad — the audioless-export fix.
     const mediaHasAudio = await detectMediaAudio(bin, doc, opts.resolveMediaPath);
-    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays, mediaHasAudio, karaokeOverlays);
+    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays, mediaHasAudio, karaokeOverlays, shapeOverlays);
     await spawnFfmpeg(bin, plan.args, opts.onLog);
 
     // Optional faithful AI enhancement pass (off by default; money/setup gated).

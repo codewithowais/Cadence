@@ -22,6 +22,7 @@ import {
   type KeyframeProp,
   type Mask,
   type MediaAsset,
+  type ShapeKind,
   type TransitionType,
   type VideoClip,
 } from "@cadence/core";
@@ -45,6 +46,7 @@ export const OVERLAY_TRACK_IDS = new Set([
   "callouts",
   "demo-text",
   "adjustments",
+  "shapes",
 ]);
 /**
  * A "main" (magnetic) visual track carries the primary footage/photos and
@@ -1431,6 +1433,168 @@ export function addCallout(doc: EditDoc, opts: AddCalloutOpts): EditDoc {
     clone.tracks.push(track);
   }
   (track.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+// ---- Vector shapes ---------------------------------------------------------
+
+export interface AddShapeOpts {
+  shape?: ShapeKind;
+  atSec?: number;
+  durationSec?: number;
+  /** Center position (composition px). Defaults to frame center. */
+  x?: number;
+  y?: number;
+  /** Size in composition px (line/arrow: w = length). Defaults per shape. */
+  w?: number;
+  h?: number;
+  fill?: string;
+  fillOpacity?: number;
+  stroke?: string;
+  strokeWidth?: number;
+  radius?: number;
+  rotation?: number;
+}
+
+/**
+ * Add a vector SHAPE (rect / ellipse / line / arrow) overlay on the "shapes" track.
+ * Sensible per-shape defaults: rect/ellipse get a filled box centered in the frame;
+ * line/arrow get a horizontal stroked segment. Faithful: a synthetic overlay only.
+ * Both preview and export draw it from the SAME canvas helper (renderShapeClipPng),
+ * so it looks identical everywhere. Additive — existing docs are unchanged.
+ */
+export function addShape(doc: EditDoc, opts: AddShapeOpts = {}): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const { width: W, height: H } = clone.meta;
+  const shape: ShapeKind = opts.shape ?? "rect";
+  const isStroke = shape === "line" || shape === "arrow";
+  const start = round(Math.max(0, opts.atSec ?? 0));
+  const duration = round(Math.max(0.2, opts.durationSec ?? Math.min(4, docDurationSec(clone) || 4)));
+
+  // Defaults sized to the frame: rect ~40%×15% (a lower-third bar), ellipse ~30%²,
+  // line/arrow ~40% wide with a proportional thickness.
+  const defW = isStroke ? Math.round(W * 0.4) : shape === "ellipse" ? Math.round(W * 0.3) : Math.round(W * 0.4);
+  const defH = isStroke ? 8 : shape === "ellipse" ? Math.round(W * 0.3) : Math.round(H * 0.15);
+  const defStrokeW = isStroke ? Math.max(6, Math.round(H * 0.01)) : 0;
+
+  const clip: Record<string, unknown> = {
+    id: `shape-${Date.now()}`,
+    kind: "shape",
+    start,
+    duration,
+    shape,
+    w: round(Math.max(1, opts.w ?? defW)),
+    h: round(Math.max(1, opts.h ?? defH)),
+    fill: opts.fill ?? (isStroke ? "" : "#2f6690"),
+    fillOpacity: opts.fillOpacity !== undefined ? clamp(opts.fillOpacity, 0, 1) : 1,
+    stroke: opts.stroke ?? (isStroke ? "#ffd54a" : ""),
+    strokeWidth: opts.strokeWidth ?? defStrokeW,
+    radius: opts.radius ?? 0,
+    transform: {
+      x: round(opts.x ?? W / 2),
+      y: round(opts.y ?? H / 2),
+      scale: 1,
+      rotation: opts.rotation ?? 0,
+      opacity: 1,
+    },
+  };
+
+  let track = clone.tracks.find((t) => t.id === "shapes");
+  if (!track) {
+    track = mkTrack("shapes", "visual");
+    clone.tracks.push(track);
+  }
+  (track.clips as unknown[]).push(clip);
+  return parseEditDoc(clone);
+}
+
+// ---- PiP / split-screen layouts --------------------------------------------
+
+export type LayoutKind = "2up" | "3up" | "pip" | "grid";
+export const LAYOUT_KINDS: LayoutKind[] = ["2up", "3up", "pip", "grid"];
+
+/**
+ * Cell placements (center x/y in px + uniform scale) for a layout, as fractions of
+ * the frame — so it works at ANY aspect. 3% outer margin, 1.5% inner gap (per the
+ * editor spec). Each cell's scale is the uniform transform multiplier that fits a
+ * cover-cropped clip into the cell; the clip is drawn scaled about its center and
+ * translated to the cell — no crop/engine change (parity-safe). PiP: clip 0 full
+ * frame, clip 1 a 30% inset in the bottom-right with a 4% margin.
+ */
+function layoutCells(kind: LayoutKind, W: number, H: number): { x: number; y: number; scale: number }[] {
+  const m = 0.03; // outer margin (fraction)
+  const g = 0.015; // inner gap (fraction)
+  if (kind === "pip") {
+    const s = 0.3;
+    const pipMargin = 0.04;
+    return [
+      { x: W / 2, y: H / 2, scale: 1 },
+      { x: W * (1 - pipMargin - s / 2), y: H * (1 - pipMargin - s / 2), scale: s },
+    ];
+  }
+  if (kind === "2up") {
+    const cw = (1 - 2 * m - g) / 2; // cell width fraction
+    return [
+      { x: W * (m + cw / 2), y: H / 2, scale: cw },
+      { x: W * (m + cw + g + cw / 2), y: H / 2, scale: cw },
+    ];
+  }
+  if (kind === "3up") {
+    const cw = (1 - 2 * m - 2 * g) / 3;
+    return [0, 1, 2].map((i) => ({ x: W * (m + i * (cw + g) + cw / 2), y: H / 2, scale: cw }));
+  }
+  // grid 2x2
+  const cw = (1 - 2 * m - g) / 2;
+  const ch = (1 - 2 * m - g) / 2;
+  const s = Math.min(cw, ch);
+  const xs = [W * (m + cw / 2), W * (m + cw + g + cw / 2)];
+  const ys = [H * (m + ch / 2), H * (m + ch + g + ch / 2)];
+  return [
+    { x: xs[0]!, y: ys[0]!, scale: s },
+    { x: xs[1]!, y: ys[0]!, scale: s },
+    { x: xs[0]!, y: ys[1]!, scale: s },
+    { x: xs[1]!, y: ys[1]!, scale: s },
+  ];
+}
+
+/**
+ * Arrange the doc's visual media clips (video/image) into a PiP / split-screen
+ * LAYOUT by setting each clip's `transform` (center x/y + uniform scale) into
+ * fraction-of-frame cells — a pure preset over the existing transform, no engine or
+ * crop change (parity-safe; the canvas, Stage, and export already honor transform).
+ * Targets `clipIds` when given, else the first visual clips in z-order up to the
+ * layout's cell count. Fewer clips than cells ⇒ only the present clips are placed;
+ * more ⇒ extras are left untouched. A single clip / no clips ⇒ no-op (returns the
+ * doc unchanged). Faithful: repositions existing frames only.
+ */
+export function applyLayout(doc: EditDoc, kind: LayoutKind, clipIds?: string[]): EditDoc {
+  const clone: EditDoc = structuredClone(doc);
+  const { width: W, height: H } = clone.meta;
+  const cells = layoutCells(kind, W, H);
+
+  // Gather target visual clips (video/image) in z-order (track order, then within).
+  type Ref = { clip: Record<string, unknown> };
+  const refs: Ref[] = [];
+  for (const track of clone.tracks) {
+    for (const clip of track.clips as unknown as Record<string, unknown>[]) {
+      if (clip.kind === "video" || clip.kind === "image") refs.push({ clip });
+    }
+  }
+  const targets = clipIds && clipIds.length > 0 ? refs.filter((r) => clipIds.includes(r.clip.id as string)) : refs;
+  if (targets.length < 2) return doc; // nothing meaningful to lay out
+
+  targets.slice(0, cells.length).forEach((r, i) => {
+    const cell = cells[i]!;
+    const prev = (r.clip.transform ?? {}) as Record<string, unknown>;
+    r.clip.transform = {
+      ...prev,
+      x: round(cell.x),
+      y: round(cell.y),
+      scale: round(cell.scale),
+      rotation: (prev.rotation as number) ?? 0,
+      opacity: (prev.opacity as number) ?? 1,
+    };
+  });
   return parseEditDoc(clone);
 }
 

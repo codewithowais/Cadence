@@ -159,6 +159,7 @@ import {
   probeHasAudio,
   renderTextOverlays,
   renderKaraokeOverlays,
+  renderShapeOverlays,
   resolveFfmpegBin,
   runExport,
   xfadeTransition,
@@ -3254,12 +3255,15 @@ async function checkRealEncode(): Promise<void> {
     // Karaoke captions become a per-word PNG sequence (empty map for non-karaoke docs,
     // so their graph stays byte-identical). Overlaid gated word-by-word by the plan.
     const karaokeOverlays = await renderKaraokeOverlays(doc, encDir);
+    // Vector shapes become transparent PNG overlays too (empty map for shape-free
+    // docs, so their graph stays byte-identical). Overlaid gated to each span.
+    const shapeOverlays = await renderShapeOverlays(doc, encDir);
     // Detect audio the SAME way runExport does (no ffprobe — `ffmpeg -i` stderr
     // parse), then thread it into the pure plan so audioless inputs get synthesized
     // silence instead of a non-existent [idx:a] pad. For all-audio docs this map is
     // every-true, so the emitted graph is byte-identical to the pre-fix fast path.
     const mediaHasAudio = await detectMediaAudio(bin, doc, resolveMedia);
-    const plan = buildExportPlan(doc, resolveMedia, out, overlays, mediaHasAudio, karaokeOverlays);
+    const plan = buildExportPlan(doc, resolveMedia, out, overlays, mediaHasAudio, karaokeOverlays, shapeOverlays);
     // Guard the exact class of the fixed bug: a `\,` that got escaped twice.
     assert(!plan.filterComplex.includes("\\\\,"), `real encode [${label}]: double-escaped comma (\\\\,) in filtergraph — ffmpeg's eval will reject it`);
     // Text is PNG overlays now, never drawtext (which the bundled ffmpeg lacks).
@@ -3511,6 +3515,23 @@ async function checkRealEncode(): Promise<void> {
     ],
   });
 
+  // (n) WAVE G — vector SHAPES: rect + ellipse + line + arrow overlays over a clip
+  //     must rasterize to transparent PNGs and composite via overlay (the text path),
+  //     producing a real, non-empty mp4 on the bundled ffmpeg. Guards shape parity.
+  await encode("n_shapes", {
+    version: 1, meta: { title: "n", width: 1280, height: 720, fps: 30, background: "#0a0d12" },
+    media: [{ id: "clip-001", kind: "video", src: srcMp4 }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 2, mediaId: "clip-001", sourceIn: 0, transform: { x: 640, y: 360 } }] },
+      { id: "shapes", kind: "visual", clips: [
+        { id: "sh0", kind: "shape", shape: "rect", start: 0, duration: 2, w: 900, h: 120, fill: "#2f6690", radius: 16, transform: { x: 640, y: 120 } },
+        { id: "sh1", kind: "shape", shape: "ellipse", start: 0, duration: 2, w: 240, h: 240, fill: "#0d7a6b", transform: { x: 300, y: 400 } },
+        { id: "sh2", kind: "shape", shape: "arrow", start: 0, duration: 2, w: 360, h: 8, fill: "", stroke: "#ffd54a", strokeWidth: 14, transform: { x: 820, y: 460 } },
+        { id: "sh3", kind: "shape", shape: "line", start: 0, duration: 2, w: 700, h: 8, fill: "", stroke: "#ffffff", strokeWidth: 8, transform: { x: 640, y: 640 } },
+      ] },
+    ],
+  });
+
   // (4) regression guard: a plain, simple single-clip export must still encode.
   await encode("plain_simple", {
     version: 1, meta: { title: "plain", width: 1080, height: 1920, fps: 30 },
@@ -3519,7 +3540,7 @@ async function checkRealEncode(): Promise<void> {
   });
 
   console.log(
-    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades+CAPTIONS), captions+title (user's case), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, AUDIOLESS e2e (highlight+9:16+4K+look+captions+fades+emphasis on a no-audio source), audioless+music, audioless↔audio mix, CLEAN-AUDIO denoise (afftdn before loudnorm; OFF byte-identical), KARAOKE captions (per-word PNG sequence, gated word-by-word), plain; audio presence detected without ffprobe (ffmpeg -i stderr parse) and audioless inputs padded with anullsrc silence; all text burned in as PNG overlays (works on the bundled freetype-less ffmpeg)`,
+    `  \x1b[32m✔\x1b[0m check 64 (real encode): ffmpeg ${info.version ?? "?"} encoded ${encoded} complex docs to non-empty .mp4 (exit 0) — failing-combo (emphasis+4K+reframe+look+fades+CAPTIONS), captions+title (user's case), xfade transitions, kf overlay, adjustment grade, slideshow xfade, chroma+geq-mask, AUDIOLESS e2e (highlight+9:16+4K+look+captions+fades+emphasis on a no-audio source), audioless+music, audioless↔audio mix, CLEAN-AUDIO denoise (afftdn before loudnorm; OFF byte-identical), KARAOKE captions (per-word PNG sequence, gated word-by-word), SHAPES (rect+ellipse+line+arrow as PNG overlays), plain; audio presence detected without ffprobe (ffmpeg -i stderr parse) and audioless inputs padded with anullsrc silence; all text/shapes burned in as PNG overlays (works on the bundled freetype-less ffmpeg)`,
   );
 }
 

@@ -1,6 +1,7 @@
 export {
   CanvasRenderEngine,
   renderTextClipPng,
+  renderShapeClipPng,
   renderCalloutLabelPng,
   renderKaraokeWordPngs,
   isKaraokeClip,

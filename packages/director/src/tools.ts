@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   docDurationSec,
   EditDoc,
+  SHAPE_KINDS,
   TransitionType,
   type BlendMode,
   type CurvePoint,
@@ -36,6 +37,8 @@ import {
   addCaptions,
   addCursor,
   addEmphasis,
+  addShape,
+  applyLayout,
   addFades,
   addKeyframe,
   addKineticTitle,
@@ -84,6 +87,7 @@ import {
   type BrollCorner,
   type CaptionStyleOpts,
   type KaraokeStyle,
+  type LayoutKind,
   type SetKaraokeOptions,
   type LookKey,
   type PlatformKey,
@@ -871,6 +875,63 @@ export const addCalloutTool: DirectorTool<{
   },
 };
 
+// ---- add_shape -------------------------------------------------------------
+
+export const addShapeTool: DirectorTool<{
+  shape?: (typeof SHAPE_KINDS)[number];
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  fill?: string;
+  fillOpacity?: number;
+  stroke?: string;
+  strokeWidth?: number;
+  radius?: number;
+  rotation?: number;
+  atSec?: number;
+  durationSec?: number;
+}> = {
+  name: "add_shape",
+  description:
+    "Add a vector SHAPE overlay — 'rect', 'ellipse', 'line', or 'arrow' (default rect) — centered at {x,y} (composition px; defaults to frame center) sized {w,h} (line/arrow: w = length). `fill`/`fillOpacity` paint rect/ellipse ('' = no fill); `stroke`/`strokeWidth` draw the outline or the line/arrow; `radius` rounds rectangle corners; `rotation` in degrees. Great for lower-third backing bars, highlight boxes, progress bars, and pointers. Faithful overlay.",
+  inputSchema: z.object({
+    shape: z.enum(SHAPE_KINDS).optional(),
+    x: z.number().optional(),
+    y: z.number().optional(),
+    w: z.number().positive().optional(),
+    h: z.number().positive().optional(),
+    fill: z.string().optional(),
+    fillOpacity: z.number().min(0).max(1).optional(),
+    stroke: z.string().optional(),
+    strokeWidth: z.number().min(0).optional(),
+    radius: z.number().min(0).optional(),
+    rotation: z.number().optional(),
+    atSec: z.number().nonnegative().optional(),
+    durationSec: z.number().positive().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = addShape(ctx.project.doc, input);
+    return commit(ctx.project, doc, `Added a ${input.shape ?? "rect"} shape.`);
+  },
+};
+
+// ---- apply_layout (PiP / split-screen) -------------------------------------
+
+export const applyLayoutTool: DirectorTool<{ layout: LayoutKind; clipIds?: string[] }> = {
+  name: "apply_layout",
+  description:
+    "Arrange the video/photo clips into a LAYOUT: '2up' (side-by-side), '3up', 'pip' (picture-in-picture, second clip inset bottom-right), or 'grid' (2×2). Positions clips into fraction-of-frame cells with margins by setting each clip's transform — works at any aspect. Optionally target specific `clipIds`; otherwise the first visual clips are placed. Needs at least 2 clips.",
+  inputSchema: z.object({
+    layout: z.enum(["2up", "3up", "pip", "grid"]),
+    clipIds: z.array(z.string()).optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = applyLayout(ctx.project.doc, input.layout, input.clipIds);
+    return commit(ctx.project, doc, `Applied the ${input.layout} layout.`);
+  },
+};
+
 // ---- animate (keyframes) ---------------------------------------------------
 
 export const animateTool: DirectorTool<{
@@ -1589,6 +1650,8 @@ export const DIRECTOR_TOOLS = {
   add_cursor: addCursorTool,
   type_text: typeTextTool,
   add_callout: addCalloutTool,
+  add_shape: addShapeTool,
+  apply_layout: applyLayoutTool,
   animate: animateTool,
   add_keyframe: addKeyframeTool,
   move_keyframe: moveKeyframeTool,
