@@ -45,6 +45,8 @@ export async function POST(req: NextRequest) {
   let outFile: string | null = null;
   // Local files we downloaded from Blob for this export; deleted in `finally`.
   const scratch: string[] = [];
+  // Source Vercel Blob URLs to delete after export so storage doesn't accumulate.
+  const blobUrls: string[] = [];
   try {
     const body = await req.json();
     const doc = parseEditDoc(body?.doc);
@@ -57,7 +59,7 @@ export async function POST(req: NextRequest) {
     for (const m of doc.media) {
       const r = await resolveMediaToLocalPath(m.src, m.label ?? m.id);
       byId.set(m.id, r.path);
-      if (r.downloaded) scratch.push(r.path);
+      if (r.downloaded) { scratch.push(r.path); blobUrls.push(m.src); }
     }
 
     // LUT (.cube) paths are also client-supplied and reach ffmpeg via the SAME
@@ -69,7 +71,7 @@ export async function POST(req: NextRequest) {
     for (const lut of collectLutPaths(doc)) {
       const r = await resolveMediaToLocalPath(lut);
       byLut.set(lut, r.path);
-      if (r.downloaded) scratch.push(r.path);
+      if (r.downloaded) { scratch.push(r.path); blobUrls.push(lut); }
     }
 
     const resolveMediaPath = (idOrPath: string): string => {
@@ -109,5 +111,17 @@ export async function POST(req: NextRequest) {
   } finally {
     if (outFile) void unlink(outFile).catch(() => {});
     for (const f of scratch) void unlink(f).catch(() => {});
+    // Free the source blobs so Vercel Blob storage doesn't accumulate: the client
+    // re-uploads every media file on each export, so these are single-use. Awaited
+    // (not fire-and-forget) because a serverless instance may freeze right after the
+    // response, which would skip the deletion and leak storage against the free quota.
+    if (blobUrls.length) {
+      try {
+        const { del } = await import("@vercel/blob");
+        await del(blobUrls);
+      } catch {
+        // Best-effort — a failed cleanup must never fail the export.
+      }
+    }
   }
 }
