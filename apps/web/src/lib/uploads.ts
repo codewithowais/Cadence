@@ -144,11 +144,23 @@ export async function resolveMediaToLocalPath(
     const dest = join(UPLOAD_DIR, `${randomUUID()}${safeUrlExt(u)}`);
     let res: Response;
     try {
-      res = await fetch(src);
+      // `redirect: "manual"` so a 3xx can't bounce an allow-listed Blob URL to a
+      // non-allow-listed host (SSRF): we only ever validated the FIRST hop. Blob
+      // public URLs serve bytes directly, so any redirect is treated as invalid.
+      res = await fetch(src, { redirect: "manual" });
     } catch {
       throw new MediaNotOnServerError(label);
     }
+    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+      throw new MediaNotOnServerError(label);
+    }
     if (!res.ok) throw new MediaNotOnServerError(label);
+    // Reject an oversized body BEFORE buffering it into memory (DoS). Content-Length
+    // is advisory, so the post-buffer byteLength check below stays as a backstop.
+    const declared = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_BLOB_BYTES) {
+      throw new Error("media file too large");
+    }
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.byteLength > MAX_BLOB_BYTES) throw new Error("media file too large");
     await writeFile(dest, buf);
