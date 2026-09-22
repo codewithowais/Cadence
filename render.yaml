@@ -1,0 +1,46 @@
+# Render Blueprint — deploy Cadence with REAL ffmpeg for reliable .mp4 export.
+#
+# WHY this and not Vercel: Vercel serverless has no shared disk between the upload
+# and export requests, a ~60s function limit, and a 4.5MB body limit — none of which
+# suit video export. A single always-on container shares one disk between upload and
+# export, runs native ffmpeg, and has no request timeout, so export "just works" with
+# no Blob store and no client-side wasm.
+#
+# HOW TO DEPLOY:
+#   1. Push this file (already on master).
+#   2. Render dashboard → New → Blueprint → connect this GitHub repo → Apply.
+#      Render reads this file, builds apps/web/Dockerfile, and starts the service.
+#   3. Open the service URL → /editor → add photos → Export.
+#
+# NOTES:
+#   - Free plan: the instance sleeps after ~15 min idle (first request after that
+#     cold-starts in ~30-60s). 1080p export is comfortable in the free 512MB RAM;
+#     heavy 4K encodes may need the Starter plan (more RAM) — bump `plan` if 4K OOMs.
+#   - No database is required for export (scratch editor works without one). To also
+#     persist projects/login later, add DATABASE_URL (your Neon URL) in the dashboard.
+services:
+  - type: web
+    name: cadence
+    runtime: docker
+    plan: free
+    dockerfilePath: apps/web/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      # Use the container's system ffmpeg (apk add ffmpeg in the Dockerfile).
+      # The bundled ffmpeg-static binary is glibc-linked and fails on Alpine/musl,
+      # and resolveFfmpegBin() prefers it unless FFMPEG_PATH is set.
+      - key: FFMPEG_PATH
+        value: ffmpeg
+      # One writable dir shared by upload + export on this single instance (the
+      # thing serverless couldn't provide). Any always-writable path works.
+      - key: CADENCE_MEDIA_DIR
+        value: /tmp/cadence-uploads
+      # Signs the dev session cookie; Render generates a strong random value.
+      - key: SESSION_SECRET
+        generateValue: true
