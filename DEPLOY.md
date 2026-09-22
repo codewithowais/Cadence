@@ -4,11 +4,17 @@ Cadence is an npm-workspaces monorepo (`apps/web` is the Next.js 16 app;
 `packages/*` are TypeScript-source packages consumed via `transpilePackages`).
 Vercel builds it natively — no Docker needed for the app itself.
 
-> One limitation up front: **real `.mp4` export shells out to `ffmpeg`, which is
-> not available on Vercel's serverless runtime.** Everything else works on Vercel
-> (editor, preview, transcript editing, DB persistence). The export route degrades
-> gracefully with an honest message. For true server-side `.mp4` render, run the
-> Docker image (`docker compose up`, ffmpeg is baked in) or a container host.
+> **Real `.mp4` export on Vercel needs Vercel Blob.** ffmpeg itself runs on Vercel
+> (bundled `ffmpeg-static`), but `/api/upload` and `/api/export` execute on separate
+> serverless instances with separate `/tmp`, so an uploaded file is gone by export
+> time ("media isn't on the server anymore") unless media lives in shared storage.
+> Enable it: **Vercel dashboard → Storage → Create → Blob → connect to this project**
+> (Vercel injects `BLOB_READ_WRITE_TOKEN`; the app auto-uses Blob when it's present).
+> Caveats on the free/Hobby plan: server-side upload is bound by Vercel's ~4.5 MB
+> request-body limit (fine for photos; large videos need client-direct upload as a
+> follow-up), and functions cap at ~60 s — short slideshows encode fine, heavy 4K may
+> time out. For unlimited, reliable render, run the Docker image (`docker compose up`,
+> ffmpeg baked in) or any container host with a persistent disk.
 
 ---
 

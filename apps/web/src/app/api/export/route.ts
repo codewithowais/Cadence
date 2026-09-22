@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseEditDoc, type EditDoc } from "@cadence/core";
 import { detectFfmpeg, runExport, FFMPEG_MISSING_MESSAGE, FfmpegNotFoundError } from "@cadence/render-ffmpeg";
-import { resolveUploadPath, MediaNotOnServerError } from "@/lib/uploads";
+import { resolveMediaToLocalPath, MediaNotOnServerError } from "@/lib/uploads";
 
 export const runtime = "nodejs";
 // Real encoding can take a while; give it room.
@@ -43,26 +43,33 @@ export async function POST(req: NextRequest) {
   }
 
   let outFile: string | null = null;
+  // Local files we downloaded from Blob for this export; deleted in `finally`.
+  const scratch: string[] = [];
   try {
     const body = await req.json();
     const doc = parseEditDoc(body?.doc);
 
-    // SECURITY: media.src is client-supplied. Validate every path resolves INSIDE
-    // the uploads dir before handing any of it to ffmpeg — otherwise a crafted
-    // src ("/etc/passwd", "http://…") would be arbitrary-file-read / SSRF.
+    // SECURITY: media.src is client-supplied. Every path is resolved to a real
+    // LOCAL file before ffmpeg sees it — either validated INSIDE the uploads dir
+    // or downloaded from an allow-listed Vercel Blob URL — so a crafted src
+    // ("/etc/passwd", "http://…") can't become arbitrary-file-read / SSRF.
     const byId = new Map<string, string>();
     for (const m of doc.media) {
-      byId.set(m.id, await resolveUploadPath(m.src, m.label ?? m.id));
+      const r = await resolveMediaToLocalPath(m.src, m.label ?? m.id);
+      byId.set(m.id, r.path);
+      if (r.downloaded) scratch.push(r.path);
     }
 
     // LUT (.cube) paths are also client-supplied and reach ffmpeg via the SAME
     // resolver (the engine passes `look.lut` / adjustment `grade.lut` through
-    // resolveMediaPath → `lut3d=file=…`). Pre-resolve every LUT value the same
-    // way so it's provably inside the uploads dir; the sync resolver then serves
-    // both media ids and LUT paths (and a LUT with no valid file fails safe).
+    // resolveMediaPath → `lut3d=file=…`). Resolve every LUT value the same way
+    // (local path or Blob); the sync resolver then serves both media ids and LUT
+    // paths (and a LUT with no valid file fails safe).
     const byLut = new Map<string, string>();
     for (const lut of collectLutPaths(doc)) {
-      byLut.set(lut, await resolveUploadPath(lut));
+      const r = await resolveMediaToLocalPath(lut);
+      byLut.set(lut, r.path);
+      if (r.downloaded) scratch.push(r.path);
     }
 
     const resolveMediaPath = (idOrPath: string): string => {
@@ -101,5 +108,6 @@ export async function POST(req: NextRequest) {
     );
   } finally {
     if (outFile) void unlink(outFile).catch(() => {});
+    for (const f of scratch) void unlink(f).catch(() => {});
   }
 }

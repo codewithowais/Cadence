@@ -2,14 +2,22 @@ import { type NextRequest } from "next/server";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, extname, basename } from "node:path";
 import { randomUUID } from "node:crypto";
-import { UPLOAD_DIR } from "@/lib/uploads";
+import { UPLOAD_DIR, blobEnabled } from "@/lib/uploads";
 
 export const runtime = "nodejs";
 
 /**
- * Save an uploaded media file (multipart/form-data, field "file") to a temp dir
- * so the ffmpeg export can read it by a real server path. Returns { id, path }.
- * Free/local only — nothing leaves the machine.
+ * Save an uploaded media file (multipart/form-data, field "file") so the ffmpeg
+ * export can read it later. Returns { id, path } where `path` is:
+ *  - a PUBLIC Vercel Blob URL when a Blob store is configured (serverless deploys:
+ *    upload and export run on different instances, so media must live in shared
+ *    storage — a local temp path would be gone by export time), or
+ *  - a local server path otherwise (local dev / Docker with a persistent disk).
+ * The export route accepts either shape via `resolveMediaToLocalPath`.
+ *
+ * NOTE: server-side Blob upload streams the file through this function, so on
+ * Vercel it is bounded by the ~4.5 MB request-body limit — fine for photos. Larger
+ * videos need client-direct Blob upload (a `handleUpload` token route) as a follow-up.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -22,12 +30,23 @@ export async function POST(req: NextRequest) {
     // Keep the original extension (sanitized) so ffmpeg can sniff the container.
     const ext = safeExt(file.name);
     const id = randomUUID();
+
+    if (blobEnabled()) {
+      // Shared storage for serverless. Import lazily so local/Docker (no token,
+      // package may be absent from the runtime) never touches @vercel/blob.
+      const { put } = await import("@vercel/blob");
+      const blob = await put(`cadence-uploads/${id}${ext}`, file, {
+        access: "public",
+        contentType: file.type || undefined,
+        addRandomSuffix: false,
+      });
+      return Response.json({ id, path: blob.url });
+    }
+
     await mkdir(UPLOAD_DIR, { recursive: true });
     const path = join(UPLOAD_DIR, `${id}${ext}`);
-
     const bytes = Buffer.from(await file.arrayBuffer());
     await writeFile(path, bytes);
-
     return Response.json({ id, path });
   } catch (err) {
     return Response.json(

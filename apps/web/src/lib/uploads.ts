@@ -1,6 +1,7 @@
-import { mkdir, realpath } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join, sep, extname } from "node:path";
+import { randomUUID } from "node:crypto";
 
 /**
  * Resolve the directory /api/upload writes media to and /api/export reads it back
@@ -17,9 +18,11 @@ import { join, sep } from "node:path";
  *   1. `CADENCE_MEDIA_DIR` — operator override (Docker: point at a mounted volume so
  *      uploads also survive container recreation). Shared with the transcriber's
  *      trust root — see `mediaBaseDir()` in @cadence/understanding.
- *   2. Serverless (`VERCEL` / AWS Lambda): only `os.tmpdir()` is writable there, and
- *      the ffmpeg export doesn't run on those platforms anyway, so ephemerality is
- *      acceptable — keep the old temp path.
+ *   2. Serverless (`VERCEL` / AWS Lambda): only `os.tmpdir()` is writable. On these
+ *      platforms upload and export run on DIFFERENT instances that don't share a
+ *      disk, so this local dir is only a scratch space — durable media lives in
+ *      Vercel Blob (see {@link resolveMediaToLocalPath}). Downloaded blobs and, on a
+ *      warm instance, direct disk uploads land here transiently.
  *   3. Otherwise (local + Docker): a persistent `~/.cadence/uploads`.
  *
  * KEEP IN SYNC with `mediaBaseDir()` in
@@ -81,4 +84,75 @@ export async function resolveUploadPath(clientPath: string, label?: string): Pro
     throw new Error("invalid media path");
   }
   return real;
+}
+
+// ---------------------------------------------------------------------------
+// Vercel Blob (shared storage for serverless deploys)
+//
+// On Vercel, /api/upload and /api/export run on separate instances with separate
+// /tmp, so a locally-written upload is gone by export time ("media not on server").
+// When a Blob store is configured we upload to Blob (global) and, at export time,
+// download each blob into THIS invocation's disk so ffmpeg can read a real file.
+// Locally / in Docker no token is set, so everything stays on the disk path above.
+// ---------------------------------------------------------------------------
+
+/** Safety cap for a single downloaded media file. */
+const MAX_BLOB_BYTES = 300 * 1024 * 1024; // 300 MB
+
+/** True when Vercel Blob is configured — i.e. the deploy has shared storage. */
+export function blobEnabled(): boolean {
+  return !!process.env.BLOB_READ_WRITE_TOKEN;
+}
+
+/**
+ * A PUBLIC Vercel Blob URL, e.g.
+ * `https://<store-id>.public.blob.vercel-storage.com/<path>`. Only this exact host
+ * shape is ever fetched server-side — anything else stays subject to the local
+ * realpath/containment guard, so a crafted `media.src` can't turn into SSRF.
+ */
+function isVercelBlobUrl(src: string): boolean {
+  try {
+    const u = new URL(src);
+    return u.protocol === "https:" && u.hostname.endsWith(".public.blob.vercel-storage.com");
+  } catch {
+    return false;
+  }
+}
+
+/** A lowercase, dot-prefixed extension from a blob URL's path, or "". */
+function safeUrlExt(u: URL): string {
+  const e = extname(u.pathname).toLowerCase();
+  return /^\.[a-z0-9]{1,8}$/.test(e) ? e : "";
+}
+
+/**
+ * Resolve a doc's `media.src` to a real LOCAL file path ffmpeg can read.
+ *  - A Vercel Blob URL → download it into the uploads dir and return that path
+ *    (`downloaded: true` so the caller can delete it after the export).
+ *  - Anything else → a local uploaded path, validated inside the uploads dir by
+ *    {@link resolveUploadPath} exactly as before.
+ * This is the single entry point the export route uses for every media + LUT path,
+ * so both the serverless (Blob) and local/Docker (disk) deploys work unchanged.
+ */
+export async function resolveMediaToLocalPath(
+  src: string,
+  label?: string,
+): Promise<{ path: string; downloaded: boolean }> {
+  if (isVercelBlobUrl(src)) {
+    const u = new URL(src);
+    await mkdir(UPLOAD_DIR, { recursive: true }).catch(() => {});
+    const dest = join(UPLOAD_DIR, `${randomUUID()}${safeUrlExt(u)}`);
+    let res: Response;
+    try {
+      res = await fetch(src);
+    } catch {
+      throw new MediaNotOnServerError(label);
+    }
+    if (!res.ok) throw new MediaNotOnServerError(label);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength > MAX_BLOB_BYTES) throw new Error("media file too large");
+    await writeFile(dest, buf);
+    return { path: dest, downloaded: true };
+  }
+  return { path: await resolveUploadPath(src, label), downloaded: false };
 }
