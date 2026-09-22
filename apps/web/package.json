@@ -19,8 +19,6 @@
     "@cadence/render-ffmpeg": "*",
     "@cadence/render-node": "*",
     "@cadence/understanding": "*",
-    "@ffmpeg/ffmpeg": "^0.12.15",
-    "@ffmpeg/util": "^0.12.2",
     "@vercel/blob": "^2.8.0",
     "next": "16.3.4",
     "pg": "8.23.0",

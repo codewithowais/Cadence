@@ -10,10 +10,6 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
-    },
-    "./plan": {
-      "types": "./src/plan.ts",
-      "default": "./src/plan.ts"
     }
   },
   "scripts": {
