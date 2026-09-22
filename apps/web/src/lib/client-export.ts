@@ -126,7 +126,11 @@ export async function clientExport({ doc, files, onLog, onProgress }: ClientExpo
 
     const data = await ff.readFile(OUT);
     const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
-    return new Blob([bytes], { type: "video/mp4" });
+    // Copy into a plain ArrayBuffer: ffmpeg.wasm may back `bytes` with a
+    // SharedArrayBuffer, which is not a valid BlobPart.
+    const ab = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(ab).set(bytes);
+    return new Blob([ab], { type: "video/mp4" });
   } finally {
     if (onProg) ff.off("progress", onProg);
     for (const n of written) await ff.deleteFile(n).catch(() => {});
