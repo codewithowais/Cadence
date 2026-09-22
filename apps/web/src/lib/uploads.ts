@@ -1,7 +1,7 @@
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, sep, extname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 
 /**
  * Resolve the directory /api/upload writes media to and /api/export reads it back
@@ -102,6 +102,51 @@ const MAX_BLOB_BYTES = 300 * 1024 * 1024; // 300 MB
 /** True when Vercel Blob is configured — i.e. the deploy has shared storage. */
 export function blobEnabled(): boolean {
   return !!process.env.BLOB_READ_WRITE_TOKEN;
+}
+
+/** Top-level namespace for every blob this app stores. */
+export const BLOB_PREFIX = "cadence-uploads";
+
+/** Name of the httpOnly cookie holding a client's opaque blob-owner token. */
+export const BLOB_OWNER_COOKIE = "cadence_bid";
+
+/** A valid owner token is a UUID we minted — never trust an arbitrary cookie value. */
+export function isValidOwnerToken(token: string | undefined | null): token is string {
+  return typeof token === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(token);
+}
+
+/** Mint a fresh owner token (for a client that has none yet). */
+export function newOwnerToken(): string {
+  return randomUUID();
+}
+
+/**
+ * The path tag that marks blob ownership. It is a HASH of the secret owner token,
+ * so the token itself never appears in a (public) blob URL — a shared doc leaks only
+ * the tag, and deletion requires re-presenting the token that hashes to it.
+ */
+export function blobOwnerTag(ownerToken: string): string {
+  return createHash("sha256").update(ownerToken).digest("hex").slice(0, 32);
+}
+
+/** Pathname for a blob owned by `ownerTag`: `cadence-uploads/<tag>/<name>`. */
+export function blobObjectPath(ownerTag: string, name: string): string {
+  return `${BLOB_PREFIX}/${ownerTag}/${name}`;
+}
+
+/**
+ * Authorization gate for deletion: true iff `blobUrl` is one WE stored under this
+ * exact owner tag. The export route computes the tag from the CALLER's own cookie
+ * token, so a doc carrying another client's blob URLs can never drive their deletion
+ * (IDOR) — the tags won't match.
+ */
+export function blobBelongsToOwner(blobUrl: string, ownerTag: string): boolean {
+  if (!ownerTag) return false;
+  try {
+    return new URL(blobUrl).pathname.startsWith(`/${BLOB_PREFIX}/${ownerTag}/`);
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseEditDoc, type EditDoc } from "@cadence/core";
 import { detectFfmpeg, runExport, FFMPEG_MISSING_MESSAGE, FfmpegNotFoundError } from "@cadence/render-ffmpeg";
-import { resolveMediaToLocalPath, MediaNotOnServerError } from "@/lib/uploads";
+import {
+  resolveMediaToLocalPath,
+  MediaNotOnServerError,
+  BLOB_OWNER_COOKIE,
+  isValidOwnerToken,
+  blobOwnerTag,
+  blobBelongsToOwner,
+} from "@/lib/uploads";
 
 export const runtime = "nodejs";
 // Real encoding can take a while; give it room.
@@ -115,12 +122,23 @@ export async function POST(req: NextRequest) {
     // re-uploads every media file on each export, so these are single-use. Awaited
     // (not fire-and-forget) because a serverless instance may freeze right after the
     // response, which would skip the deletion and leak storage against the free quota.
+    //
+    // AUTHORIZATION: only delete blobs owned by THIS caller. We derive the owner tag
+    // from the caller's own httpOnly cookie token and delete only URLs whose path
+    // carries that tag — so a crafted doc referencing another client's blob URLs can
+    // never drive their deletion (IDOR). Client-supplied URLs are never trusted blindly.
     if (blobUrls.length) {
-      try {
-        const { del } = await import("@vercel/blob");
-        await del(blobUrls);
-      } catch {
-        // Best-effort — a failed cleanup must never fail the export.
+      const token = req.cookies.get(BLOB_OWNER_COOKIE)?.value;
+      const owned = isValidOwnerToken(token)
+        ? blobUrls.filter((u) => blobBelongsToOwner(u, blobOwnerTag(token)))
+        : [];
+      if (owned.length) {
+        try {
+          const { del } = await import("@vercel/blob");
+          await del(owned);
+        } catch {
+          // Best-effort — a failed cleanup must never fail the export.
+        }
       }
     }
   }
