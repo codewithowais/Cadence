@@ -81,6 +81,7 @@ import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
 import { useDocHistory } from "@/lib/history";
 import { applyExportSettings, type ExportSettings } from "@/lib/export-presets";
+import { canClientExport } from "@/lib/client-export";
 import type { Message } from "@/lib/types";
 import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
 
@@ -649,6 +650,24 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setExporting(true);
     setPlaying(false);
     try {
+      // CLIENT-SIDE RENDER (free, no server limits): when enabled and every media
+      // File is in memory, encode the .mp4 in the browser via ffmpeg.wasm — nothing
+      // is uploaded, so Vercel's serverless disk/size/time limits never apply. Opt in
+      // with NEXT_PUBLIC_EXPORT_MODE=client (Vercel); server path stays the default.
+      if (process.env.NEXT_PUBLIC_EXPORT_MODE === "client" && canClientExport(source, files)) {
+        setBusyLabel("Loading the in-browser encoder…");
+        say("director", "Rendering in your browser (ffmpeg.wasm) — your media never leaves this device.", "info");
+        const { clientExport } = await import("@/lib/client-export");
+        const blob = await clientExport({
+          doc: source,
+          files,
+          onProgress: (r) => setBusyLabel(`Rendering .mp4 in your browser… ${Math.round(r * 100)}%`),
+        });
+        downloadBlob(`${source.meta.title || "cadence"}.mp4`, blob);
+        say("director", "Exported a real .mp4 — rendered locally in your browser (free, nothing uploaded).", "edit");
+        return;
+      }
+
       // Upload every media file used by the doc; map id → server path. This is
       // the determinate phase — narrate it as "Uploading media (i/n)…".
       const srcById: Record<string, string> = {};
