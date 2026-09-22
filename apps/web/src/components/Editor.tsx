@@ -81,7 +81,6 @@ import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
 import { useDocHistory } from "@/lib/history";
 import { applyExportSettings, type ExportSettings } from "@/lib/export-presets";
-import { canClientExport } from "@/lib/client-export";
 import type { Message } from "@/lib/types";
 import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
 
@@ -654,7 +653,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       // File is in memory, encode the .mp4 in the browser via ffmpeg.wasm — nothing
       // is uploaded, so Vercel's serverless disk/size/time limits never apply. Opt in
       // with NEXT_PUBLIC_EXPORT_MODE=client (Vercel); server path stays the default.
-      if (process.env.NEXT_PUBLIC_EXPORT_MODE === "client" && canClientExport(source, files)) {
+      // Inline the "all media Files present" check so this component never STATICALLY
+      // imports client-export.ts (which pulls ffmpeg.wasm) — it's dynamically imported below.
+      const filesReady = source.media.length > 0 && source.media.every((m) => !!files[m.id]);
+      if (process.env.NEXT_PUBLIC_EXPORT_MODE === "client" && filesReady) {
         setBusyLabel("Loading the in-browser encoder…");
         say("director", "Rendering in your browser (ffmpeg.wasm) — your media never leaves this device.", "info");
         const { clientExport } = await import("@/lib/client-export");
