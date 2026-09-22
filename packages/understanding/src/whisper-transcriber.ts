@@ -47,17 +47,22 @@ const round = (n: number): number => Math.round(n * 1000) / 1000;
 
 /**
  * The directory Whisper is allowed to read media from. Matches the web app's
- * UPLOAD_DIR (`<os.tmpdir()>/cadence-uploads`) so both share one trust root, and
- * can be overridden via `CADENCE_MEDIA_DIR`.
+ * UPLOAD_DIR so both share one trust root, and can be overridden via
+ * `CADENCE_MEDIA_DIR`.
+ *
+ * KEEP IN SYNC with `resolveUploadDir()` in apps/web/src/lib/uploads.ts. A stable
+ * `~/.cadence/uploads` (never OS-reaped) is used locally/Docker; `os.tmpdir()` only
+ * on serverless, where it is the sole writable location.
  */
 export async function mediaBaseDir(
   env: Record<string, string | undefined> = process.env,
 ): Promise<string> {
   const configured = env.CADENCE_MEDIA_DIR?.trim();
   if (configured) return configured;
-  const { tmpdir } = await import("node:os");
+  const { tmpdir, homedir } = await import("node:os");
   const { join } = await import("node:path");
-  return join(tmpdir(), "cadence-uploads");
+  if (env.VERCEL || env.AWS_LAMBDA_FUNCTION_NAME) return join(tmpdir(), "cadence-uploads");
+  return join(homedir(), ".cadence", "uploads");
 }
 
 /**

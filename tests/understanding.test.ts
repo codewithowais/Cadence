@@ -4,7 +4,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseWhisperJson, StubTranscriber } from "@cadence/understanding";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseWhisperJson, StubTranscriber, mediaBaseDir } from "@cadence/understanding";
 import type { MediaAsset } from "@cadence/core";
 
 test("parseWhisperJson maps the OpenAI/faster-whisper shape (seconds + word probs)", () => {
@@ -96,4 +98,30 @@ test("StubTranscriber produces monotonic, well-formed word timings", async () =>
     assert.ok(w.start >= prevEnd - 1e-6, "words are ordered");
     prevEnd = w.end;
   }
+});
+
+// --- media trust root (uploads/export/transcribe must agree) ---------------
+// Regression guard for the "media isn't on the server anymore" export failure:
+// uploads/export/transcribe MUST resolve the same directory, and it must be a
+// persistent (non-reaped) location by default rather than the OS temp dir.
+// KEEP IN SYNC with resolveUploadDir() in apps/web/src/lib/uploads.ts.
+
+test("mediaBaseDir defaults to a persistent ~/.cadence/uploads (not the reaped OS temp)", async () => {
+  const dir = await mediaBaseDir({});
+  assert.equal(dir, join(homedir(), ".cadence", "uploads"));
+  assert.notEqual(dir, join(tmpdir(), "cadence-uploads"));
+});
+
+test("mediaBaseDir honors CADENCE_MEDIA_DIR override (Docker volume / operator)", async () => {
+  assert.equal(await mediaBaseDir({ CADENCE_MEDIA_DIR: "/data/uploads" }), "/data/uploads");
+  // whitespace-only is ignored → falls back to the persistent default
+  assert.equal(await mediaBaseDir({ CADENCE_MEDIA_DIR: "   " }), join(homedir(), ".cadence", "uploads"));
+});
+
+test("mediaBaseDir uses the OS temp dir only on serverless (sole writable path)", async () => {
+  const tmp = join(tmpdir(), "cadence-uploads");
+  assert.equal(await mediaBaseDir({ VERCEL: "1" }), tmp);
+  assert.equal(await mediaBaseDir({ AWS_LAMBDA_FUNCTION_NAME: "fn" }), tmp);
+  // An explicit override still wins over the serverless fallback.
+  assert.equal(await mediaBaseDir({ VERCEL: "1", CADENCE_MEDIA_DIR: "/mnt/x" }), "/mnt/x");
 });

@@ -1,9 +1,41 @@
 import { mkdir, realpath } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
+/**
+ * Resolve the directory /api/upload writes media to and /api/export reads it back
+ * from. It MUST survive between those two independent HTTP requests and across app
+ * restarts — otherwise a just-uploaded file is gone by export time and the user hits
+ * {@link MediaNotOnServerError}.
+ *
+ * We deliberately do NOT use `os.tmpdir()`: on macOS `/var/folders/.../T` is auto-
+ * reaped (files unused for ~3 days are deleted), so uploads silently vanish between
+ * sessions and mid-session if a restart intervenes. A stable per-user dir under the
+ * home directory is never reaped and persists across dev-server restarts.
+ *
+ * Resolution order:
+ *   1. `CADENCE_MEDIA_DIR` — operator override (Docker: point at a mounted volume so
+ *      uploads also survive container recreation). Shared with the transcriber's
+ *      trust root — see `mediaBaseDir()` in @cadence/understanding.
+ *   2. Serverless (`VERCEL` / AWS Lambda): only `os.tmpdir()` is writable there, and
+ *      the ffmpeg export doesn't run on those platforms anyway, so ephemerality is
+ *      acceptable — keep the old temp path.
+ *   3. Otherwise (local + Docker): a persistent `~/.cadence/uploads`.
+ *
+ * KEEP IN SYNC with `mediaBaseDir()` in
+ * packages/understanding/src/whisper-transcriber.ts — both are the media trust root.
+ */
+function resolveUploadDir(): string {
+  const configured = process.env.CADENCE_MEDIA_DIR?.trim();
+  if (configured) return configured;
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return join(tmpdir(), "cadence-uploads");
+  }
+  return join(homedir(), ".cadence", "uploads");
+}
+
 /** Where /api/upload stores media. The ONLY directory export is allowed to read. */
-export const UPLOAD_DIR = join(tmpdir(), "cadence-uploads");
+export const UPLOAD_DIR = resolveUploadDir();
 
 /** Raised when a media file the doc references isn't on the server's disk. */
 export class MediaNotOnServerError extends Error {
