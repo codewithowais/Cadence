@@ -11,11 +11,12 @@
  * fall back to the free path silently.
  */
 import { spawn } from "node:child_process";
+import type { Writable } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configFromEnv, selectProvider, type EnhanceResult } from "@cadence/enhance";
-import { sourceSpanSec, type EditDoc } from "@cadence/core";
+import { docDurationSec, sourceSpanSec, type EditDoc } from "@cadence/core";
 import {
   buildExportPlan,
   docIsCanvasRenderable,
@@ -35,6 +36,15 @@ import {
   docNeedsShapeOverlays,
 } from "./text-overlays";
 import { detectFfmpeg, resolveFfmpegBin, FFMPEG_MISSING_MESSAGE, type FfmpegInfo } from "./detect";
+import { FfmpegProgressParser, MonotonicProgress, blockFraction, etaSeconds } from "./progress";
+
+/**
+ * Coarse stage of an export, reported via {@link RunExportOptions.onPhase}:
+ * `preparing` (rasterizing overlays, stabilization pre-pass, audio probes),
+ * `encoding` (the main ffmpeg pass — the part `onProgress` measures), and
+ * `finishing` (the optional faithful AI enhancement pass).
+ */
+export type ExportPhase = "preparing" | "encoding" | "finishing";
 
 export interface RunExportOptions {
   resolveMediaPath: ResolveMediaPath;
@@ -45,6 +55,19 @@ export interface RunExportOptions {
   onLog?: (line: string) => void;
   /** Skip the availability probe (used by callers that already probed). */
   skipDetect?: boolean;
+  /**
+   * Encode progress: `fraction` 0..1 (monotonic, reaches exactly 1 on success) and
+   * a wall-clock ETA in seconds (null until there is enough signal). Parsed from
+   * ffmpeg's `-progress pipe:1` output; only requested from ffmpeg when set.
+   */
+  onProgress?: (fraction: number, etaSec: number | null) => void;
+  /** Stage changes (preparing → encoding → finishing). */
+  onPhase?: (phase: ExportPhase) => void;
+  /**
+   * Abort the export: kills ffmpeg (and the canvas frame feeder) immediately and
+   * rejects with {@link ExportCancelledError}. Temp files are still cleaned up.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ExportOutcome {
@@ -64,15 +87,30 @@ export class FfmpegNotFoundError extends Error {
   }
 }
 
+/** Thrown when an export is aborted via `RunExportOptions.signal`. */
+export class ExportCancelledError extends Error {
+  readonly code = "EXPORT_CANCELLED";
+  constructor(message = "Export cancelled.") {
+    super(message);
+    this.name = "ExportCancelledError";
+  }
+}
+
 /**
  * Render `doc` to a real .mp4 at `outFile`. Throws {@link FfmpegNotFoundError}
  * with a clear install hint if ffmpeg is missing.
  */
 export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<ExportOutcome> {
   const bin = opts.bin || resolveFfmpegBin();
+  const { signal } = opts;
+  const checkAborted = (): void => {
+    if (signal?.aborted) throw new ExportCancelledError();
+  };
+  checkAborted();
 
   const ffmpeg = opts.skipDetect ? { available: true, bin } : await detectFfmpeg(bin);
   if (!ffmpeg.available) throw new FfmpegNotFoundError();
+  opts.onPhase?.("preparing");
 
   // Rasterize any text-bearing clips (captions/titles/kinetic titles + callout
   // labels) to transparent PNGs with the canvas engine, then hand the paths to the
@@ -101,8 +139,9 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
       if (needsAnimated) animatedOverlays = await renderAnimatedOverlays(doc, overlayDir);
       // vidstab PRE-PASS: detect a smoothing sidecar for each stabilized clip on the
       // SAME source window the main pass reads, so the transforms align frame-for-frame.
-      if (needsStabilize) stabilizeTransforms = await detectStabilize(bin, doc, opts.resolveMediaPath, overlayDir, opts.onLog);
+      if (needsStabilize) stabilizeTransforms = await detectStabilize(bin, doc, opts.resolveMediaPath, overlayDir, opts.onLog, signal);
     }
+    checkAborted();
     // Detect which sources actually carry an audio stream (no ffprobe exists in
     // ffmpeg-static) so the pure plan substitutes silence for audioless inputs
     // instead of referencing a non-existent [idx:a] pad — the audioless-export fix.
@@ -111,24 +150,40 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
       animatedOverlays,
       canvasBase,
     });
-    let feed: ((stdin: NodeJS.WritableStream) => Promise<void>) | undefined;
+    let feed: ((stdin: Writable) => Promise<void>) | undefined;
     if (plan.stdinFrames) {
       const { count, fps } = plan.stdinFrames;
       const { createRgbaFrameRenderer } = await import("@cadence/render-node");
       const renderer = createRgbaFrameRenderer(doc);
       feed = async (stdin) => {
         for (let i = 0; i < count; i++) {
+          // Stop painting the moment the export is cancelled or ffmpeg went away.
+          if (signal?.aborted || stdin.destroyed || stdin.writableEnded) return;
           const ok = stdin.write(renderer.render(i / fps));
-          if (!ok) await new Promise<void>((r) => stdin.once("drain", () => r()));
+          if (!ok) await waitForDrain(stdin);
         }
-        stdin.end();
+        if (!stdin.destroyed && !stdin.writableEnded) stdin.end();
       };
     }
-    await spawnFfmpeg(bin, plan.args, opts.onLog, feed);
+    checkAborted();
+    opts.onPhase?.("encoding");
+    // Machine-readable progress: `-progress pipe:1` is a GLOBAL option, so it is
+    // prepended to the pure plan's argv (the plan itself stays untouched). Only
+    // requested when a caller listens, so legacy callers spawn the exact same argv.
+    const progress = opts.onProgress
+      ? { totalSec: docDurationSec(doc), fps: plan.stdinFrames?.fps ?? doc.meta.fps, onProgress: opts.onProgress }
+      : undefined;
+    // `-stats_period 0.25` (a global option in the bundled ffmpeg 6.0 — see
+    // `ffmpeg -h full`) halves the default 0.5 s cadence so short exports still
+    // move the bar smoothly.
+    const args = progress ? ["-progress", "pipe:1", "-stats_period", "0.25", ...plan.args] : plan.args;
+    await spawnFfmpeg(bin, args, opts.onLog, feed, { progress, signal });
 
     // Optional faithful AI enhancement pass (off by default; money/setup gated).
     let enhance: EnhanceResult | undefined;
     if (doc.quality.aiUpscale) {
+      checkAborted();
+      opts.onPhase?.("finishing");
       const provider = selectProvider(configFromEnv());
       // The free provider is a no-op marker (its work already happened in the
       // filtergraph). Only run a real pass for an available, faithful AI provider.
@@ -152,7 +207,7 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
       }
     }
 
-    return { outFile: opts.outFile, args: plan.args, ffmpeg, enhance };
+    return { outFile: opts.outFile, args, ffmpeg, enhance };
   } finally {
     if (overlayDir) await rm(overlayDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -245,6 +300,7 @@ export async function detectStabilize(
   resolveMediaPath: ResolveMediaPath,
   dir: string,
   onLog?: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   const clips: { id: string; mediaId: string; ss: number; span: number }[] = [];
@@ -268,16 +324,28 @@ export async function detectStabilize(
             "-vf", `vidstabdetect=result=${trf}:shakiness=6:accuracy=15`,
             "-f", "null", "-",
           ];
-          let child;
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          let child: ReturnType<typeof spawn>;
           try {
             child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
           } catch {
             resolve();
             return;
           }
+          const onAbort = (): void => {
+            child.kill("SIGKILL");
+          };
+          signal?.addEventListener("abort", onAbort, { once: true });
           child.stderr?.on("data", (d: Buffer) => onLog?.(d.toString()));
-          child.on("error", () => resolve());
+          child.on("error", () => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+          });
           child.on("close", (code) => {
+            signal?.removeEventListener("abort", onAbort);
             if (code === 0) map.set(c.id, trf);
             resolve();
           });
@@ -287,20 +355,82 @@ export async function detectStabilize(
   return map;
 }
 
+/** Resolve once `stdin` drains — or closes/errors, so a dead ffmpeg can't hang the feeder. */
+function waitForDrain(stdin: Writable): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const done = (): void => {
+      stdin.off("drain", done);
+      stdin.off("close", done);
+      stdin.off("error", done);
+      resolve();
+    };
+    stdin.on("drain", done);
+    stdin.on("close", done);
+    stdin.on("error", done);
+  });
+}
+
+interface SpawnProgress {
+  totalSec: number;
+  fps: number;
+  onProgress: (fraction: number, etaSec: number | null) => void;
+}
+
 function spawnFfmpeg(
   bin: string,
   args: string[],
   onLog?: (line: string) => void,
-  feed?: (stdin: NodeJS.WritableStream) => Promise<void>,
+  feed?: (stdin: Writable) => Promise<void>,
+  extra: { progress?: SpawnProgress; signal?: AbortSignal } = {},
 ): Promise<void> {
+  const { progress, signal } = extra;
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: [feed ? "pipe" : "ignore", "ignore", "pipe"] });
+    if (signal?.aborted) {
+      reject(new ExportCancelledError());
+      return;
+    }
+    let settled = false;
+    const settle = (err?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      if (err) reject(err);
+      else resolve();
+    };
+    const child = spawn(bin, args, { stdio: [feed ? "pipe" : "ignore", progress ? "pipe" : "ignore", "pipe"] });
+    // Cancel = kill ffmpeg NOW (SIGKILL: no graceful flush of a file we'll delete).
+    function onAbort(): void {
+      child.kill("SIGKILL");
+      settle(new ExportCancelledError());
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     if (feed && child.stdin) {
       // A broken pipe (ffmpeg died early) surfaces via the close code below.
       child.stdin.on("error", () => {});
       feed(child.stdin).catch((err) => {
         child.kill("SIGKILL");
-        reject(err);
+        settle(err);
+      });
+    }
+    if (progress && child.stdout) {
+      const parser = new FfmpegProgressParser();
+      const mono = new MonotonicProgress();
+      const started = Date.now();
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        for (const block of parser.push(chunk)) {
+          // `progress=end` is reported by the close handler (after exit 0) instead,
+          // so a caller never sees 100 % for an encode that then fails.
+          if (block.progress === "end") continue;
+          const shown = mono.update(blockFraction(block, progress.totalSec, progress.fps));
+          if (shown !== null && shown < 1) {
+            try {
+              progress.onProgress(shown, etaSeconds(shown, (Date.now() - started) / 1000));
+            } catch {
+              /* a throwing listener must never break the encode */
+            }
+          }
+        }
       });
     }
     let stderr = "";
@@ -311,12 +441,20 @@ function spawnFfmpeg(
       onLog?.(s);
     });
     child.on("error", (err) => {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") reject(new FfmpegNotFoundError());
-      else reject(err);
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") settle(new FfmpegNotFoundError());
+      else settle(err);
     });
     child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited ${code}\n${stderr.slice(-2000)}`));
+      if (code === 0) {
+        if (progress && !settled) {
+          try {
+            progress.onProgress(1, 0);
+          } catch {
+            /* ignore listener errors */
+          }
+        }
+        settle();
+      } else settle(new Error(`ffmpeg exited ${code}\n${stderr.slice(-2000)}`));
     });
   });
 }

@@ -32,17 +32,17 @@ import {
 } from "@cadence/director";
 import type { TrackFlag } from "./CutsStrip";
 import type { Transcript } from "@cadence/understanding";
-import { RoomsRail, type RoomKey } from "./RoomsRail";
+import { RoomsRail as RoomsRailBase, type RoomKey } from "./RoomsRail";
 import { RoomPanel } from "./RoomPanel";
-import { DirectorRail } from "./DirectorRail";
+import { DirectorRail as DirectorRailBase } from "./DirectorRail";
 import { ResizeHandle } from "./ResizeHandle";
-import { TopBar } from "./TopBar";
-import { QuickActions } from "./QuickActions";
-import { AppliedStatus } from "./AppliedStatus";
+import { TopBar as TopBarBase } from "./TopBar";
+import { QuickActions as QuickActionsBase } from "./QuickActions";
+import { AppliedStatus as AppliedStatusBase } from "./AppliedStatus";
 import { Stage } from "./Stage";
 import { CutsStrip } from "./CutsStrip";
-import { CodeDrawer } from "./CodeDrawer";
-import { ShortcutsHelp } from "./ShortcutsHelp";
+import { CodeDrawer as CodeDrawerBase } from "./CodeDrawer";
+import { ShortcutsHelp as ShortcutsHelpBase } from "./ShortcutsHelp";
 import {
   emptyDoc,
   combinedVideoDoc,
@@ -54,7 +54,7 @@ import {
   setTrackVolume,
   insertMediaClipInDoc,
 } from "@/lib/doc";
-import { UndoToast } from "./UndoToast";
+import { UndoToast as UndoToastBase } from "./UndoToast";
 import {
   findClip,
   isMainSequentialTrack,
@@ -82,6 +82,14 @@ import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
 import { useDocHistory } from "@/lib/history";
 import { applyExportSettings, type ExportSettings } from "@/lib/export-presets";
+import { preflightExport, stripUnusedMedia } from "@/lib/export-preflight";
+import type { ExportUiProgress } from "./ExportMenu";
+import { useAutosave } from "@/lib/use-autosave";
+import { SCRATCH_DRAFT_KEY } from "@/lib/autosave";
+import { RecoverDraftBanner } from "./RecoverDraftBanner";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { withStableHandlers } from "@/lib/stable-memo";
+import { buildProjectFile, matchFilesToMissing, parseProjectFile, projectFileName } from "@/lib/project-file";
 import type { Message } from "@/lib/types";
 import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
 import { CommandPalette } from "./CommandPalette";
@@ -89,6 +97,20 @@ import { OnboardingChecklist } from "./OnboardingChecklist";
 import { buildCommands, type Command } from "@/lib/commands";
 import { loadRecentPrompts, rememberPrompt } from "@/lib/recent-prompts";
 import type { CommandAction } from "@/lib/suggestions";
+
+// PLAYBACK PERF: the editor re-renders every animation frame while playing
+// (`timeSec`). These panels don't depend on time, so they're memoized with stable
+// handler proxies (lib/stable-memo) and skip those frames entirely — their
+// callbacks still always call the latest closure. (Stage / timeline / rooms DO
+// read time and render normally.)
+const RoomsRail = withStableHandlers(RoomsRailBase);
+const DirectorRail = withStableHandlers(DirectorRailBase);
+const TopBar = withStableHandlers(TopBarBase);
+const QuickActions = withStableHandlers(QuickActionsBase);
+const AppliedStatus = withStableHandlers(AppliedStatusBase);
+const CodeDrawer = withStableHandlers(CodeDrawerBase);
+const ShortcutsHelp = withStableHandlers(ShortcutsHelpBase);
+const UndoToast = withStableHandlers(UndoToastBase);
 
 let msgSeq = 0;
 // Collision-proof message id. MUST be generated OUTSIDE a setState updater —
@@ -192,6 +214,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // Abort controller for an in-flight export (upload + render), for a Cancel.
   const exportAbort = useRef<AbortController | null>(null);
   const [exporting, setExporting] = useState(false);
+  // Live export progress (upload → queued → preparing → encoding → download).
+  const [exportProgress, setExportProgress] = useState<ExportUiProgress | null>(null);
   const [codeOpen, setCodeOpen] = useState(false);
   // Chat rail collapse (B1): default OPEN so existing flows/e2e are unchanged.
   const [railOpen, setRailOpen] = useState(true);
@@ -233,6 +257,37 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // Mirror `files` in a ref: the `handleFiles(files)` param shadows the state.
   const filesRef = useRef(files);
   filesRef.current = files;
+  // Hidden picker behind "••• → Open project file…".
+  const projectInputRef = useRef<HTMLInputElement>(null);
+  // Loaded-media lookups for the export pre-flight (stable per `files`).
+  const exportPreflight = useMemo(
+    () => ({ hasFile: (id: string) => !!files[id], fileBytes: (id: string) => files[id]?.size }),
+    [files],
+  );
+  // Autosave + crash recovery (scratch editor only — a project-bound editor saves
+  // versions to the DB). Doc + media registry + transcripts + the media Files
+  // themselves go to IndexedDB; a reload offers "Restore your last session".
+  const autosave = useAutosave({
+    enabled: !initialDoc && !onSave,
+    draftKey: SCRATCH_DRAFT_KEY,
+    doc,
+    mediaList,
+    transcripts,
+    files,
+  });
+  const autosaveChip = useMemo(
+    () => (autosave.status === "off" ? undefined : { status: autosave.status, unsavedMedia: autosave.unsavedMedia }),
+    [autosave.status, autosave.unsavedMedia],
+  );
+  // Leaving mid-export would silently kill the render — ask first.
+  useEffect(() => {
+    if (!exporting) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [exporting]);
 
   const durationSec = useMemo(() => docDurationSec(doc), [doc]);
   const visualClipCount = useMemo(
@@ -393,7 +448,37 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     try { localStorage.setItem("cadence:roomH", String(roomHeight)); } catch { /* noop */ }
   }, [roomHeight]);
 
-  async function handleFiles(files: File[]) {
+  async function handleFiles(incoming: File[]) {
+    // RE-LINK first: a file whose name matches media the project references but
+    // has no File for (opened project file, restored draft whose bytes weren't
+    // kept, DB project) attaches to that media IN PLACE — no new project, no
+    // duplicate clips. Anything left over goes through the normal intake below.
+    const missingNow = projectMedia.filter((m) => !filesRef.current[m.id]);
+    let files = incoming;
+    if (missingNow.length) {
+      const matches = matchFilesToMissing(incoming, missingNow);
+      if (matches.size) {
+        const addUrls: Record<string, string> = {};
+        const addFiles: Record<string, File> = {};
+        const names: string[] = [];
+        for (const [i, id] of matches) {
+          const f = incoming[i]!;
+          addUrls[id] = URL.createObjectURL(f);
+          addFiles[id] = f;
+          names.push(`“${f.name}”`);
+        }
+        setUrls((u) => ({ ...u, ...addUrls }));
+        setFiles((f) => ({ ...f, ...addFiles }));
+        const still = missingNow.length - matches.size;
+        say(
+          "director",
+          `Re-linked ${names.join(", ")} to your project${still > 0 ? ` — ${still} more media file${still === 1 ? "" : "s"} still to add.` : " — everything's back in place."}`,
+          "edit",
+        );
+        files = incoming.filter((_, i) => !matches.has(i));
+        if (files.length === 0) return;
+      }
+    }
     const videos = files.filter((f) => f.type.startsWith("video"));
     const imgs = files.filter((f) => f.type.startsWith("image"));
     const audios = files.filter((f) => f.type.startsWith("audio"));
@@ -693,7 +778,14 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (durationSec <= 0) return;
     // `overrideDoc` lets the export-options popover render freshly-applied
     // quality settings without waiting for a state re-render.
-    const source = overrideDoc ?? doc;
+    // Pre-flight (pure): block on nothing-to-export / media whose File isn't loaded
+    // with an actionable message, and only upload media some clip actually uses.
+    const check = preflightExport(overrideDoc ?? doc, exportPreflight);
+    if (!check.ok) {
+      say("director", check.issues.filter((i) => i.level === "error").map((i) => i.message).join(" "), "error");
+      return;
+    }
+    const source = stripUnusedMedia(overrideDoc ?? doc);
     const controller = new AbortController();
     exportAbort.current = controller;
     setBusy(true);
@@ -709,15 +801,31 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         const file = files[media.id];
         if (!file) throw new Error(`Missing the uploaded file for ${media.label ?? media.id}.`);
         setBusyLabel(total > 1 ? `Uploading media (${i + 1}/${total})…` : "Uploading media…");
-        const { path } = await uploadMedia(file, controller.signal);
+        const detail = total > 1 ? `${i + 1} of ${total}` : undefined;
+        setExportProgress({ phase: "uploading", fraction: i / total, etaSec: null, detail });
+        const { path } = await uploadMedia(file, controller.signal, (f) =>
+          setExportProgress({ phase: "uploading", fraction: (i + f) / total, etaSec: null, detail }),
+        );
         srcById[media.id] = path;
       }
       const serverDoc: EditDoc = structuredClone(source);
       serverDoc.media = serverDoc.media.map((m) => ({ ...m, src: srcById[m.id] ?? m.src }));
 
       setBusyLabel("Rendering .mp4 with ffmpeg…");
+      setExportProgress({ phase: "preparing", fraction: null, etaSec: null });
       say("director", "Rendering your video with ffmpeg…", "info");
-      const result = await exportVideo(serverDoc, controller.signal);
+      const result = await exportVideo(serverDoc, controller.signal, {
+        onProgress: (u) => {
+          if (u.kind === "phase") {
+            setExportProgress({ phase: u.phase, fraction: u.phase === "encoding" ? 0 : null, etaSec: null });
+          } else if (u.kind === "progress") {
+            setExportProgress({ phase: "encoding", fraction: u.fraction, etaSec: u.etaSec });
+            setBusyLabel(`Rendering .mp4 — ${Math.round(u.fraction * 100)}%…`);
+          } else {
+            setExportProgress({ phase: "downloading", fraction: u.fraction, etaSec: null });
+          }
+        },
+      });
       if (result.ok) {
         downloadBlob(`${source.meta.title || "cadence"}.mp4`, result.blob);
         say("director", "Exported a real .mp4 (free ffmpeg path — faithful, no content changes).", "edit");
@@ -736,6 +844,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     } finally {
       exportAbort.current = null;
       setExporting(false);
+      setExportProgress(null);
       setBusy(false);
       setBusyLabel("");
     }
@@ -797,6 +906,79 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setSelectedClipId(null);
     reset(emptyDoc());
     say("director", "Cleared the timeline — added media and edits are gone. Add a video or photos to begin again.", "info");
+  }
+
+  /** Restore the autosaved session: doc + media registry + transcripts + Files. */
+  async function restoreSession() {
+    const s = await autosave.restore();
+    if (!s) return;
+    for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u);
+    const nextUrls: Record<string, string> = {};
+    for (const [id, f] of Object.entries(s.files)) nextUrls[id] = URL.createObjectURL(f);
+    setUrls(nextUrls);
+    setFiles(s.files);
+    setMediaList(s.draft.mediaList.length ? s.draft.mediaList : s.draft.doc.media);
+    setTranscripts(s.draft.transcripts);
+    setPlaying(false);
+    setTimeSec(0);
+    setSelectedClipId(null);
+    reset(s.draft.doc); // fresh history — the restored doc is the new baseline
+    const title = s.draft.doc.meta.title || "Untitled";
+    const missing = s.missing.length
+      ? ` ${s.missing.length === 1 ? "One file" : `${s.missing.length} files`} couldn't be kept in this browser (${s.missing
+          .map((m) => `“${m.label ?? m.src}”`)
+          .join(", ")}) — add ${s.missing.length === 1 ? "it" : "them"} again and ${s.missing.length === 1 ? "it re-links" : "they re-link"} in place.`
+      : "";
+    say("director", `Restored your last session — “${title}”, right where you left off.${missing}`, missing ? "error" : "info");
+  }
+
+  /** Throw the autosaved session away (the banner's confirmed Discard). */
+  async function discardSession() {
+    await autosave.discard();
+  }
+
+  /** Download the project as a portable, versioned .cadence.json (recipe, not footage). */
+  function saveProjectFile() {
+    download(projectFileName(doc.meta.title), JSON.stringify(buildProjectFile(doc, mediaList), null, 2));
+    say("director", "Saved a project file — open it any time (••• → Open project file) and re-add the media to re-link it.", "info");
+  }
+
+  /** Open a .cadence.json (or plain edit-doc JSON) chosen in the hidden picker. */
+  async function openProjectFile(file: File) {
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      say("director", "Couldn't read that file.", "error");
+      return;
+    }
+    const parsed = parseProjectFile(text);
+    if (!parsed.ok) {
+      say("director", parsed.error, "error");
+      return;
+    }
+    if (hasContent && typeof window !== "undefined" && !window.confirm("Open this project? It replaces what's on the timeline now.")) return;
+    for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u);
+    setUrls({});
+    setFiles({});
+    setMediaList(parsed.mediaList);
+    setTranscripts({});
+    setPlaying(false);
+    setTimeSec(0);
+    setSelectedClipId(null);
+    reset(parsed.doc);
+    const need = parsed.mediaList.length;
+    say(
+      "director",
+      `Opened “${parsed.doc.meta.title || "Untitled"}”.` +
+        (need
+          ? ` Add its ${need} media file${need === 1 ? "" : "s"} (${parsed.mediaList
+              .slice(0, 4)
+              .map((m) => `“${m.label ?? m.src}”`)
+              .join(", ")}${need > 4 ? ", …" : ""}) and I'll re-link them by name.`
+          : ""),
+      "info",
+    );
   }
 
   /** Download the current edit-doc as a portable JSON copy (a new project seed). */
@@ -1591,6 +1773,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             className="h-full w-full shrink-0 md:w-[var(--rail-w)]"
             style={{ "--rail-w": `${railWidth}px` } as CSSProperties}
           >
+            <ErrorBoundary label="Director chat" resetKey={messages}>
             <DirectorRail
               messages={messages}
               busy={busy}
@@ -1611,6 +1794,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
                 <OnboardingChecklist doc={doc} hasContent={hasContent} playing={playing} exporting={exporting} onRun={runAction} />
               }
             />
+            </ErrorBoundary>
           </div>
           <ResizeHandle
             className="hidden md:block"
@@ -1644,6 +1828,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             {notice}
           </div>
         )}
+        {autosave.offer && (
+          <RecoverDraftBanner draft={autosave.offer} onRestore={restoreSession} onDiscard={discardSession} />
+        )}
         <TopBar
           title={doc.meta.title || projectName || "Untitled"}
           onRename={renameProject}
@@ -1667,6 +1854,12 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onSave={onSave ? handleSave : undefined}
           saveState={saveState}
           onOpenPalette={openPalette}
+          exportProgress={exportProgress}
+          onCancelExport={exporting ? cancelExport : undefined}
+          exportPreflight={exportPreflight}
+          autosave={autosaveChip}
+          onSaveProjectFile={saveProjectFile}
+          onOpenProjectFile={() => projectInputRef.current?.click()}
         />
         <AppliedStatus doc={doc} hasMedia={hasMedia || hasContent} />
         {/* Portrait projects (9:16 / 4:5) dock the room panel BESIDE the preview on
@@ -1674,6 +1867,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             the wrapper is `contents` and the layout is exactly the stacked one. */}
         <div className={sideDock ? "flex min-h-0 flex-1 flex-col md:flex-row-reverse" : "contents"}>
         {room === "edit" ? (
+          <ErrorBoundary label="quick actions" resetKey={doc} onUndo={canUndo ? undo : undefined} compact>
           <QuickActions
             mode={mode !== "none" ? mode : docHasText ? "text" : "none"}
             busy={busy}
@@ -1681,6 +1875,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             doc={doc}
             onMore={() => runAction({ type: "ui", command: "library" })}
           />
+          </ErrorBoundary>
         ) : (
           <div
             // Capped, self-scrolling options panel. `min()` guarantees it can
@@ -1694,6 +1889,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             }
             style={{ "--room-h": `${roomHeight}px` } as CSSProperties}
           >
+          <ErrorBoundary label={`${room} room`} resetKey={doc} onUndo={canUndo ? undo : undefined}>
           <RoomPanel
             room={room}
             doc={doc}
@@ -1703,6 +1899,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onAction={(p) => void handleSend(p)}
             onApplyDoc={(d, coalesceKey) => commit(d, coalesceKey ? { coalesce: coalesceKey } : undefined)}
             onFiles={handleFiles}
+            // Wrapped: the Deliver room binds this straight to onClick, which would
+            // otherwise pass the click event in as the `overrideDoc`.
             onExport={() => void exportDoc()}
             canExport={hasContent}
             timeSec={timeSec}
@@ -1727,6 +1925,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onSelectClip={setSelectedClipId}
             onSeek={seek}
           />
+          </ErrorBoundary>
           </div>
         )}
         {room !== "edit" && !sideDock && (
@@ -1737,6 +1936,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onDelta={(dy) => setRoomHeight((h) => clampPx(h + dy, ROOM_MIN, ROOM_MAX))}
           />
         )}
+        <ErrorBoundary label="preview" resetKey={doc} onUndo={canUndo ? undo : undefined} className="min-h-0 flex-1">
         <Stage
           urls={urls}
           hasMedia={hasMedia}
@@ -1755,6 +1955,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onStartWithText={() => setRoom("text")}
           onAddMedia={() => setRoom("media")}
         />
+        </ErrorBoundary>
         </div>
         <ResizeHandle
           orientation="horizontal"
@@ -1766,6 +1967,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           className="shrink-0 overflow-y-auto md:h-[var(--tl-h)]"
           style={{ "--tl-h": `${timelineHeight}px` } as CSSProperties}
         >
+          <ErrorBoundary label="timeline" resetKey={doc} onUndo={canUndo ? undo : undefined} compact>
           <CutsStrip
             doc={doc}
             timeSec={timeSec}
@@ -1820,6 +2022,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               },
             }}
           />
+          </ErrorBoundary>
         </div>
       </main>
       {codeOpen && (
@@ -1833,7 +2036,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             className="h-full w-full shrink-0 md:w-[var(--code-w)]"
             style={{ "--code-w": `${codeWidth}px` } as CSSProperties}
           >
+            <ErrorBoundary label="code view" resetKey={doc}>
             <CodeDrawer doc={doc} onClose={() => setCodeOpen(false)} />
+            </ErrorBoundary>
           </div>
         </>
       )}
@@ -1863,6 +2068,19 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           const picked = e.target.files ? Array.from(e.target.files) : [];
           if (picked.length) void handleFiles(picked);
           e.target.value = "";
+        }}
+      />
+      {/* Last in DOM order on purpose: never the "first file input" media intake. */}
+      <input
+        ref={projectInputRef}
+        type="file"
+        accept=".json,.cadence.json,application/json"
+        aria-label="Open project file"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = "";
+          if (f) void openProjectFile(f);
         }}
       />
     </div>
