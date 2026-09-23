@@ -35,6 +35,8 @@ interface TopBarProps {
   /** Optional save handler (project-bound editor). Absent = no Save button. */
   onSave?: () => void;
   saveState?: "idle" | "saving" | "saved" | "error";
+  /** Open the ⌘K command palette (search every action). */
+  onOpenPalette?: () => void;
 }
 
 /** Click-to-rename project title. Enter/blur commits, Escape cancels. */
@@ -195,6 +197,20 @@ export function TopBar(props: TopBarProps) {
             {props.cutCount > 0 ? `${props.cutCount} cuts · ` : ""}
             {fmtTime(props.durationSec)}
           </span>
+        )}
+        {props.onOpenPalette && (
+          <button
+            type="button"
+            onClick={props.onOpenPalette}
+            aria-label="Search actions"
+            aria-keyshortcuts="Meta+K Control+K"
+            title="Search every action (⌘K / Ctrl+K)"
+            className="flex h-8 items-center gap-2 rounded-lg border border-line bg-elevated px-2.5 text-muted transition hover:border-amber/40 hover:text-text"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+            <span className="hidden lg:inline">Search</span>
+            <kbd className="hidden rounded border border-line-soft px-1 text-[10px] font-medium text-faint md:inline" aria-hidden="true">⌘K</kbd>
+          </button>
         )}
         <div className="flex items-center gap-1">
           <IconButton onClick={props.onUndo} disabled={!props.canUndo} label="Undo (⌘Z)" path="M9 14 4 9l5-5 M4 9h11a5 5 0 0 1 0 10h-1" />

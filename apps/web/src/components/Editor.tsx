@@ -83,6 +83,11 @@ import { useDocHistory } from "@/lib/history";
 import { applyExportSettings, type ExportSettings } from "@/lib/export-presets";
 import type { Message } from "@/lib/types";
 import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
+import { CommandPalette } from "./CommandPalette";
+import { OnboardingChecklist } from "./OnboardingChecklist";
+import { buildCommands, type Command } from "@/lib/commands";
+import { loadRecentPrompts, rememberPrompt } from "@/lib/recent-prompts";
+import type { CommandAction } from "@/lib/suggestions";
 
 let msgSeq = 0;
 // Collision-proof message id. MUST be generated OUTSIDE a setState updater —
@@ -203,6 +208,11 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const [muted, setMuted] = useState(false);
   // Keyboard-shortcuts help popover.
   const [helpOpen, setHelpOpen] = useState(false);
+  // ⌘K command palette + "What can I say?" prompt library (first-run ease).
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [paletteRecents, setPaletteRecents] = useState<string[]>([]);
+  const assistFileRef = useRef<HTMLInputElement>(null);
   // Directly-editable timeline: the selected clip. Timeline markers are read
   // from the PERSISTED `doc.markers` (see `markers` below) so they survive
   // save/load + undo — they are not editor-only component state.
@@ -308,9 +318,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       ? "images"
       : "none";
 
-  const say = (role: Message["role"], text: string, tone?: Message["tone"]) => {
+  const say = (role: Message["role"], text: string, tone?: Message["tone"], extra?: Pick<Message, "tools" | "request" | "kind">) => {
     const id = nextId(); // outside the updater → stable under StrictMode double-invoke
-    setMessages((m) => [...m, { id, role, text, tone }]);
+    setMessages((m) => [...m, { id, role, text, tone, ...extra }]);
   };
 
   /** Show a transient "<summary> · Undo" confirmation for the last Director edit. */
@@ -576,12 +586,12 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     try {
       const res = await askDirector({ request: text, media: projectMedia, transcripts: Object.values(transcripts), doc });
       if (res.toolCalls.length === 0) {
-        say("director", res.summary, "info");
+        say("director", res.summary, "info", { kind: "unmatched", request: text });
         return 0;
       }
       commit(parseEditDoc(res.doc)); // undoable Director edit
       setTimeSec(0);
-      say("director", res.summary, "edit");
+      say("director", res.summary, "edit", { tools: res.toolCalls.map((c) => c.name) });
       showUndoToast(res.summary);
       // A text video lands with no media — open the Text room so its scenes are editable.
       if (res.toolCalls.some((c) => c.name === "make_text_video")) {
@@ -594,7 +604,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       }
       return res.toolCalls.length;
     } catch (err) {
-      say("director", err instanceof Error ? err.message : "I couldn't make that edit.", "error");
+      say("director", err instanceof Error ? err.message : "I couldn't make that edit.", "error", { kind: "failed", request: text });
       return -1;
     } finally {
       setBusy(false);
@@ -1385,6 +1395,64 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (selectedClipId && !findClip(doc, selectedClipId)) setSelectedClipId(null);
   }, [doc, selectedClipId]);
 
+  // ---- First-run ease: palette / next-step chips / checklist / prompt library ----
+  // Every action maps onto an EXISTING path: prompts → handleSend (the composer's
+  // path), everything else → the handler the button/shortcut already uses.
+  const assistMode: "video" | "images" | "text" | "none" = mode !== "none" ? mode : docHasText ? "text" : "none";
+  const hasAudio = projectMedia.some((m) => m.kind === "audio");
+  const lastTools = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.tools) return messages[i]!.tools!;
+    return [];
+  }, [messages]);
+  function openPalette() {
+    setPaletteRecents(loadRecentPrompts());
+    setPaletteOpen(true);
+  }
+  function runAction(a: CommandAction) {
+    if (a.type === "prompt") {
+      if (!busy) void handleSend(a.prompt);
+      return;
+    }
+    if (a.type === "room") {
+      setRoom(a.room);
+      return;
+    }
+    switch (a.command) {
+      case "undo": undo(); break;
+      case "redo": redo(); break;
+      case "export": void exportDoc(); break;
+      case "play": togglePlay(); break;
+      case "addMedia": assistFileRef.current?.click(); break;
+      case "library": setRailOpen(true); setLibraryOpen(true); break;
+      case "shortcuts": setHelpOpen(true); break;
+      case "toggleChat": toggleRail(); break;
+      case "toggleCode": toggleCode(); break;
+      case "focusMode": toggleFocus(); break;
+    }
+  }
+  const paletteCommands = useMemo(
+    () =>
+      paletteOpen
+        ? buildCommands({
+            doc,
+            mode: assistMode,
+            hasContent,
+            hasAudio,
+            canUndo,
+            canRedo,
+            recents: paletteRecents,
+            lastTools,
+            mod: typeof navigator !== "undefined" && !/Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent) ? "Ctrl" : "⌘",
+          })
+        : [],
+    [paletteOpen, doc, assistMode, hasContent, hasAudio, canUndo, canRedo, paletteRecents, lastTools],
+  );
+  function runCommand(c: Command) {
+    // Free text typed into the palette is remembered like a composer prompt.
+    if (c.group === "Ask" && c.action.type === "prompt") rememberPrompt(c.action.prompt);
+    runAction(c.action);
+  }
+
   // Keyboard shortcuts. The ref always holds the latest closures, so we bind the
   // window listener exactly once. Shortcuts are ignored while typing in a field.
   const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
@@ -1400,6 +1468,16 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             (target as HTMLInputElement).type,
           )));
     const mod = e.metaKey || e.ctrlKey;
+
+    // Command palette (⌘K / Ctrl+K) — works everywhere, including in the composer.
+    if (mod && !e.shiftKey && !e.altKey && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (paletteOpen) setPaletteOpen(false);
+      else openPalette();
+      return;
+    }
+    // A modal (palette / prompt library) owns the keyboard while it's open.
+    if (paletteOpen || libraryOpen) return;
 
     // Undo / redo (⌘/Ctrl+Z, ⌘/Ctrl+Shift+Z, Ctrl+Y) — never while typing.
     if (mod && (e.key === "z" || e.key === "Z")) {
@@ -1494,6 +1572,16 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onFiles={handleFiles}
               onCancel={exporting ? cancelExport : undefined}
               onCollapse={toggleRail}
+              mode={assistMode}
+              doc={doc}
+              hasAudio={hasAudio}
+              onRunAction={runAction}
+              libraryOpen={libraryOpen}
+              onLibraryOpenChange={setLibraryOpen}
+              onOpenPalette={openPalette}
+              checklist={
+                <OnboardingChecklist doc={doc} hasContent={hasContent} playing={playing} exporting={exporting} onRun={runAction} />
+              }
             />
           </div>
           <ResizeHandle
@@ -1550,6 +1638,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           backHref={backHref}
           onSave={onSave ? handleSave : undefined}
           saveState={saveState}
+          onOpenPalette={openPalette}
         />
         <AppliedStatus doc={doc} hasMedia={hasMedia || hasContent} />
         {/* Portrait projects (9:16 / 4:5) dock the room panel BESIDE the preview on
@@ -1561,6 +1650,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             mode={mode !== "none" ? mode : docHasText ? "text" : "none"}
             busy={busy}
             onAction={(p) => void handleSend(p)}
+            doc={doc}
+            onMore={() => runAction({ type: "ui", command: "library" })}
           />
         ) : (
           <div
@@ -1584,7 +1675,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onAction={(p) => void handleSend(p)}
             onApplyDoc={(d, coalesceKey) => commit(d, coalesceKey ? { coalesce: coalesceKey } : undefined)}
             onFiles={handleFiles}
-            onExport={exportDoc}
+            onExport={() => void exportDoc()}
             canExport={hasContent}
             timeSec={timeSec}
             muted={muted}
@@ -1731,6 +1822,21 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       )}
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <UndoToast toast={toast} onUndo={undo} onDismiss={() => setToast(null)} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={paletteCommands} onRun={runCommand} />
+      <input
+        ref={assistFileRef}
+        type="file"
+        accept="video/*,image/*,audio/*"
+        multiple
+        className="hidden"
+        aria-hidden="true"
+        tabIndex={-1}
+        onChange={(e) => {
+          const picked = e.target.files ? Array.from(e.target.files) : [];
+          if (picked.length) void handleFiles(picked);
+          e.target.value = "";
+        }}
+      />
     </div>
   );
 }
