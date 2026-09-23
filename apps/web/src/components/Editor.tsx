@@ -621,6 +621,20 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     void runDirector(text);
   }
 
+  // A landing-page prompt chip (`/editor?prompt=…`) runs once on arrival — a text
+  // video builds immediately; anything needing footage queues until media loads.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const p = params.get("prompt")?.trim();
+    if (!p) return;
+    params.delete("prompt");
+    const rest = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
+    void handleSend(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Fire a queued describe-first request once media is present and we're idle.
   useEffect(() => {
     if (!pendingRequest || !hasMedia || busy) return;
@@ -1676,6 +1690,15 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onSetConstantSpeed: setClipConstantSpeed,
               onClearSpeedRamp: clearClipRamp,
               onDropMedia: dropMediaToTrack,
+              onEditText: (id) => {
+                setSelectedClipId(id);
+                try {
+                  localStorage.setItem("cadence:textCat", "text");
+                } catch {
+                  /* storage unavailable */
+                }
+                setRoom("text");
+              },
             }}
           />
         </div>

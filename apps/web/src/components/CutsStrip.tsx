@@ -139,6 +139,8 @@ export interface TimelineEdit {
    * at the snapped `startSec`. Routed through the editor's undoable commit path.
    */
   onDropMedia: (mediaId: string, trackId: string, startSec: number) => void;
+  /** Open the Text room to edit the selected text clip (words, style, animation). */
+  onEditText?: (clipId: string) => void;
 }
 
 /** MIME types the Media grid sets on a tile drag; used to gate lane drops by family. */
@@ -2139,6 +2141,16 @@ function ClipInspector({
         <span className="text-muted">on</span>
         <span className="rounded bg-panel px-1.5 py-0.5 text-[10px] text-faint">{trackLabel(track)}</span>
       </span>
+
+      {clip.kind === "text" && edit.onEditText && (
+        <button
+          type="button"
+          onClick={() => edit.onEditText!(clip.id)}
+          className="rounded-md border border-amber/40 bg-amber/10 px-2 py-0.5 font-medium text-amber transition hover:bg-amber/20"
+        >
+          Edit text, style &amp; animation
+        </button>
+      )}
 
       {/* Duration via right-edge trim, shown read-only + steppers */}
       <label className="flex items-center gap-1.5">

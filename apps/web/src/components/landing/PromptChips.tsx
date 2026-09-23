@@ -6,6 +6,8 @@ import Link from "next/link";
  * query param — harmless if the editor ignores it, a head-start if it reads it.
  */
 const PROMPTS: string[] = [
+  "Make a text video: Big news. We just launched. Try it free today.",
+  "Quote video: “Less is more.” — Mies van der Rohe",
   "Cut a 60-second highlight",
   "Make it vertical with captions",
   "Give it a cinematic look",

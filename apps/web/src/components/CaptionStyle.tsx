@@ -29,6 +29,7 @@ import {
   positionCaptions,
   setKaraoke,
   addCaptions,
+  animateText,
   type CaptionStyleOpts,
   type CaptionPosition,
   type KaraokeStyle,
@@ -497,6 +498,17 @@ const ANCHORS: { key: CaptionPosition; label: string }[] = [
   { key: "bottom", label: "Bottom" },
 ];
 
+/** Caption entrance animations (short — captions are on screen for ~1–3s). */
+const CAPTION_ANIMS: { key: string; label: string; hint: string; style: TextClip["anim"]["style"]; unit: TextClip["anim"]["unit"]; durationSec: number }[] = [
+  { key: "none", label: "None", hint: "Captions appear instantly", style: "none", unit: "whole", durationSec: 0 },
+  { key: "fade", label: "Fade", hint: "Fade each caption in", style: "fade", unit: "whole", durationSec: 0.25 },
+  { key: "pop-words", label: "Pop words", hint: "Words pop in one by one (TikTok style)", style: "pop", unit: "word", durationSec: 0.5 },
+  { key: "rise-words", label: "Rise words", hint: "Words rise in one by one", style: "rise", unit: "word", durationSec: 0.5 },
+  { key: "typewriter", label: "Typewriter", hint: "Letters type out", style: "typewriter", unit: "whole", durationSec: 0.6 },
+  { key: "slide", label: "Slide up", hint: "Each caption slides up into place", style: "rise", unit: "whole", durationSec: 0.3 },
+  { key: "blur", label: "Blur in", hint: "Captions come into focus", style: "blur-in", unit: "whole", durationSec: 0.35 },
+];
+
 const KARAOKE_STYLES: { key: KaraokeStyle; label: string }[] = [
   { key: "color", label: "Color" },
   { key: "fill", label: "Fill" },
@@ -877,6 +889,33 @@ export function CaptionStyleSection({
                   : "Load or transcribe the video first — karaoke needs word timings."}
               </span>
             )}
+          </Row>
+
+          {/* Caption entrance animation (shared text-animation engine; exports exactly). */}
+          <Row label="animation">
+            {CAPTION_ANIMS.map((a) => {
+              const active = (sourceClip?.anim.style ?? "none") === a.style && (a.style === "none" || (sourceClip?.anim.unit ?? "whole") === a.unit);
+              return (
+                <Toggle
+                  key={a.key}
+                  active={active}
+                  disabled={busy}
+                  title={a.hint}
+                  onClick={() =>
+                    onApplyDoc(
+                      animateText(doc, {
+                        target: clipId ? { clipId } : "captions",
+                        style: a.style,
+                        unit: a.unit,
+                        durationSec: a.style === "none" ? 0 : a.durationSec,
+                      }).doc,
+                    )
+                  }
+                >
+                  {a.label}
+                </Toggle>
+              );
+            })}
           </Row>
         </>
       )}

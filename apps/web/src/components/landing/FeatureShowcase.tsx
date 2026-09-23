@@ -85,6 +85,11 @@ const GROUPS: Group[] = [
     heading: "From photos to a finished file",
     features: [
       {
+        title: "Text videos — no footage needed",
+        body: "Type a script, a quote or a list and get animated typography scenes: 10 themes, 24 fonts, 21 text animations and moving backgrounds. Exported exactly as previewed.",
+        Icon: TitleIcon,
+      },
+      {
         title: "Photo → slideshow",
         body: "Turn a set of photos into a video with Ken Burns moves and crossfades — then treat it like any edit.",
         Icon: PhotoIcon,

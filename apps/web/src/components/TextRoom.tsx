@@ -1035,7 +1035,7 @@ const BG_PRESETS: { key: string; label: string; spec: Record<string, unknown> }[
   { key: "paper-white", label: "Paper", spec: { color: "#f6f4ef" } },
 ];
 
-function BackgroundPane({ doc, busy, onApplyDoc }: TextRoomProps) {
+export function BackgroundPane({ doc, busy, onApplyDoc }: Pick<TextRoomProps, "doc" | "busy" | "onApplyDoc">) {
   const solids = doc.tracks.flatMap((t) => (t.id === "fades" ? [] : t.clips)).filter((c) => c.kind === "solid" && c.id !== "fade-in" && c.id !== "fade-out");
   const first = solids[0] as { color: string; gradient?: { motion: string; speed: number }; pattern?: { kind: string; opacity: number } } | undefined;
   const applySpec = (spec: Record<string, unknown>) =>

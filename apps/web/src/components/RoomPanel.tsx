@@ -47,7 +47,7 @@ import {
   trackPan,
 } from "@/lib/fx";
 import { EMOJI_STICKERS, TEXT_PRESETS, insertSticker, type PlaceOpts } from "@/lib/text-presets";
-import { TextRoom } from "./TextRoom";
+import { BackgroundPane, TextRoom } from "./TextRoom";
 import { fmtTime, download, downloadBlob } from "@/lib/format";
 import { describeDoc } from "@/lib/status";
 import {
@@ -1454,8 +1454,8 @@ function AdjustmentControls({
 /**
  * The background palette — a curated swatch grid. Picking a swatch sets
  * `meta.background`, the colour shown behind fit-to-frame content and in any
- * letterbox bars (e.g. after a 2.39:1 reframe). Solid only (no schema change);
- * gradients are noted as out of scope.
+ * letterbox bars (e.g. after a 2.39:1 reframe). Below it, the shared gradient /
+ * animated / pattern gallery (setBackground) paints full background layers.
  */
 function BackgroundsGallery({
   doc,
@@ -1499,6 +1499,9 @@ function BackgroundsGallery({
           );
         })}
       </div>
+      <div className="h-px w-full bg-line-soft" aria-hidden />
+      <h3 className="text-[10px] font-semibold uppercase tracking-wider text-faint">Gradients, motion &amp; patterns</h3>
+      <BackgroundPane doc={doc} busy={busy} onApplyDoc={onApplyDoc} />
     </div>
   );
 }

@@ -121,3 +121,14 @@ test("text video: the Director makes one from a prompt with no media", async ({ 
   await seek(page, 2);
   await shot(page, "07-director-quote");
 });
+
+test("text video: a landing prompt chip (?prompt=) builds it on arrival", async ({ page }) => {
+  await page.goto(`${EDITOR_URL}?prompt=${encodeURIComponent("Make a text video: Big news. We just launched. Try it free today.")}`);
+  await expect(page.getByLabel("Scene 1 text")).toHaveValue("Big news.", { timeout: 30_000 });
+  await expect(page).not.toHaveURL(/prompt=/);
+  // Captions animation row + Design backgrounds gallery exist for mature text work.
+  await page.getByRole("button", { name: /^Design/ }).first().click();
+  await page.getByRole("button", { name: /Backgrounds/ }).first().click();
+  await expect(page.getByRole("button", { name: "Aurora ✦" })).toBeVisible();
+  await shot(page, "08-landing-prompt-design-bg");
+});
