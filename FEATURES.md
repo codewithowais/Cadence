@@ -56,6 +56,19 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - ✅ **Drag-and-drop** media onto timeline tracks + OS file drop.
 - ✅ **Theme:** coral/vermilion on warm charcoal (AA contrast), teal secondary.
 
+## 3b. Text videos & typography (Canva-style — no footage needed)
+- ✅ **Text video from words** (`make_text_video`) — paste a script, a quote ("…" — Author), a numbered/bulleted list, an announcement, or lyrics; it becomes timed, animated scenes (reading-speed pacing) with backgrounds and scene transitions. 16:9 · 9:16 · 1:1 · 4:5. No upload needed.
+- ✅ **10 themes** — Bold, Minimal, Neon, Elegant, Playful, Corporate, Retro, Aurora, Cinematic, Handwritten — each a font pairing, palette, animated background, motion set, effect, and transition. **Restyle** keeps words + timing (`restyle_text_video`).
+- ✅ **Scenes editor** (Text room) — edit lines in place, add a second line, retime, reorder, add, delete; reframe re-lays scenes instead of stretching.
+- ✅ **21 text animations** (`animate_text`) — fade, rise, drop, slide left/right, zoom in, stomp, blur in, wipe, baseline, tumble, spin, flip, neon, glitch, scramble, typewriter, pop, bounce, kinetic — each **whole / line-by-line / word-by-word / letter-by-letter**, with speed + delay; **10 exits** and **7 loops** (breathe, float, wiggle, flicker, pulse, shake, wave). Live hover previews.
+- ✅ **Text effects** (`style_text`) — lift, hollow, splice, echo, glitch, neon, highlight; **gradient text fill**; outline; pill/box panel.
+- ✅ **24 bundled fonts** (OFL Google Fonts: Inter, Montserrat, Poppins, Bebas Neue, Anton, Playfair Display, Pacifico, Permanent Marker, Press Start 2P, …) — identical in preview and export.
+- ✅ **Backgrounds** (`set_background`) — solid, linear/radial gradients, animated (drift, spin, pulse, **aurora**), patterns (dots, grid, lines, diagonal).
+- ✅ **20 animated text-style presets** + Canva-style "Add a heading / subheading / body".
+- ✅ **Caption animations** — fade, pop words, rise words, typewriter, slide up, blur in (Words room).
+- ✅ **Exports exactly as previewed** — media-less docs render every frame through the shared canvas; animated titles over footage export as frame sequences (no more frozen text).
+- ✅ **Text-video templates** in New project (Announcement, Quote, Tips list, Neon promo) + landing prompt chips.
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

@@ -4,6 +4,19 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S5.1 — Cycle H: Text videos (Canva parity) + mature text
+- **Shared draw module** (`core/draw.ts`, structural `Ctx2D`): text/solid/shape/callout/cursor/VFX drawing now runs identically in the browser preview, the Skia renderer, and export. All 61 legacy verify frames byte-identical.
+- **Text animation engine** (`core/text-anim.ts`): 16 new intros (fade, rise, drop, slide, zoom-in, stomp, blur-in, wipe, baseline, tumble, spin, flip, neon, glitch, scramble) × whole/line/word/letter staggering + delay; 10 exits; 7 loops. Legacy kinetic/pop/bounce equal `textKinetic` exactly.
+- **Text effects** (lift, hollow, splice, echo, glitch, neon, highlight) + **gradient text fill**; explicit newlines honored.
+- **Backgrounds**: SolidClip gradients (linear/radial) with drift/spin/pulse/aurora motion, pattern textures, direction-aware slide/wipe/circle scene transitions.
+- **24 bundled OFL fonts** (`FONT_LIBRARY`, `scripts/sync-fonts.ts` → `apps/web/public/fonts` + `fonts.css`), registered with Skia (preview == export).
+- **Export parity**: media-less docs stream raw RGBA canvas frames to ffmpeg (`canvasBase`); animated text/shapes over footage export as PNG frame sequences over their animated windows (no more text frozen at rest).
+- **Director**: `make_text_video` (script → scenes; story/quote/list/announcement/lyrics; 10 themes; 4 aspects; pace), `restyle_text_video`, `animate_text`, `style_text`, `set_background`; StubDirector routing reads theme/format/aspect from the instruction only (script words never trigger edits); reframe re-lays text videos.
+- **Web**: canvas preview layers (under/over footage), no-media play/scrub/export/Director, "Start with text" empty state, **Text room** (Create · Scenes · Text · Style · Animate · Background), text inspector, 20 animated text presets, caption animations, Design gradient backgrounds, text-video templates, `?prompt=` chips, portrait side-dock layout, exact-aspect preview frame.
+- Fixed a stale verify security check (uploads moved out of the OS temp dir).
+- *verified:* typecheck (root+web) · unit **78/78** · verify **66/66** incl. check 65 (text engine) + check 66 (decoded export frames match the canvas render, mean |ΔRGB| ≈ 1) · evals **6/6** (new text-only eval) · `next build` · Playwright e2e **25/25** (new text-video spec incl. a real .mp4 export with no media).
+
+
 ### S4.36 — Wave G QA: shape export rest-time + port-agnostic e2e
 - Fixed a shape parity bug (a shape with `transitionOutSec>0` exported blank because `renderShapeClipPng` rendered at the zero-opacity clip end) → render at the mid-clip full-opacity plateau; verify guard decodes the PNG and asserts opaque pixels. Made every e2e spec port-agnostic (`EDITOR_URL` honors `CADENCE_E2E_PORT`) — no more hardcoded `localhost:3000`.
 - *verified:* typecheck, 54 unit, verify 64/64 (16 real encodes), **e2e 22/22**, web build.

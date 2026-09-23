@@ -46,6 +46,32 @@ engine-agnostic contract resolves this cleanly:
 - **Node/worker** renders with the canvas engine now, ffmpeg later.
 Neither choice leaks into the Director or the edit-doc.
 
+## One drawing module for every synthetic layer (preview == export)
+
+Text, solids/backgrounds, shapes, callouts, cursors, and the VFX finishing pass
+are drawn by ONE module — `packages/core/src/draw.ts` — written against a minimal
+structural 2D context (`Ctx2D`) that both the DOM `CanvasRenderingContext2D` and
+Skia's `SKRSContext2D` satisfy. The frame time is passed explicitly (no globals).
+
+| Surface | How it draws synthetic layers |
+|---|---|
+| Browser preview (`Stage` → `SyntheticLayer`) | `<canvas>` "under" + "over" the `<video>`/`<img>` layers (split by track z-order), `pxScale` keeps blurs/shadows proportional, web fonts awaited |
+| Node renderer (`@cadence/render-node`) | the same functions on a Skia canvas (verify gate, thumbnails, rasterizing for export) |
+| ffmpeg export | **media-less docs** (text videos): every frame painted by the node renderer and piped to ffmpeg as raw RGBA (`canvasBase` plan, ~1.5 ms/frame) — only audio is mixed in the graph. **Footage docs**: animated text/shapes become stills over static spans + PNG sequences over animated windows (`overlaySegmentSpecs` / `clipAnimatedWindows`), static text keeps the single-PNG path |
+
+Text animation is resolved by one pure function family (`packages/core/src/text-anim.ts`,
+`textUnitState`): 21 intro styles × whole/line/word/letter staggering, exits, and
+loops, deterministic (integer-hash pseudo-randomness). Fonts come from one bundled
+library (`FONT_LIBRARY`, 24 OFL Google Fonts vendored into `apps/web/public/fonts`
+by `scripts/sync-fonts.ts`) loaded by the browser via `@font-face` and registered
+with Skia, so the same faces render everywhere. Verify check 66 decodes exported
+frames and matches them to the canvas render (mean |ΔRGB| ≈ 1).
+
+**Text videos** (`packages/director/src/textvideo.ts`) are plain EditDoc data:
+scene clips carry ids `tv-s{n}-{role}` and `doc.textVideo` stores the recipe
+(theme/format/pace), so scenes read back from the clips for restyle, reframe
+(re-lay, not stretch), retime, and reorder.
+
 ## Scale by construction
 - Preview is **client-side and instant**; final render is a **separate, splittable**
   worker job so it can fan out to cloud later without changing the document or tools.

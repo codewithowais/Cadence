@@ -10,22 +10,23 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
   - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
 
-## Cycle H — Text video (Canva parity) + mature text — 🚧 IN PROGRESS
+## Cycle H — Text video (Canva parity) + mature text — ✅ COMPLETE
 
 Goal: make a video from text alone (no upload), Canva-style, with preview == export for every animation. Root gaps found: (1) the editor gates prompt/play/export on uploaded media; (2) the Stage draws text as a plain DOM span (ignores font/outline/shadow/box/wrap/typewriter/keyframes) and never draws solid clips; (3) export renders animated text FROZEN at rest and ignores solid backgrounds; (4) no script→scenes tool; (5) no way to edit an existing text clip.
 
-- ⬜ **H1 Shared draw module** — move canvas drawing (text/solid/shape/callout/cursor/vfx) into `@cadence/core/draw` typed against a structural 2D context, so the browser Stage, node canvas, and export all run the SAME code. No behavior change (verify frames identical).
-- ⬜ **H2 Text animation engine** — ~15 new intro styles (fade/rise/drop/slide/zoom/stomp/blur/wipe/baseline/tumble/neon/glitch/scramble…) with per-line/word/letter staggering, delay, exit animations, and loop emphasis (breathe/float/wiggle/flicker/pulse). One pure resolver.
-- ⬜ **H3 Text effects** — Canva-style effects (lift, hollow, splice, echo, glitch, neon, highlight) + gradient text fill.
-- ⬜ **H4 Backgrounds** — gradient (linear/radial), animated (drift/pulse/aurora), pattern overlays (dots/grid/lines) on `SolidClip`.
-- ⬜ **H5 Font library** — ~24 bundled OFL Google fonts (preview + export identical), registered in Skia and loaded in the browser.
-- ⬜ **H6 Export parity** — media-less docs render every frame through the shared canvas (raw RGBA → ffmpeg); media docs overlay animated text/shapes as PNG sequences for their animated windows; solids exported.
-- ⬜ **H7 Stage parity** — the preview draws synthetic layers on a `<canvas>` via the shared module (z-order aware); play/scrub/export work with no media.
-- ⬜ **H8 Director** — `make_text_video` (script → timed scenes, themes, formats: story/quote/list/announcement), `restyle_text_video`, `animate_text`, `style_text`, `set_background`; StubDirector routing + evals.
-- ⬜ **H9 Editor unlock + Text room** — "Start with text" empty state, a Text room (script composer, scene list: edit/reorder/duration/add/delete, theme switcher).
-- ⬜ **H10 Text inspector** — edit any selected text clip: content, font, size/weight/italic/color/align/spacing, box/outline/shadow/effect/gradient, animation in/loop/out, 9-point position, apply-to-all.
-- ⬜ **H11 Templates + presets** — text-video templates in New project; ~30 text presets; gradient/animated background gallery.
-- ⬜ **H12 QA** — unit + verify + real encode + Playwright e2e for the text-video flow; CHANGELOG/FEATURES/ARCHITECTURE.
+- ✅ **H1 Shared draw module** — move canvas drawing (text/solid/shape/callout/cursor/vfx) into `@cadence/core/draw` typed against a structural 2D context, so the browser Stage, node canvas, and export all run the SAME code. No behavior change (verify frames identical).
+- ✅ **H2 Text animation engine** — ~15 new intro styles (fade/rise/drop/slide/zoom/stomp/blur/wipe/baseline/tumble/neon/glitch/scramble…) with per-line/word/letter staggering, delay, exit animations, and loop emphasis (breathe/float/wiggle/flicker/pulse). One pure resolver.
+- ✅ **H3 Text effects** — Canva-style effects (lift, hollow, splice, echo, glitch, neon, highlight) + gradient text fill.
+- ✅ **H4 Backgrounds** — gradient (linear/radial), animated (drift/pulse/aurora), pattern overlays (dots/grid/lines) on `SolidClip`.
+- ✅ **H5 Font library** — ~24 bundled OFL Google fonts (preview + export identical), registered in Skia and loaded in the browser.
+- ✅ **H6 Export parity** — media-less docs render every frame through the shared canvas (raw RGBA → ffmpeg); media docs overlay animated text/shapes as PNG sequences for their animated windows; background solids + gradients export in text-only docs.
+- ✅ **H7 Stage parity** — the preview draws synthetic layers on a `<canvas>` via the shared module (z-order aware); play/scrub/export work with no media.
+- ✅ **H8 Director** — `make_text_video` (script → timed scenes, themes, formats: story/quote/list/announcement), `restyle_text_video`, `animate_text`, `style_text`, `set_background`; StubDirector routing + evals.
+- ✅ **H9 Editor unlock + Text room** — "Start with text" empty state, a Text room (script composer, scene list: edit/reorder/duration/add/delete, theme switcher).
+- ✅ **H10 Text inspector** — edit any selected text clip: content, font, size/weight/italic/color/align/spacing, box/outline/shadow/effect/gradient, animation in/loop/out, 9-point position, apply-to-all.
+- ✅ **H11 Templates + presets** — text-video templates in New project; ~30 text presets; gradient/animated background gallery.
+- ✅ **H12 QA** — unit + verify + real encode + Playwright e2e for the text-video flow; CHANGELOG/FEATURES/ARCHITECTURE. *verified: unit 78/78 · verify 66/66 · evals 6/6 · next build · e2e 25/25.*
+- ⬜ **Follow-ups (optional):** per-scene theme overrides; beat-synced scene cuts from music; Urdu/Arabic font pack (Noto) for non-Latin scripts; stroke-reveal ("handwriting") animation; verify blur-in/blur-out on Safari (canvas `filter` support varies by browser version; blur styles would render sharp where it's missing); export background solids placed BEFORE/BETWEEN footage clips (text-only docs export them; footage docs still export only fade solids).
 
 ## Cycle E — craft depth (waves 2–5) + go-live — ✅ COMPLETE
 
