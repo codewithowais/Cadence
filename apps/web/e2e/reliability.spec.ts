@@ -217,6 +217,65 @@ test("project file: save .cadence.json → start over → open it → re-link me
   await page.keyboard.press("Escape");
 });
 
+test("playback perf: time-independent panels don't re-render every frame", async ({ page }) => {
+  const WATCH = ["TopBar", "DirectorRail", "RoomsRail", "AppliedStatus", "QuickActions", "Stage", "CutsStrip"];
+  // Count real renders per component through React's DevTools commit hook: a
+  // function component re-rendered iff its fiber's memoizedProps object changed.
+  await page.addInitScript((watch: string[]) => {
+    const W = new Set(watch);
+    const last = new Map<string, unknown>();
+    const w = window as unknown as { __renders: Record<string, number>; __REACT_DEVTOOLS_GLOBAL_HOOK__: unknown };
+    w.__renders = {};
+    type Fiber = { type: unknown; key: string | null; memoizedProps: unknown; child: Fiber | null; sibling: Fiber | null };
+    const walk = (f: Fiber | null): void => {
+      while (f) {
+        const t = f.type as { displayName?: string; name?: string } | null;
+        const name = typeof t === "function" ? t.displayName || t.name : undefined;
+        if (name && W.has(name)) {
+          const key = `${name}:${f.key ?? ""}`;
+          if (last.get(key) !== f.memoizedProps) {
+            last.set(key, f.memoizedProps);
+            w.__renders[name] = (w.__renders[name] ?? 0) + 1;
+          }
+        }
+        if (f.child) walk(f.child);
+        f = f.sibling;
+      }
+    };
+    w.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+      renderers: new Map(),
+      supportsFiber: true,
+      isDisabled: false,
+      inject: () => 1,
+      checkDCE: () => {},
+      onScheduleFiberRoot: () => {},
+      onCommitFiberRoot: (_id: number, root: { current: Fiber }) => walk(root.current.child),
+      onCommitFiberUnmount: () => {},
+      onPostCommitFiberRoot: () => {},
+    };
+  }, WATCH);
+  await page.goto(EDITOR_URL);
+  await page.waitForLoadState("networkidle");
+  await makeTextVideo(page);
+  await page.getByRole("button", { name: "Edit", exact: true }).first().click();
+  await page.waitForTimeout(400);
+
+  await page.evaluate(() => { (window as unknown as { __renders: Record<string, number> }).__renders = {}; });
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await page.waitForTimeout(2000);
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  const renders = await page.evaluate(() => (window as unknown as { __renders: Record<string, number> }).__renders);
+  console.log("renders during 2s of playback:", JSON.stringify(renders));
+
+  // Playback really ran (the preview + playhead re-render per frame)…
+  expect(renders.Stage ?? 0).toBeGreaterThan(20);
+  expect(renders.CutsStrip ?? 0).toBeGreaterThan(20);
+  // …while the time-independent panels rendered only for the play/pause toggles.
+  for (const name of ["TopBar", "DirectorRail", "RoomsRail", "AppliedStatus", "QuickActions"]) {
+    expect(renders[name] ?? 0, `${name} re-rendered during playback`).toBeLessThanOrEqual(3);
+  }
+});
+
 test("error boundary: a crashing panel shows a recover card, the editor keeps working", async ({ page }) => {
   // Dev-only fault injection: the timeline throws once after mount.
   await page.goto(`${EDITOR_URL}?cadence-crash=timeline`);

@@ -32,17 +32,17 @@ import {
 } from "@cadence/director";
 import type { TrackFlag } from "./CutsStrip";
 import type { Transcript } from "@cadence/understanding";
-import { RoomsRail, type RoomKey } from "./RoomsRail";
+import { RoomsRail as RoomsRailBase, type RoomKey } from "./RoomsRail";
 import { RoomPanel } from "./RoomPanel";
-import { DirectorRail } from "./DirectorRail";
+import { DirectorRail as DirectorRailBase } from "./DirectorRail";
 import { ResizeHandle } from "./ResizeHandle";
-import { TopBar } from "./TopBar";
-import { QuickActions } from "./QuickActions";
-import { AppliedStatus } from "./AppliedStatus";
+import { TopBar as TopBarBase } from "./TopBar";
+import { QuickActions as QuickActionsBase } from "./QuickActions";
+import { AppliedStatus as AppliedStatusBase } from "./AppliedStatus";
 import { Stage } from "./Stage";
 import { CutsStrip } from "./CutsStrip";
-import { CodeDrawer } from "./CodeDrawer";
-import { ShortcutsHelp } from "./ShortcutsHelp";
+import { CodeDrawer as CodeDrawerBase } from "./CodeDrawer";
+import { ShortcutsHelp as ShortcutsHelpBase } from "./ShortcutsHelp";
 import {
   emptyDoc,
   combinedVideoDoc,
@@ -54,7 +54,7 @@ import {
   setTrackVolume,
   insertMediaClipInDoc,
 } from "@/lib/doc";
-import { UndoToast } from "./UndoToast";
+import { UndoToast as UndoToastBase } from "./UndoToast";
 import {
   findClip,
   isMainSequentialTrack,
@@ -87,9 +87,24 @@ import { useAutosave } from "@/lib/use-autosave";
 import { SCRATCH_DRAFT_KEY } from "@/lib/autosave";
 import { RecoverDraftBanner } from "./RecoverDraftBanner";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { withStableHandlers } from "@/lib/stable-memo";
 import { buildProjectFile, matchFilesToMissing, parseProjectFile, projectFileName } from "@/lib/project-file";
 import type { Message } from "@/lib/types";
 import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
+
+// PLAYBACK PERF: the editor re-renders every animation frame while playing
+// (`timeSec`). These panels don't depend on time, so they're memoized with stable
+// handler proxies (lib/stable-memo) and skip those frames entirely — their
+// callbacks still always call the latest closure. (Stage / timeline / rooms DO
+// read time and render normally.)
+const RoomsRail = withStableHandlers(RoomsRailBase);
+const DirectorRail = withStableHandlers(DirectorRailBase);
+const TopBar = withStableHandlers(TopBarBase);
+const QuickActions = withStableHandlers(QuickActionsBase);
+const AppliedStatus = withStableHandlers(AppliedStatusBase);
+const CodeDrawer = withStableHandlers(CodeDrawerBase);
+const ShortcutsHelp = withStableHandlers(ShortcutsHelpBase);
+const UndoToast = withStableHandlers(UndoToastBase);
 
 let msgSeq = 0;
 // Collision-proof message id. MUST be generated OUTSIDE a setState updater —
