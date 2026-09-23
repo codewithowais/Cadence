@@ -459,7 +459,9 @@ function parseAnimateText(rawReq: string): AnimateTextInput | null {
     const w = loop[1]!;
     out.loop = w.startsWith("breath") ? "breathe" : w.startsWith("float") || w.startsWith("bob") ? "float" : w.startsWith("wiggl") ? "wiggle" : w.startsWith("flicker") ? "flicker" : w.startsWith("puls") ? "pulse" : w.startsWith("shak") ? "shake" : "wave";
   }
-  if (!out.style && !out.exit && !out.loop) return null;
+  if (!out.style && /\b(?:slow(?:er)?|more slowly)\b/.test(req) && /anim|text|letters|words|title/.test(req)) out.speedScale = 1.5;
+  else if (!out.style && /\b(?:fast(?:er)?|quick(?:er)?|snappier|speed (?:it )?up)\b/.test(req) && /anim|text|letters|words|title/.test(req)) out.speedScale = 0.65;
+  if (!out.style && !out.exit && !out.loop && !out.speedScale) return null;
   if (/\ball (?:the )?text|every(?:thing)?\b/.test(req)) out.target = "all";
   if (/slow(?:ly)?/.test(req) && out.style) out.durationSec = 1.4;
   else if (/fast|quick|snappy/.test(req) && out.style) out.durationSec = 0.45;
@@ -1382,7 +1384,7 @@ export class StubDirector {
     const hasVideo = project.media.some((m) => m.kind === "video");
     const hasImages = project.media.some((m) => m.kind === "image");
     if (isTextVideo(project.doc))
-      return 'Try: "switch to the neon theme", "make it elegant", "letters pop in one by one", "words rise in", "add a wiggle", "use Bebas Neue font", "gradient text", "aurora background", "make it vertical", or "slower pace".';
+      return 'Try: "switch to the neon theme", "make it elegant", "letters pop in one by one", "words rise in", "add a wiggle", "use Bebas Neue font", "gradient text", "aurora background", "make it vertical", or "make the text animation slower".';
     if (!hasVideo && !hasImages)
       return 'No footage needed — try: "make a text video: Big news. We just launched. Try it free today." or "quote video: “Stay hungry, stay foolish.” — Steve Jobs" or "list video: 3 tips for better sleep\n1. No screens\n2. Cool room\n3. Same bedtime". Or add a video or photos to edit.';
     if (hasImages && !hasVideo)

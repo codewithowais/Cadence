@@ -1721,11 +1721,12 @@ export const animateTextTool: DirectorTool<AnimateTextInput> = {
     loop: z.enum(TEXT_LOOP_STYLES).optional(),
     loopSpeed: z.number().min(0.05).max(8).optional(),
     loopAmount: z.number().min(0).max(1).optional(),
+    speedScale: z.number().positive().max(4).optional(),
   }) as z.ZodType<AnimateTextInput>,
   async execute(input, ctx) {
     const { doc, count } = animateText(ctx.project.doc, input);
     if (count === 0) throw new Error("There's no text to animate yet — add a title or make a text video first.");
-    const parts = [input.style && `${input.style}${input.unit && input.unit !== "whole" ? ` by ${input.unit}` : ""}`, input.exit && `${input.exit} exit`, input.loop && `${input.loop} loop`].filter(Boolean);
+    const parts = [input.speedScale && (input.speedScale > 1 ? "slower" : "faster"), input.style && `${input.style}${input.unit && input.unit !== "whole" ? ` by ${input.unit}` : ""}`, input.exit && `${input.exit} exit`, input.loop && `${input.loop} loop`].filter(Boolean);
     return commit(ctx.project, doc, `Animated ${count} text clip${count === 1 ? "" : "s"}${parts.length ? ` (${parts.join(", ")})` : ""}.`);
   },
 };

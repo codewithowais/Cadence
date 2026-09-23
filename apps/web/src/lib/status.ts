@@ -74,7 +74,7 @@ export function describeDoc(doc: EditDoc): DocStatus {
 
   for (const track of doc.tracks) {
     if (track.id === "captions") captions = true;
-    if (track.id === "music") music = true;
+    if (track.id === "music" && track.clips.length > 0) music = true;
     for (const clip of track.clips) {
       if (clip.kind === "video" || clip.kind === "image") {
         cuts += 1;

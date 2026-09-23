@@ -60,7 +60,7 @@ test("page tour: landing → login → dashboard → settings → editor", async
   await page.waitForLoadState("networkidle");
   // Describe-first composer: with no media yet it invites a description up front.
   await expect(
-    page.getByPlaceholder(/add footage next|Describe what you want/i),
+    page.getByPlaceholder(/add footage|Describe a video|Describe what you want/i),
   ).toBeVisible();
   await shot(page, "06-editor");
 });

@@ -26,7 +26,10 @@ export function bundledFontsDir(): string | null {
   } catch {
     /* bundled server chunk: import.meta.url may not be a file URL */
   }
-  return candidates.find((d) => existsSync(resolve(d, "inter"))) ?? null;
+  // turbopackIgnore: runtime lookups of the vendored font dir, not static asset
+  // references — without the opt-out Turbopack traces the whole project into the
+  // server bundle (the exact routes are listed in next.config outputFileTracingIncludes).
+  return candidates.find((d) => existsSync(/* turbopackIgnore: true */ resolve(d, "inter"))) ?? null;
 }
 
 /**
@@ -41,9 +44,9 @@ export function registerBundledFonts(): { dir: string | null; count: number } {
     for (const face of FONT_LIBRARY) {
       for (const { weight, style } of fontFiles(face)) {
         const file = resolve(dir, fontFilePath(face, "latin", weight, style));
-        if (!existsSync(file)) continue;
+        if (!existsSync(/* turbopackIgnore: true */ file)) continue;
         try {
-          if (GlobalFonts.registerFromPath(file, face.family)) count++;
+          if (GlobalFonts.registerFromPath(/* turbopackIgnore: true */ file, face.family)) count++;
         } catch {
           /* a bad file must never break rendering */
         }

@@ -24,6 +24,15 @@ const config: NextConfig = {
   // itself ships TS source and stays in transpilePackages (a different package —
   // no Turbopack both-lists conflict).
   serverExternalPackages: ["@napi-rs/canvas", "pg", "ffmpeg-static"],
+  // The export/render routes rasterize text through Skia with the BUNDLED fonts
+  // (public/fonts, registered by @cadence/render-node). Public files aren't in a
+  // serverless function's trace by default, so include the latin woff2 files the
+  // node renderer registers — otherwise exported text would fall back to system
+  // fonts (no-op on the Docker/Render deploy, where the whole app is on disk).
+  outputFileTracingIncludes: {
+    "/api/export": ["./public/fonts/**/*-latin-*.woff2"],
+    "/api/render": ["./public/fonts/**/*-latin-*.woff2"],
+  },
 };
 
 export default config;

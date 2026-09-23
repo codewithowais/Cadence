@@ -56,6 +56,8 @@ export interface AnimateTextInput {
   loop?: TextLoopStyle;
   loopSpeed?: number;
   loopAmount?: number;
+  /** Relative speed: multiply every intro/exit duration (1.5 = slower, 0.65 = faster). */
+  speedScale?: number;
 }
 
 /**
@@ -81,6 +83,11 @@ export function animateText(doc: EditDoc, input: AnimateTextInput): { doc: EditD
       a.exit.style = input.exit;
       a.exit.durationSec = Math.min(clip.duration * 0.4, input.exitSec ?? (a.exit.durationSec || 0.5));
     } else if (input.exitSec !== undefined) a.exit.durationSec = Math.min(clip.duration * 0.4, input.exitSec);
+    if (input.speedScale && input.speedScale > 0) {
+      a.durationSec = Math.min(clip.duration * 0.8, a.durationSec * input.speedScale);
+      a.exit.durationSec = Math.min(clip.duration * 0.4, a.exit.durationSec * input.speedScale);
+      if (a.loop.style !== "none") a.loop.speed = Math.max(0.05, a.loop.speed / input.speedScale);
+    }
     if (input.loop) a.loop.style = input.loop;
     if (input.loopSpeed !== undefined) a.loop.speed = input.loopSpeed;
     if (input.loopAmount !== undefined) a.loop.amount = input.loopAmount;

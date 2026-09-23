@@ -688,7 +688,7 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
       { id: "tv-bg", kind: "visual", name: "Backgrounds", clips: bgClips },
       { id: "tv-accents", kind: "visual", name: "Accents", clips: accClips },
       { id: "tv-text", kind: "visual", name: "Text", clips: textClips },
-      ...(audioTracks.length > 0 ? audioTracks : [{ id: "music", kind: "audio", name: "Music", clips: [] }]),
+      ...audioTracks,
     ],
     textVideo: { theme, format, pace },
   });

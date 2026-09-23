@@ -13,8 +13,40 @@
  * (the client never sends a raw doc — it sends only a template id).
  */
 import { parseEditDoc, type EditDoc } from "@cadence/core";
+import { buildTextVideo, type BuildTextVideoOptions } from "@cadence/director";
 
-export type TemplateId = "blank" | "talking-head" | "slideshow";
+export type TemplateId =
+  | "blank"
+  | "talking-head"
+  | "slideshow"
+  | "text-announcement"
+  | "text-quote"
+  | "text-tips"
+  | "text-promo";
+
+/** Text-video starters (no media): each is a real, editable text video. */
+const TEXT_TEMPLATES: Record<Extract<TemplateId, `text-${string}`>, BuildTextVideoOptions> = {
+  "text-announcement": {
+    script: "Big news.\nWe just launched something new.\nMade for creators like you.\nTry it free today.",
+    theme: "bold",
+    aspect: "16:9",
+  },
+  "text-quote": {
+    script: "“The best way to predict the future is to create it.” — Peter Drucker",
+    theme: "elegant",
+    aspect: "1:1",
+  },
+  "text-tips": {
+    script: "3 tips for better sleep\n1. No screens after 10pm\n2. Keep the room cool\n3. Same bedtime every night\nFollow for more",
+    theme: "playful",
+    aspect: "9:16",
+  },
+  "text-promo": {
+    script: "Tonight only.\nLive music.\nDoors open at 9.",
+    theme: "neon",
+    aspect: "9:16",
+  },
+};
 
 export interface TemplateMeta {
   readonly id: TemplateId;
@@ -44,10 +76,34 @@ export const TEMPLATES: readonly TemplateMeta[] = [
     description: "Four cross-fading slides with captions and a title.",
     format: "16:9 · 1080p",
   },
+  {
+    id: "text-announcement",
+    label: "Text video · Announcement",
+    description: "Bold animated type on moving gradients — no footage needed.",
+    format: "16:9 · 1080p",
+  },
+  {
+    id: "text-quote",
+    label: "Text video · Quote",
+    description: "An elegant serif quote with its author, blurring into focus.",
+    format: "1:1 · 1080",
+  },
+  {
+    id: "text-tips",
+    label: "Text video · Tips list",
+    description: "Numbered tips with bouncy letters, sized for Reels & TikTok.",
+    format: "9:16 · 1080×1920",
+  },
+  {
+    id: "text-promo",
+    label: "Text video · Neon promo",
+    description: "Glowing neon signs that flicker on, over a dark grid.",
+    format: "9:16 · 1080×1920",
+  },
 ];
 
 export function isTemplateId(value: unknown): value is TemplateId {
-  return value === "blank" || value === "talking-head" || value === "slideshow";
+  return typeof value === "string" && TEMPLATES.some((t) => t.id === value);
 }
 
 /**
@@ -60,6 +116,7 @@ export function buildTemplateDoc(id: TemplateId): EditDoc | null {
   if (id === "blank") return null;
   if (id === "talking-head") return parseEditDoc(talkingHeadRaw());
   if (id === "slideshow") return parseEditDoc(slideshowRaw());
+  if (id in TEXT_TEMPLATES) return buildTextVideo(parseEditDoc({ version: 1 }), TEXT_TEMPLATES[id as keyof typeof TEXT_TEMPLATES]);
   return null;
 }
 

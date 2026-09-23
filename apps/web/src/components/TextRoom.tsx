@@ -14,7 +14,7 @@
  * Every control applies a PURE doc op through the editor's undoable commit, and
  * every preview tile is drawn by the same canvas code as the Stage and export.
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   FONT_LIBRARY,
   TEXT_ANIM_STYLES,
@@ -52,6 +52,7 @@ import {
 } from "@cadence/director";
 import { BackgroundSwatch, TextSwatch, sampleText } from "./TextSwatch";
 import { addQuickText, allTexts, findText, lastTitleId, patchText, type QuickTextKind } from "@/lib/text-edit";
+import { PRO_TEXT_PRESETS, insertProPreset, presetPreviewClip } from "@/lib/text-presets-pro";
 
 type Cat = "create" | "scenes" | "text" | "style" | "animate" | "background";
 const CAT_KEY = "cadence:textCat";
@@ -212,8 +213,11 @@ export function TextRoom(props: TextRoomProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // A freshly-made text video opens on its scenes.
+  const prevTv = useRef(tv);
   useEffect(() => {
-    if (tv) setCat((c) => (c === "create" ? "scenes" : c));
+    if (tv && !prevTv.current) setCat("scenes");
+    if (!tv) setCat((c) => (c === "scenes" ? "create" : c));
+    prevTv.current = tv;
   }, [tv]);
   const choose = (c: Cat) => {
     setCat(c);
@@ -637,6 +641,24 @@ function TextPane({ doc, busy, timeSec, selectedClipId, onApplyDoc, onSelectClip
         </div>
       </Section>
 
+      <Section title="Text styles" hint="Animated, ready-made looks — hover to preview, click to add at the playhead.">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-2">
+          {PRO_TEXT_PRESETS.map((p) => (
+            <PreviewTile
+              key={p.key}
+              label={p.label}
+              disabled={busy}
+              onClick={() => {
+                const { doc: next, id } = insertProPreset(doc, p, round2(Math.max(0, timeSec)));
+                onApplyDoc(next);
+                if (id) onSelectClip?.(id);
+              }}
+              render={(hover) => <PresetTile presetKey={p.key} hover={hover} />}
+            />
+          ))}
+        </div>
+      </Section>
+
       {texts.length > 0 && (
         <Section title="Text on the timeline" hint="Pick one to edit it here, in Style, and in Animate.">
           <div className="flex flex-wrap gap-1.5">
@@ -706,6 +728,12 @@ function TextPane({ doc, busy, timeSec, selectedClipId, onApplyDoc, onSelectClip
       )}
     </div>
   );
+}
+
+/** A pro preset's live tile (memoized clip; animates while hovered). */
+function PresetTile({ presetKey, hover }: { presetKey: string; hover: boolean }) {
+  const clip = useMemo(() => presetPreviewClip(PRO_TEXT_PRESETS.find((p) => p.key === presetKey)!), [presetKey]);
+  return <TextSwatch clip={clip} animate={hover} restTime={2} />;
 }
 
 // ---- Style ------------------------------------------------------------------------

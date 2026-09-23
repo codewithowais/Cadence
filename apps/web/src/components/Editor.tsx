@@ -300,6 +300,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const hasMedia = projectMedia.length > 0;
   // A text video has no media but is fully playable / exportable.
   const hasContent = durationSec > 0;
+  const sideDock = room !== "edit" && doc.meta.height > doc.meta.width;
   const docHasText = useMemo(() => doc.tracks.some((t) => t.clips.some((c) => c.kind === "text")), [doc]);
   const mode: "video" | "images" | "none" = projectMedia.some((m) => m.kind === "video")
     ? "video"
@@ -583,7 +584,14 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       say("director", res.summary, "edit");
       showUndoToast(res.summary);
       // A text video lands with no media — open the Text room so its scenes are editable.
-      if (res.toolCalls.some((c) => c.name === "make_text_video")) setRoom("text");
+      if (res.toolCalls.some((c) => c.name === "make_text_video")) {
+        try {
+          localStorage.setItem("cadence:textCat", "scenes");
+        } catch {
+          /* storage unavailable */
+        }
+        setRoom("text");
+      }
       return res.toolCalls.length;
     } catch (err) {
       say("director", err instanceof Error ? err.message : "I couldn't make that edit.", "error");
@@ -1530,6 +1538,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           saveState={saveState}
         />
         <AppliedStatus doc={doc} hasMedia={hasMedia || hasContent} />
+        {/* Portrait projects (9:16 / 4:5) dock the room panel BESIDE the preview on
+            wide screens, so a tall frame isn't squeezed into a thumbnail. Otherwise
+            the wrapper is `contents` and the layout is exactly the stacked one. */}
+        <div className={sideDock ? "flex min-h-0 flex-1 flex-col md:flex-row-reverse" : "contents"}>
         {room === "edit" ? (
           <QuickActions
             mode={mode !== "none" ? mode : docHasText ? "text" : "none"}
@@ -1542,7 +1554,11 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             // never exceed ~46vh, so the video preview below always stays on
             // screen no matter how tall the room's content is. Height is
             // user-adjustable via the divider beneath it and persisted.
-            className="shrink-0 overflow-y-auto max-h-[46vh] md:max-h-[min(var(--room-h),46vh)]"
+            className={
+              sideDock
+                ? "shrink-0 overflow-y-auto max-h-[46vh] md:h-full md:max-h-none md:w-[min(560px,50%)] md:border-l md:border-line-soft"
+                : "shrink-0 overflow-y-auto max-h-[46vh] md:max-h-[min(var(--room-h),46vh)]"
+            }
             style={{ "--room-h": `${roomHeight}px` } as CSSProperties}
           >
           <RoomPanel
@@ -1580,7 +1596,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           />
           </div>
         )}
-        {room !== "edit" && (
+        {room !== "edit" && !sideDock && (
           <ResizeHandle
             orientation="horizontal"
             className="hidden md:block"
@@ -1606,6 +1622,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onStartWithText={() => setRoom("text")}
           onAddMedia={() => setRoom("media")}
         />
+        </div>
         <ResizeHandle
           orientation="horizontal"
           className="hidden md:block"

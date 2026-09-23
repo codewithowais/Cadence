@@ -209,12 +209,17 @@ export function Stage(props: StageProps) {
   }, [timeSec]);
 
   return (
-    <div className="flex min-h-[180px] flex-1 flex-col">
-      <div className="flex min-h-0 flex-1 items-center justify-center p-4 sm:p-6">
+    <div className="flex min-h-[180px] min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 items-center justify-center p-4 sm:p-6" style={{ containerType: "size" }}>
         <div
           ref={frameRef}
-          className="relative flex max-h-full items-center justify-center overflow-hidden rounded-2xl border border-line bg-[#12181a] shadow-[0_18px_50px_-20px_rgba(24,34,38,0.30)]"
-          style={{ aspectRatio: `${doc.meta.width} / ${doc.meta.height}`, maxWidth: "100%", height: "100%" }}
+          className="relative flex items-center justify-center overflow-hidden rounded-2xl border border-line bg-[#12181a] shadow-[0_18px_50px_-20px_rgba(24,34,38,0.30)]"
+          // Exact composition aspect at the largest size that fits the stage
+          // (container-query units), so canvas layers and media line up.
+          style={{
+            aspectRatio: `${doc.meta.width} / ${doc.meta.height}`,
+            width: `min(100cqw, calc(100cqh * ${doc.meta.width / doc.meta.height}))`,
+          }}
         >
           {/* Backgrounds + synthetic clips BENEATH the footage (shared canvas drawing). */}
           {frameW > 0 && <SyntheticLayer doc={doc} timeSec={timeSec} layer="under" width={frameW} height={frameH} />}
