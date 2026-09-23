@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   docDurationSec,
   parseEditDoc,
@@ -664,16 +664,17 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
    * user's line has already been shown (a queued describe-first request), so we
    * don't repeat it. Commits the result (undoable) and shows an Undo toast.
    */
-  async function runDirector(text: string, echo = true, onlyTextVideo = false): Promise<number> {
+  async function runDirector(text: string, echo = true, onlyTextVideo = false /* = needs-content */): Promise<number> {
     if (echo) say("you", text);
     setBusy(true);
     setBusyLabel("Applying your edit…");
     setPlaying(false);
     try {
       const res = await askDirector({ request: text, media: projectMedia, transcripts: Object.values(transcripts), doc });
-      // On an EMPTY project only a text video can run now; anything else (a look,
-      // a reframe…) would be a no-op without footage, so the caller queues it.
-      if (onlyTextVideo && !res.toolCalls.some((c) => c.name === "make_text_video")) return 0;
+      // On an EMPTY project, keep only a result that actually CREATES something to
+      // watch (a text video, a countdown, a graphic…). A look / reframe / caption
+      // with no footage is a no-op, so the caller queues it until media arrives.
+      if (onlyTextVideo && docDurationSec(parseEditDoc(res.doc)) <= 0) return 0;
       if (res.toolCalls.length === 0) {
         say("director", res.summary, "info", { kind: "unmatched", request: text });
         return 0;
@@ -1758,6 +1759,17 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (files.length) void handleFiles(files);
   };
 
+  // The chat rail is memoized (withStableHandlers) so it skips playback frames; a
+  // fresh <OnboardingChecklist/> element every render would defeat that. Memoize
+  // it on the data it reads, with a stable proxy to the latest runAction.
+  const runActionRef = useRef(runAction);
+  runActionRef.current = runAction;
+  const stableRunAction = useCallback((a: CommandAction) => runActionRef.current(a), []);
+  const checklistEl = useMemo(
+    () => <OnboardingChecklist doc={doc} hasContent={hasContent} playing={playing} exporting={exporting} onRun={stableRunAction} />,
+    [doc, hasContent, playing, exporting, stableRunAction],
+  );
+
   return (
     <div
       className="relative flex h-dvh w-full overflow-hidden"
@@ -1790,9 +1802,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               libraryOpen={libraryOpen}
               onLibraryOpenChange={setLibraryOpen}
               onOpenPalette={openPalette}
-              checklist={
-                <OnboardingChecklist doc={doc} hasContent={hasContent} playing={playing} exporting={exporting} onRun={runAction} />
-              }
+              checklist={checklistEl}
             />
             </ErrorBoundary>
           </div>
