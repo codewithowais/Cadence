@@ -78,4 +78,27 @@ no new dependencies).
 
 ## Results
 
-(filled in as slices land)
+| Feature | Where | Evidence |
+|---|---|---|
+| Export progress + ETA + real Cancel | `render-ffmpeg/src/progress.ts`, `export.ts`; `api/export/route.ts`; `lib/export-stream.ts`, `lib/api.ts`, `ExportMenu.tsx` | verify check 67 (footage 6 / canvas 9 monotonic callbacks → 1; abort settles at once, `pgrep` confirms ffmpeg gone); e2e progress bar >5 % mid-encode then ftyp mp4; e2e Cancel → "Export cancelled." + no ffmpeg process |
+| Upload progress | `uploadMedia(file, signal, onProgress)` (XHR) | shown as "Uploading media n of m · %" in the pill |
+| Render-slot limiter | `lib/export-slots.ts` (`CADENCE_EXPORT_CONCURRENCY`, default 1) | second export shows "Waiting for a render slot" instead of OOM-ing a 512 MB box |
+| Pre-flight | `lib/export-preflight.ts` | unit tests; e2e: opened project without media → blocking message naming the files, button disabled |
+| Autosave + recovery | `lib/autosave.ts`, `lib/media-store.ts`, `lib/use-autosave.ts`, `RecoverDraftBanner.tsx` | unit tests; e2e refresh → Restore (title, clips, blob previews, export enabled) → Discard really deletes |
+| Error boundaries | `ErrorBoundary.tsx`, `app/editor/error.tsx` | e2e via dev-only `?cadence-crash=timeline|preview`: card shown, rest works, auto-retry on doc change, Try again |
+| Project file round-trip + re-link | `lib/project-file.ts`, overflow menu | unit tests; e2e save → Start over → open → re-add photos → "everything's back in place" |
+| Playback perf | `lib/stable-memo.tsx` | render counts during 2 s of playback: TopBar/DirectorRail/RoomsRail/AppliedStatus/QuickActions **~120 → 0–2** (Stage/CutsStrip still per-frame, as they must); dev build @4× CPU throttle long tasks 2.4 s → 0.5 s per 3 s; production build holds **60 fps at 6× throttle** on a text video |
+| Bug fix | Deliver room Export passed the click event as `overrideDoc` | e2e "export from the Deliver room" |
+
+### Protocol note (for anyone calling /api/export)
+Send `x-cadence-progress: 1` to get the stream: `\n`-terminated JSON events
+(`phase` · `progress` · `error`), then `{"type":"file","size":N,…}\n` + exactly N raw
+mp4 bytes. Without the header the route is unchanged (binary mp4 / JSON error).
+
+### Known limitations
+- Autosave covers the scratch `/editor` only (project editors save to the DB). Undo
+  history and chat messages aren't persisted; very large media may exceed the
+  browser quota — reported, and re-linkable by name.
+- The render-slot limiter is per process (right for the single Render container).
+- The one Turbopack "whole project tracing" warning in `next build` comes from the
+  pre-existing `lib/uploads.ts` realpath via `api/upload` (untouched here).
