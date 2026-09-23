@@ -22,3 +22,6 @@ apps/web/.playwright/
 # logs
 *.log
 npm-debug.log*
+
+# Agent git worktrees (local only)
+.claude/worktrees/
