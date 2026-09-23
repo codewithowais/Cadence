@@ -178,8 +178,13 @@ export function useEditingCraft(deps: EditingCraftDeps): EditingCraft {
   const written = useRef<number[]>([]);
   const timeRef = useRef(timeSec);
   timeRef.current = timeSec;
+  // Right after the loop starts, ignore stray playhead writes: when L steps 1× → 2×
+  // the editor's playback loop can land one last (possibly large, on a slow frame)
+  // tick after `playing` flips off — that is not a user seek.
+  const graceUntil = useRef(0);
   useEffect(() => {
     if (loopRate === 0) return;
+    graceUntil.current = performance.now() + 300;
     let raf = 0;
     let last = performance.now();
     let pos = timeRef.current;
@@ -190,10 +195,13 @@ export function useEditingCraft(deps: EditingCraftDeps): EditingCraft {
       setTimeSec(t);
     };
     const tick = (now: number) => {
-      const dt = Math.min(0.1, (now - last) / 1000);
-      last = now;
+      // A rAF timestamp can PRECEDE the performance.now() read above, so clamp the
+      // first delta at 0 (a negative step at 0:00 would read as "hit the start").
+      const dt = Math.max(0, Math.min(0.1, (now - last) / 1000));
+      last = Math.max(last, now);
       pos += dt * loopRate;
-      if (pos <= 0 || pos >= durationSec) {
+      // Only the end we're heading toward stops the loop.
+      if ((loopRate < 0 && pos <= 0) || (loopRate > 0 && pos >= durationSec)) {
         write(Math.max(0, Math.min(durationSec, pos)));
         setLoopRate(0); // reached an end of the timeline
         return;
@@ -208,7 +216,7 @@ export function useEditingCraft(deps: EditingCraftDeps): EditingCraft {
   // down. The tolerance absorbs a last in-flight tick from normal playback when
   // L steps 1× → 2×; our own frame steps / jumps stop the loop explicitly.
   useEffect(() => {
-    if (loopRate === 0) return;
+    if (loopRate === 0 || performance.now() < graceUntil.current) return;
     if (!written.current.some((t) => Math.abs(t - timeSec) < 0.1)) setLoopRate(0);
   }, [timeSec, loopRate]);
   // Normal playback started elsewhere (Space, the Stage button) ends a shuttle.
