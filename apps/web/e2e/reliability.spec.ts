@@ -161,6 +161,20 @@ test("export: Cancel stops the render (server-side ffmpeg is killed)", async ({ 
   await shot(page, "05-cancelled");
 });
 
+test("export from the Deliver room also streams progress and downloads", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto(EDITOR_URL);
+  await page.waitForLoadState("networkidle");
+  await makeTextVideo(page);
+  await page.getByRole("navigation", { name: "Rooms" }).getByRole("button", { name: "Deliver" }).click();
+  const downloadPromise = page.waitForEvent("download", { timeout: 150_000 });
+  await page.getByRole("button", { name: /Export \.mp4/ }).first().click();
+  await expect(page.getByRole("group", { name: "Export in progress" })).toBeVisible();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/\.mp4$/);
+  await expect(page.getByText(/Exported a real \.mp4/).first()).toBeVisible();
+});
+
 test("project file: save .cadence.json → start over → open it → re-link media by name", async ({ page }) => {
   await page.goto(EDITOR_URL);
   await page.waitForLoadState("networkidle");

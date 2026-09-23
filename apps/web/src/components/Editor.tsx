@@ -1780,7 +1780,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onAction={(p) => void handleSend(p)}
             onApplyDoc={(d, coalesceKey) => commit(d, coalesceKey ? { coalesce: coalesceKey } : undefined)}
             onFiles={handleFiles}
-            onExport={exportDoc}
+            // Wrapped: the Deliver room binds this straight to onClick, which would
+            // otherwise pass the click event in as the `overrideDoc`.
+            onExport={() => void exportDoc()}
             canExport={hasContent}
             timeSec={timeSec}
             muted={muted}
