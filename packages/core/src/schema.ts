@@ -1322,6 +1322,14 @@ export const EditDoc = z.object({
   cleanAudio: z.boolean().default(false),
   /** Present when this doc is a text video (see TextVideoRecipe). */
   textVideo: TextVideoRecipe.optional(),
+  /**
+   * One-click VOICE ENHANCE on export: the voice (base video audio + the
+   * "voiceover" track — never the music/SFX) runs through a broadcast-style chain
+   * (high-pass → compressor → mud cut + presence EQ → de-esser → limiter). Optional
+   * (absent ⇒ off) so existing docs and exports stay byte-identical. EXPORT-ONLY,
+   * like `cleanAudio` — the browser preview plays the untreated voice.
+   */
+  voiceEnhance: z.boolean().optional(),
 });
 export type EditDoc = z.infer<typeof EditDoc>;
 

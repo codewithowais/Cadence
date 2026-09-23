@@ -3318,6 +3318,157 @@ async function checkTextVideoExportParity(): Promise<void> {
   );
 }
 
+/**
+ * Check 67 — "Sound made easy": procedural music + SFX health (listen-proxy:
+ * no clipping, no DC, real level, silent tail) at 44.1 kHz, then REAL encodes of
+ * generated music + SFX + smart duck + voice enhance + beat sync through the
+ * bundled ffmpeg. The duck is measured in the decoded export (music ≥ 10 dB
+ * quieter under the caption than between lines) and the voice-enhance chain's
+ * filters/options are proven valid by ffmpeg exit 0. OFF paths byte-identical.
+ */
+async function checkSoundMadeEasy(): Promise<void> {
+  const dir = await import("@cadence/director");
+  const ff = await import("@cadence/render-ffmpeg");
+  // (A) Listen-proxy: every mood + every SFX, full rate, written as WAVs.
+  const soundDir = resolve(OUT_DIR, "sound");
+  mkdirSync(soundDir, { recursive: true });
+  const stats: string[] = [];
+  for (const mood of dir.MUSIC_MOODS) {
+    const a = dir.renderMusic({ mood, durationSec: 8, seed: 7 });
+    const s = dir.analyzePcm(a);
+    assert(s.peakDb <= -1 && s.clipped === 0, `sound: ${mood} clips (peak ${s.peakDb.toFixed(2)} dBFS)`);
+    assert(s.dc < 2e-3, `sound: ${mood} DC offset ${s.dc}`);
+    assert(s.rmsDb > -32, `sound: ${mood} too quiet (${s.rmsDb.toFixed(1)} dBFS)`);
+    assert(s.tailPeakDb < -60, `sound: ${mood} must end in silence (tail ${s.tailPeakDb.toFixed(0)} dBFS)`);
+    writeFileSync(resolve(soundDir, `music-${mood}.wav`), dir.encodeWav(a));
+    stats.push(`${mood} ${s.rmsDb.toFixed(0)}dB`);
+  }
+  for (const kind of dir.SFX_KINDS) {
+    const s = dir.analyzePcm(dir.renderSfx(kind));
+    assert(s.peakDb <= -1 && s.clipped === 0 && s.dc < 2e-3, `sound: sfx ${kind} unhealthy`);
+  }
+
+  const info = await detectFfmpeg();
+  if (!info.available) {
+    console.log(`  \x1b[32m✔\x1b[0m check 67 (sound made easy): music/SFX healthy (${stats.join(", ")}); ffmpeg unavailable — encodes skipped gracefully`);
+    return;
+  }
+  const bin = resolveFfmpegBin();
+  const encDir = resolve(OUT_DIR, "encode");
+  mkdirSync(encDir, { recursive: true });
+  const run = (args: string[], what: string): void => {
+    const r = spawnSync(bin, ["-hide_banner", "-y", ...args], { encoding: "utf8" });
+    assert(r.status === 0, `sound: could not synthesize ${what} (${(r.stderr || "").slice(-300)})`);
+  };
+  const talk = resolve(encDir, "sound-talk.mp4");
+  const mute = resolve(encDir, "sound-mute.mp4");
+  const voWav = resolve(encDir, "sound-vo.wav");
+  const photo = resolve(encDir, "sound-photo.png");
+  run(["-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=6", "-f", "lavfi", "-i", "sine=frequency=300:duration=6", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", talk], "talking clip");
+  run(["-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=8", "-c:v", "libx264", "-pix_fmt", "yuv420p", mute], "silent clip");
+  run(["-f", "lavfi", "-i", "sine=frequency=220:duration=2", voWav], "voice-over");
+  run(["-f", "lavfi", "-i", "testsrc=size=640x360:duration=1", "-frames:v", "1", photo], "photo");
+
+  // Generated media → WAV files, materialized from their recipes (as the browser does).
+  const synthPaths = new Map<string, string>();
+  const materialize = (doc: EditDoc): void => {
+    for (const m of doc.media) {
+      const r = dir.parseSynthSrc(m.src);
+      if (!r || synthPaths.has(m.id)) continue;
+      const p = resolve(soundDir, `${m.id}.wav`);
+      writeFileSync(p, dir.encodeWav(dir.renderSynthRecipe(r)));
+      synthPaths.set(m.id, p);
+    }
+  };
+  const resolveMedia = (id: string): string =>
+    synthPaths.get(id) ?? (id === "talk" ? talk : id === "mute" ? mute : id === "vo" ? voWav : photo);
+  const encode = async (label: string, doc: EditDoc): Promise<string> => {
+    materialize(doc);
+    const out = resolve(encDir, `sound-out-${label}.mp4`);
+    const res = await ff.runExport(doc, { resolveMediaPath: resolveMedia, outFile: out, bin, skipDetect: true });
+    assert(statSync(out).size > 5000, `sound [${label}]: empty mp4`);
+    assert(await ff.probeHasAudio(bin, out), `sound [${label}]: exported mp4 must carry an audio stream`);
+    return res.args.join(" ");
+  };
+
+  // (B) Talking footage + voice-over + captions → generated lo-fi, smart duck,
+  // SFX, and VOICE ENHANCE on the speech + voice-over.
+  let talkDoc = parseEditDoc({
+    version: 1,
+    meta: { title: "talk", width: 640, height: 360, fps: 30 },
+    media: [{ id: "talk", kind: "video", src: talk, durationSec: 6 }, { id: "vo", kind: "audio", src: voWav, durationSec: 2 }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c", kind: "video", mediaId: "talk", start: 0, duration: 6 }] },
+      { id: "captions", kind: "visual", clips: [{ id: "k", kind: "text", start: 3.5, duration: 1.5, text: "hello", transform: { x: 320, y: 300 } }] },
+      { id: "voiceover", kind: "audio", clips: [{ id: "v", kind: "audio", mediaId: "vo", start: 1, duration: 2 }] },
+    ],
+  });
+  talkDoc = dir.generateMusic(talkDoc, { mood: "lofi" });
+  talkDoc = dir.autoDuck(talkDoc, { depthDb: -12 }).doc;
+  talkDoc = dir.addSfx(dir.addSfx(talkDoc, { kind: "whoosh", atSec: 2 }), { kind: "ding", atSec: 4 });
+  const offPlan = ff.buildExportPlan(talkDoc, resolveMedia, "/o.mp4").filterComplex;
+  const enhanced = dir.setVoiceEnhance(talkDoc, true);
+  const onPlan = ff.buildExportPlan(enhanced, resolveMedia, "/o.mp4").filterComplex;
+  assert(!offPlan.includes("acompressor"), "sound: voice enhance OFF must not touch the graph");
+  assert((onPlan.match(/deesser=/g) ?? []).length === 2, "sound: voice enhance runs on the speech + the voice-over only");
+  assert(ff.buildExportPlan(dir.setVoiceEnhance(enhanced, false), resolveMedia, "/o.mp4").filterComplex === offPlan, "sound: toggling voice enhance off is byte-identical");
+  assert(onPlan.includes("volume='if(lt(t"), "sound: the duck exports as a volume expression");
+  const argsB = await encode("talk", enhanced);
+  for (const f of ["highpass=f=80", "acompressor=", "equalizer=f=3200", "deesser=", "alimiter="]) assert(argsB.includes(f), `sound: export must run ${f}`);
+
+  // (C) Duck is AUDIBLE in the export: music only (silent footage) + a caption.
+  let duckDoc = parseEditDoc({
+    version: 1,
+    meta: { title: "duck", width: 640, height: 360, fps: 30 },
+    media: [{ id: "mute", kind: "video", src: mute, durationSec: 8, hasAudio: false }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "c", kind: "video", mediaId: "mute", start: 0, duration: 8 }] },
+      { id: "captions", kind: "visual", clips: [{ id: "k", kind: "text", start: 3, duration: 2, text: "talking", transform: { x: 320, y: 300 } }] },
+    ],
+  });
+  duckDoc = dir.autoDuck(dir.generateMusic(duckDoc, { mood: "ambient" }), { depthDb: -18 }).doc;
+  await encode("duck", duckDoc);
+  const pcm = spawnSync(bin, ["-hide_banner", "-i", resolve(encDir, "sound-out-duck.mp4"), "-vn", "-ac", "1", "-ar", "22050", "-f", "f32le", "pipe:1"], { maxBuffer: 64 * 1024 * 1024 });
+  assert(pcm.status === 0, "sound: decode the exported audio");
+  const buf = pcm.stdout as Buffer;
+  const samples = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+  const rmsDb = (a: number, b: number): number => {
+    let s = 0;
+    const i0 = Math.floor(a * 22050);
+    const i1 = Math.floor(b * 22050);
+    for (let i = i0; i < i1; i++) s += samples[i]! * samples[i]!;
+    return 10 * Math.log10(s / Math.max(1, i1 - i0) + 1e-12);
+  };
+  const under = rmsDb(3.4, 4.6);
+  const between = rmsDb(6.2, 7.2);
+  assert(between - under >= 10, `sound: the music must duck under speech in the export (${between.toFixed(1)} vs ${under.toFixed(1)} dB)`);
+
+  // (D) Photos → generated corporate bed → cut to the beat → punchy auto-SFX.
+  let show = parseEditDoc({
+    version: 1,
+    meta: { title: "show", width: 640, height: 360, fps: 30 },
+    media: [0, 1, 2].map((i) => ({ id: `ph${i}`, kind: "image", src: photo, width: 640, height: 360 })),
+    tracks: [
+      { id: "photos", kind: "visual", clips: [0, 1, 2].map((i) => ({ id: `p${i}`, kind: "image", mediaId: `ph${i}`, start: i * 2.6, duration: 3.2, transitionInSec: i ? 0.6 : 0 })) },
+      { id: "titles", kind: "visual", clips: [{ id: "t", kind: "text", start: 0, duration: 2, text: "Beat", transform: { x: 320, y: 180 } }] },
+    ],
+  });
+  show = dir.generateMusic(show, { mood: "corporate" });
+  show = dir.beatSync(show).doc;
+  const grid = dir.musicBeatTimes(show);
+  for (const c of show.tracks.find((t) => t.id === "photos")!.clips.slice(1)) {
+    const cut = c.start + (c.kind === "image" ? c.transitionInSec : 0) / 2;
+    assert(grid.some((b) => Math.abs(b - cut) < 2e-3), `sound: beat-synced cut ${cut} must land on a beat`);
+  }
+  const sfx = dir.autoSfx(show, { style: "punchy" });
+  assert(sfx.events.some((e) => e.kind === "whoosh") && sfx.events.some((e) => e.kind === "boom"), "sound: punchy auto-SFX = whooshes + a boom");
+  await encode("beat", sfx.doc);
+
+  console.log(
+    `  \x1b[32m✔\x1b[0m check 67 (sound made easy): 5 moods + 6 SFX healthy at 44.1 kHz (peak −3 dBFS, 0 clipped, |DC| < 2e-3, silent tail; ${stats.join(", ")}); real encodes — generated lo-fi + smart duck + whoosh/ding + VOICE ENHANCE (highpass→acompressor→EQ→deesser→alimiter on speech + VO only; off byte-identical); duck audible in the decoded export (${(between - under).toFixed(1)} dB dip under the caption); photos cut to the beat (${grid.length}-beat grid) + punchy auto-SFX (${sfx.events.length} events)`,
+  );
+}
+
 async function checkRealEncode(): Promise<void> {
   const info = await detectFfmpeg();
   if (!info.available) {
@@ -3801,6 +3952,7 @@ async function main(): Promise<void> {
   await checkTransformKeyframes();
   await checkTextAnimEngine();
   await checkTextVideoExportParity();
+  await checkSoundMadeEasy();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

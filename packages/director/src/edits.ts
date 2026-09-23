@@ -48,6 +48,7 @@ export const OVERLAY_TRACK_IDS = new Set([
   "demo-text",
   "adjustments",
   "shapes",
+  "sfx",
 ]);
 /**
  * A "main" (magnetic) visual track carries the primary footage/photos and

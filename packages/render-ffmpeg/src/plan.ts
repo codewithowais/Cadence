@@ -781,10 +781,38 @@ export function panFilter(pan: number): string | null {
 }
 
 /**
+ * One-click VOICE ENHANCE (doc.voiceEnhance) — a broadcast-style voice chain,
+ * every filter + option name read from the bundled binary (`ffmpeg -h filter=…`,
+ * ffmpeg 6.0) and proven in a real encode (verify check 67):
+ *  - highpass f=80        — rumble / handling noise / plosive thump out;
+ *  - acompressor          — threshold 0.1 (≈ −20 dBFS, LINEAR per the option
+ *                           range 0.00098..1), ratio 3, attack 10 ms, release
+ *                           120 ms, makeup 1.8 (≈ +5 dB): even, present level;
+ *  - equalizer 250 Hz −2 dB (q 1.0) — boxy "mud" cut;
+ *  - equalizer 3.2 kHz +3 dB (q 1.2) — presence / intelligibility lift;
+ *  - deesser i=0.4        — tames the sibilance the presence lift exaggerates;
+ *  - alimiter limit=0.95 level=false — a safety ceiling, no auto-leveling.
+ * Applied to VOICE only (the base video audio + the "voiceover" track), never
+ * to music/SFX. Faithful: tone + dynamics only, no content change.
+ */
+const VOICE_ENHANCE_CHAIN = [
+  "highpass=f=80",
+  "acompressor=threshold=0.1:ratio=3:attack=10:release=120:makeup=1.8",
+  "equalizer=f=250:t=q:w=1:g=-2",
+  "equalizer=f=3200:t=q:w=1.2:g=3",
+  "deesser=i=0.4:m=0.5:f=0.5",
+  "alimiter=limit=0.95:level=false",
+] as const;
+
+/**
  * `afade` in/out segments over an audio clip of `segDur` seconds. Fade-in ramps
  * from the head; fade-out ends at the tail. Options t/st/d verified against
  * ffmpeg-filters.html. Empty when there are no fades. Faithful: levels only.
  */
+export function voiceEnhanceFilters(): string[] {
+  return [...VOICE_ENHANCE_CHAIN];
+}
+
 export function afadeFilters(fadeIn: number, fadeOut: number, segDur: number): string[] {
   const out: string[] = [];
   if (fadeIn > 0) out.push(`afade=t=in:st=0:d=${r3(fadeIn)}`);
@@ -1818,6 +1846,14 @@ export function buildExportPlan(
     audioLabel = null;
   }
 
+  // ---- Voice enhance on the base video's own audio (the speech) ------------
+  // Gated on `doc.voiceEnhance` AND a live base-audio label, so it's a
+  // byte-identical no-op when off / audioless. Music & SFX are mixed in AFTER.
+  if (audioLabel && doc.voiceEnhance) {
+    filters.push(`[${audioLabel}]${voiceEnhanceFilters().join(",")}[avox]`);
+    audioLabel = "avox";
+  }
+
   // ---- Extra audio-track clips (e.g. music), delayed + mixed --------------
   const audioClips = collectAudioClips(doc);
   const extraAudioLabels: string[] = [];
@@ -1850,6 +1886,7 @@ export function buildExportPlan(
     // apply in clip-local time BEFORE the adelay that places it on the timeline.
     const chain = [
       "asetpts=PTS-STARTPTS",
+      ...(doc.voiceEnhance && trackId === "voiceover" ? voiceEnhanceFilters() : []),
       keyframeVolumeFilter(clip),
       ...(pan ? [pan] : []),
       ...afadeFilters(clip.fadeInSec, clip.fadeOutSec, clip.duration),

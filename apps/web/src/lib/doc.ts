@@ -10,7 +10,7 @@ const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.m
  * remove treat these differently — they are never re-laid as a sequence. Kept in
  * sync with @cadence/director's OVERLAY_TRACK_IDS (plus "voiceover").
  */
-const OVERLAY_TRACK_IDS = new Set(["titles", "captions", "broll", "fades", "music", "voiceover"]);
+const OVERLAY_TRACK_IDS = new Set(["titles", "captions", "broll", "fades", "music", "voiceover", "sfx"]);
 const isMainVisualTrack = (id: string): boolean => !OVERLAY_TRACK_IDS.has(id);
 
 /** An empty but valid project. */

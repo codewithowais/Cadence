@@ -67,6 +67,17 @@ import {
   type ToolCall,
 } from "./tools";
 import { currentGrade } from "./edits";
+import {
+  addSfxTool,
+  autoDuckTool,
+  autoSfxTool,
+  beatSyncTool,
+  enhanceVoiceTool,
+  generateMusicTool,
+} from "./tools";
+import { speechRegions } from "./audio";
+import { isSynthSrc } from "./sound-synth";
+import type { MusicMood, SfxKind } from "./sound-synth";
 import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle, TranscriptEditMode, TranscriptEditUnit } from "./edits";
 import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
 import type { BlendMode, CurvePoint, KeyframeEasing, KeyframeProp } from "@cadence/core";
@@ -774,6 +785,67 @@ function parseLoudness(req: string): boolean {
   return /loudnorm|loudness|normali[sz]e (the )?(audio|loudness|sound|mix)|\blufs\b/.test(req);
 }
 
+// ---- Sound made easy parsers ----------------------------------------------------
+
+const MOOD_WORDS: [RegExp, MusicMood][] = [
+  [/\blo-?fi\b|\bchill|relax|laid.?back|study/, "lofi"],
+  [/\bcinematic|\bepic\b|dramatic|trailer|orchestral|heroic/, "cinematic"],
+  [/corporate|business|inspir|uplifting|motivational|\btech\b|presentation/, "corporate"],
+  [/ambient|\bcalm|peaceful|meditat|dreamy|atmospheric|soothing/, "ambient"],
+  [/upbeat|happy|energetic|\bpop\b|dance|\bfun\b|party|bright|hype/, "upbeat"],
+];
+
+/**
+ * A request for GENERATED (royalty-free) music: explicit ("generate / compose
+ * music", "royalty-free", "make a beat"), a mood + music word ("chill music",
+ * "cinematic soundtrack"), or plain "add music" when no audio was uploaded.
+ */
+function parseGenerateMusic(req: string, hasUploadedAudio: boolean): { mood?: MusicMood; bpm?: number } | null {
+  const musicWord = /\b(?:music|soundtrack|song|score|tune|bgm|background track)\b/.test(req);
+  const explicit =
+    /\b(?:generate|compose|synth(?:esi[sz]e)?|create|write|make)\b[^.;]*\b(?:music|soundtrack|song|score|tune|bgm)\b|royalty.?free|copyright.?free|no.?copyright|original (?:music|soundtrack|score)|\b(?:make|generate|compose|create) (?:me )?(?:a|some) (?:[\w-]+ )?beat\b/.test(req);
+  const mood = MOOD_WORDS.find(([re]) => re.test(req))?.[1];
+  const wants = explicit || (musicWord && !!mood) || (musicWord && !hasUploadedAudio);
+  if (!wants) return null;
+  if (/\b(?:remove|delete|mute|no|without) (?:the )?(?:background )?music\b/.test(req)) return null;
+  const bpm = req.match(/(\d{2,3})\s*bpm/);
+  return { ...(mood ? { mood } : {}), ...(bpm ? { bpm: Number(bpm[1]) } : {}) };
+}
+
+/** "add sound effects" / "sfx on every cut" → auto; "add a whoosh at 3s" → one. */
+function parseSfx(req: string): { auto: { style: "subtle" | "punchy" } } | { one: { kind: SfxKind; atSec: number } } | null {
+  const one = req.match(/\b(?:add|put|drop|insert|play)\b[^.]*?\b(whoosh|swoosh|pop|click|ding|chime|riser|boom)\b(?!.?(?:in|up|out)\b)/);
+  if (one && /\b(?:whoosh|swoosh|pop|click|ding|chime|riser|boom)\b(?: sound| sfx| effect|\s+at\b|$|[.,!])/.test(req)) {
+    const map: Record<string, SfxKind> = { swoosh: "whoosh", chime: "ding" };
+    const kind = (map[one[1]!] ?? one[1]) as SfxKind;
+    const at = req.match(/\bat (\d+(?:\.\d+)?)\s*(?:s|sec|secs|seconds?)\b/);
+    return { one: { kind, atSec: at ? Number(at[1]) : 0 } };
+  }
+  if (/sound ?effects?|\bsfx\b|sound.?design|whooshes|swooshes/.test(req) && !/(?:remove|delete|no) (?:the )?(?:sound effects?|sfx)/.test(req)) {
+    return { auto: { style: /punchy|dramatic|\bbig\b|bold|hype|more|lots|intense/.test(req) ? "punchy" : "subtle" } };
+  }
+  return null;
+}
+
+/** "duck the music under my voice", "music lower when I talk", "-18 dB duck". */
+function parseDuck(req: string): { depthDb?: number } | null {
+  if (!/\bduck(?:ing|ed)?\b|(?:lower|dip|drop|quieter)[^.]*music[^.]*(?:when|while|under)|music[^.]*(?:down|lower|quieter|softer)[^.]*(?:when|while|under)|under (?:the |my )?(?:voice|speech|narration|talking)/.test(req)) return null;
+  const db = req.match(/-?(\d{1,2})\s*db\b/);
+  return db ? { depthDb: -Math.abs(Number(db[1])) } : {};
+}
+
+/** "enhance my voice", "make the voice sound professional", "podcast sound", "de-ess". */
+function parseVoiceEnhance(req: string): boolean {
+  return /enhance (?:the |my )?(?:voice|vocals?|narration|dialogue|speech)|voice enhance|(?:improve|polish|boost|sweeten|fix) (?:the |my )?(?:voice|vocals?|narration|dialogue|speech)|(?:voice|vocals?|narration|dialogue) (?:sound )?(?:better|clearer|crisp(?:er)?|professional|richer)|podcast (?:voice|sound|quality)|broadcast (?:voice|sound|quality)|radio voice|\bde-?ess/.test(req);
+}
+
+/** "cut to the beat", "sync the photos to the music", "change scenes on every bar". */
+function parseBeatSync(req: string): { every: "beat" | "bar" } | null {
+  if (/detect (?:the )?beats?/.test(req)) return null;
+  if (!/beat.?sync|(?:on|to) the (?:beat|rhythm)|(?:cut|sync|time|match|snap|land|change|switch)[^.]*\b(?:to|on|with) (?:the |every |each )?(?:beats?|rhythm|music|bars?)\b/.test(req)) return null;
+  return { every: /\bbars?\b/.test(req) ? "bar" : "beat" };
+}
+
 /** Extract a phrase after a "say/mention/about/…" keyword (case preserved from original). */
 function extractSpokenPhrase(original: string): string | undefined {
   const m = original.match(
@@ -1245,12 +1317,40 @@ export class StubDirector {
       });
     }
 
+    // Generated (royalty-free) music — "chill music", "compose a soundtrack", or
+    // plain "add music" when nothing was uploaded. Wins over add_music.
+    const hasUploadedAudio = project.media.some((m) => m.kind === "audio" && !isSynthSrc(m.src));
+    const genMusic = parseGenerateMusic(req, hasUploadedAudio);
     // Background music (added before auto-mix so ducking applies to it).
-    if (/\bmusic\b|background (track|music|song)|soundtrack|\bsong\b|add (a )?track|score it/.test(req)) {
+    if (!genMusic && /\bmusic\b|background (track|music|song)|soundtrack|\bsong\b|add (a )?track|score it/.test(req)) {
       steps.push({
         run: (p) => musicTool.execute({}, { project: p }),
         call: { name: musicTool.name, input: {} },
       });
+    }
+
+    if (genMusic) {
+      const input = genMusic;
+      steps.push({
+        run: (p) => generateMusicTool.execute(input, { project: p }),
+        call: { name: generateMusicTool.name, input },
+      });
+    }
+    // Cut to the beat (after music exists), then sound effects on the new cuts.
+    const beatReq = parseBeatSync(req);
+    if (beatReq) {
+      steps.push({
+        run: (p) => beatSyncTool.execute(beatReq, { project: p }),
+        call: { name: beatSyncTool.name, input: beatReq },
+      });
+    }
+    const sfxReq = parseSfx(req);
+    if (sfxReq && "auto" in sfxReq) {
+      const input = sfxReq.auto;
+      steps.push({ run: (p) => autoSfxTool.execute(input, { project: p }), call: { name: autoSfxTool.name, input } });
+    } else if (sfxReq) {
+      const input = sfxReq.one;
+      steps.push({ run: (p) => addSfxTool.execute(input, { project: p }), call: { name: addSfxTool.name, input } });
     }
 
     // TTS voice-over ("voice this over: '…'", "read this in a voice"). Money-gated:
@@ -1298,11 +1398,23 @@ export class StubDirector {
       });
     }
 
-    if (/auto.?mix|\bmix\b|level (the )?audio|balance (the )?audio|duck|louder|quieter|sound/.test(req)) {
+    // Smart ducking (keyframed, only under speech) when someone speaks; a plain
+    // "duck" with no speech source falls through to auto_mix below.
+    const duckReq = parseDuck(req);
+    const canSmartDuck =
+      !!duckReq && (speechRegions(project.doc).length > 0 || project.media.some((m) => m.kind === "video") || !!voiceover);
+    if (
+      !(canSmartDuck || (sfxReq && !/auto.?mix|\bmix\b|level (the )?audio|balance (the )?audio/.test(req))) &&
+      /auto.?mix|\bmix\b|level (the )?audio|balance (the )?audio|duck|louder|quieter|sound/.test(req)
+    ) {
       steps.push({
         run: (p) => autoMixTool.execute({}, { project: p }),
         call: { name: autoMixTool.name, input: {} },
       });
+    }
+    if (canSmartDuck && duckReq) {
+      const input = duckReq;
+      steps.push({ run: (p) => autoDuckTool.execute(input, { project: p }), call: { name: autoDuckTool.name, input } });
     }
 
     // Loudness normalization ("normalize the loudness", "hit -14 LUFS").
@@ -1312,6 +1424,11 @@ export class StubDirector {
         run: (p) => normalizeLoudnessTool.execute(input, { project: p }),
         call: { name: normalizeLoudnessTool.name, input },
       });
+    }
+
+    if (parseVoiceEnhance(req)) {
+      const input = { on: true };
+      steps.push({ run: (p) => enhanceVoiceTool.execute(input, { project: p }), call: { name: enhanceVoiceTool.name, input } });
     }
 
     const quality = parseQuality(req);
@@ -1332,8 +1449,18 @@ export class StubDirector {
         const input = { platform: plat };
         steps.push({ run: (p) => platformTool.execute(input, { project: p }), call: { name: platformTool.name, input } });
       }
-      if (/\b(?:music|song|soundtrack)\b/.test(textInstr) && project.media.some((m) => m.kind === "audio")) {
+      const tvGen = parseGenerateMusic(textInstr, project.media.some((m) => m.kind === "audio" && !isSynthSrc(m.src)));
+      if (tvGen) {
+        steps.push({ run: (p) => generateMusicTool.execute(tvGen, { project: p }), call: { name: generateMusicTool.name, input: tvGen } });
+      } else if (/\b(?:music|song|soundtrack)\b/.test(textInstr) && project.media.some((m) => m.kind === "audio")) {
         steps.push({ run: (p) => musicTool.execute({}, { project: p }), call: { name: musicTool.name, input: {} } });
+      }
+      const tvBeat = parseBeatSync(textInstr);
+      if (tvBeat) steps.push({ run: (p) => beatSyncTool.execute(tvBeat, { project: p }), call: { name: beatSyncTool.name, input: tvBeat } });
+      const tvSfx = parseSfx(textInstr);
+      if (tvSfx && "auto" in tvSfx) {
+        const input = tvSfx.auto;
+        steps.push({ run: (p) => autoSfxTool.execute(input, { project: p }), call: { name: autoSfxTool.name, input } });
       }
     }
     if (docHasText || textMode) {
