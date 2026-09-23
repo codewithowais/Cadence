@@ -32,6 +32,12 @@ import {
   mediaToPrune,
   parseDraft,
 } from "../apps/web/src/lib/autosave.ts";
+import {
+  buildProjectFile,
+  matchFilesToMissing,
+  parseProjectFile,
+  projectFileName,
+} from "../apps/web/src/lib/project-file.ts";
 
 // A real `-progress pipe:1` transcript captured from the bundled ffmpeg 6.0.
 const REAL_PROGRESS = [
@@ -253,4 +259,52 @@ test("autosave: media persist/prune sets and banner copy", () => {
   assert.equal(describeDraftAge(now - 3 * 3_600_000, now), "3 h ago");
   assert.equal(describeDraftAge(now - 30 * 3_600_000, now), "yesterday");
   assert.equal(draftSummary({ doc: footageDoc(), mediaList: [] }), "3 media files · 0:05");
+});
+
+// ---- project files -----------------------------------------------------------
+
+test("project file: envelope round-trips; plain edit-doc JSON opens too", () => {
+  const doc = footageDoc();
+  const extra = { id: "later", kind: "audio" as const, src: "vo.webm", label: "vo.webm" };
+  const file = buildProjectFile(doc, [extra], new Date("2026-09-01T00:00:00Z"));
+  assert.equal(file.format, "cadence.project");
+  assert.deepEqual(file.mediaList.map((m) => m.id), ["later", "a", "b", "unused"], "registry ∪ doc.media, de-duplicated");
+  const back = parseProjectFile(JSON.stringify(file));
+  assert.ok(back.ok);
+  assert.deepEqual(back.doc, doc);
+  assert.equal(back.mediaList.length, 4);
+  const legacy = parseProjectFile(JSON.stringify(doc));
+  assert.ok(legacy.ok, "an .editdoc.json from 'Duplicate as new' opens");
+  assert.equal(legacy.mediaList.length, 3);
+});
+
+test("project file: bad inputs give friendly errors, never throw", () => {
+  for (const [input, re] of [
+    ["{nope", /valid JSON/],
+    ["42", /isn't a Cadence project/],
+    [JSON.stringify({ hello: 1 }), /isn't a Cadence project/],
+    [JSON.stringify({ format: "cadence.project", version: 9, doc: {} }), /newer Cadence/],
+    [JSON.stringify({ format: "cadence.project", version: 1, doc: { tracks: 5 } }), /damaged/],
+  ] as const) {
+    const r = parseProjectFile(input);
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.error, re);
+  }
+  assert.equal(projectFileName("My trip / día 2"), "My-trip-día-2.cadence.json");
+  assert.equal(projectFileName(""), "cadence.cadence.json");
+});
+
+test("project file: re-link matches by name + kind, each asset once", () => {
+  const missing = footageDoc().media; // Beach.mp4 (video), Song.mp3 (audio), Leftover.mp4
+  const m = matchFilesToMissing(
+    [
+      { name: "song.MP3", type: "audio/mpeg" },
+      { name: "Beach.mp4", type: "video/mp4" },
+      { name: "Beach.mp4", type: "video/mp4" }, // duplicate → only one link
+      { name: "Leftover.mp4", type: "audio/mpeg" }, // wrong kind → no link
+      { name: "new-clip.mp4", type: "video/mp4" },
+    ],
+    missing,
+  );
+  assert.deepEqual([...m.entries()], [[0, "b"], [1, "a"]]);
 });

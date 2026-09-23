@@ -87,6 +87,7 @@ import { useAutosave } from "@/lib/use-autosave";
 import { SCRATCH_DRAFT_KEY } from "@/lib/autosave";
 import { RecoverDraftBanner } from "./RecoverDraftBanner";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { buildProjectFile, matchFilesToMissing, parseProjectFile, projectFileName } from "@/lib/project-file";
 import type { Message } from "@/lib/types";
 import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
 
@@ -230,6 +231,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // Mirror `files` in a ref: the `handleFiles(files)` param shadows the state.
   const filesRef = useRef(files);
   filesRef.current = files;
+  // Hidden picker behind "••• → Open project file…".
+  const projectInputRef = useRef<HTMLInputElement>(null);
   // Loaded-media lookups for the export pre-flight (stable per `files`).
   const exportPreflight = useMemo(
     () => ({ hasFile: (id: string) => !!files[id], fileBytes: (id: string) => files[id]?.size }),
@@ -419,7 +422,37 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     try { localStorage.setItem("cadence:roomH", String(roomHeight)); } catch { /* noop */ }
   }, [roomHeight]);
 
-  async function handleFiles(files: File[]) {
+  async function handleFiles(incoming: File[]) {
+    // RE-LINK first: a file whose name matches media the project references but
+    // has no File for (opened project file, restored draft whose bytes weren't
+    // kept, DB project) attaches to that media IN PLACE — no new project, no
+    // duplicate clips. Anything left over goes through the normal intake below.
+    const missingNow = projectMedia.filter((m) => !filesRef.current[m.id]);
+    let files = incoming;
+    if (missingNow.length) {
+      const matches = matchFilesToMissing(incoming, missingNow);
+      if (matches.size) {
+        const addUrls: Record<string, string> = {};
+        const addFiles: Record<string, File> = {};
+        const names: string[] = [];
+        for (const [i, id] of matches) {
+          const f = incoming[i]!;
+          addUrls[id] = URL.createObjectURL(f);
+          addFiles[id] = f;
+          names.push(`“${f.name}”`);
+        }
+        setUrls((u) => ({ ...u, ...addUrls }));
+        setFiles((f) => ({ ...f, ...addFiles }));
+        const still = missingNow.length - matches.size;
+        say(
+          "director",
+          `Re-linked ${names.join(", ")} to your project${still > 0 ? ` — ${still} more media file${still === 1 ? "" : "s"} still to add.` : " — everything's back in place."}`,
+          "edit",
+        );
+        files = incoming.filter((_, i) => !matches.has(i));
+        if (files.length === 0) return;
+      }
+    }
     const videos = files.filter((f) => f.type.startsWith("video"));
     const imgs = files.filter((f) => f.type.startsWith("image"));
     const audios = files.filter((f) => f.type.startsWith("audio"));
@@ -873,6 +906,50 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   /** Throw the autosaved session away (the banner's confirmed Discard). */
   async function discardSession() {
     await autosave.discard();
+  }
+
+  /** Download the project as a portable, versioned .cadence.json (recipe, not footage). */
+  function saveProjectFile() {
+    download(projectFileName(doc.meta.title), JSON.stringify(buildProjectFile(doc, mediaList), null, 2));
+    say("director", "Saved a project file — open it any time (••• → Open project file) and re-add the media to re-link it.", "info");
+  }
+
+  /** Open a .cadence.json (or plain edit-doc JSON) chosen in the hidden picker. */
+  async function openProjectFile(file: File) {
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      say("director", "Couldn't read that file.", "error");
+      return;
+    }
+    const parsed = parseProjectFile(text);
+    if (!parsed.ok) {
+      say("director", parsed.error, "error");
+      return;
+    }
+    if (hasContent && typeof window !== "undefined" && !window.confirm("Open this project? It replaces what's on the timeline now.")) return;
+    for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u);
+    setUrls({});
+    setFiles({});
+    setMediaList(parsed.mediaList);
+    setTranscripts({});
+    setPlaying(false);
+    setTimeSec(0);
+    setSelectedClipId(null);
+    reset(parsed.doc);
+    const need = parsed.mediaList.length;
+    say(
+      "director",
+      `Opened “${parsed.doc.meta.title || "Untitled"}”.` +
+        (need
+          ? ` Add its ${need} media file${need === 1 ? "" : "s"} (${parsed.mediaList
+              .slice(0, 4)
+              .map((m) => `“${m.label ?? m.src}”`)
+              .join(", ")}${need > 4 ? ", …" : ""}) and I'll re-link them by name.`
+          : ""),
+      "info",
+    );
   }
 
   /** Download the current edit-doc as a portable JSON copy (a new project seed). */
@@ -1649,6 +1726,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onCancelExport={exporting ? cancelExport : undefined}
           exportPreflight={exportPreflight}
           autosave={autosaveChip}
+          onSaveProjectFile={saveProjectFile}
+          onOpenProjectFile={() => projectInputRef.current?.click()}
         />
         <AppliedStatus doc={doc} hasMedia={hasMedia || hasContent} />
         {/* Portrait projects (9:16 / 4:5) dock the room panel BESIDE the preview on
@@ -1840,6 +1919,19 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       )}
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <UndoToast toast={toast} onUndo={undo} onDismiss={() => setToast(null)} />
+      {/* Last in DOM order on purpose: never the "first file input" media intake. */}
+      <input
+        ref={projectInputRef}
+        type="file"
+        accept=".json,.cadence.json,application/json"
+        aria-label="Open project file"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = "";
+          if (f) void openProjectFile(f);
+        }}
+      />
     </div>
   );
 }

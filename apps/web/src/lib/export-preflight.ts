@@ -96,7 +96,7 @@ export function preflightExport(doc: EditDoc, input: PreflightInput): PreflightR
       level: "error",
       code: "missing-media",
       message:
-        `${missing.length === 1 ? "A clip's" : `${missing.length} clips'`} media isn't loaded: ${names(missing)}. ` +
+        `${missing.length === 1 ? "A media file isn't" : `${missing.length} media files aren't`} loaded: ${names(missing)}. ` +
         `Add the same file${missing.length === 1 ? "" : "s"} again (Media room or drag-drop) — it re-links in place.`,
     });
   }

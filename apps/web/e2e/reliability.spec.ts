@@ -85,7 +85,7 @@ test("autosave: refresh → restore session brings back the edit AND the media",
   await page.getByRole("button", { name: "Export", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Export options" });
   await expect(dialog.getByRole("button", { name: "Export .mp4" })).toBeEnabled();
-  await expect(dialog.getByText(/isn't loaded/)).toHaveCount(0);
+  await expect(dialog.getByText(/n't loaded/)).toHaveCount(0);
   await page.keyboard.press("Escape");
   await shot(page, "03-restored");
 
@@ -159,6 +159,62 @@ test("export: Cancel stops the render (server-side ffmpeg is killed)", async ({ 
   // The encode must not keep burning CPU after the user said stop.
   await expect.poll(() => exportFfmpegRunning(), { timeout: 5_000 }).not.toBe(true);
   await shot(page, "05-cancelled");
+});
+
+test("project file: save .cadence.json → start over → open it → re-link media by name", async ({ page }) => {
+  await page.goto(EDITOR_URL);
+  await page.waitForLoadState("networkidle");
+  page.on("dialog", (d) => void d.accept()); // "Start over?" / "Open this project?"
+
+  await page.locator('input[type="file"]').first().setInputFiles(fixtures.photoPaths);
+  await expect(page.getByLabel("Applied edits")).toContainText("Cuts", { timeout: 60_000 });
+  await rename(page, "Round trip");
+
+  // Save the project file.
+  await page.getByRole("button", { name: "More actions" }).click();
+  const [saved] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("menuitem", { name: "Save project file" }).click(),
+  ]);
+  expect(saved.suggestedFilename()).toBe("Round-trip.cadence.json");
+  const projectPath = resolve(DIR, "Round-trip.cadence.json");
+  await saved.saveAs(projectPath);
+  const json = JSON.parse(readFileSync(projectPath, "utf8"));
+  expect(json.format).toBe("cadence.project");
+  expect(json.doc.meta.title).toBe("Round trip");
+  expect(json.mediaList).toHaveLength(4);
+
+  // Wipe the editor, then open the file.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Start over" }).click();
+  await expect(page.getByRole("button", { name: "Start with text" })).toBeVisible();
+  await page.getByRole("button", { name: "More actions" }).click();
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("menuitem", { name: "Open project file…" }).click(),
+  ]);
+  await chooser.setFiles(projectPath);
+  await expect(page.getByTitle("Rename project")).toContainText("Round trip");
+  await expect(page.getByText(/Opened “Round trip”/).first()).toBeVisible();
+
+  // Pre-flight explains exactly what's missing and blocks the export.
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Export options" });
+  await expect(dialog.getByText(/n't loaded/)).toBeVisible();
+  await expect(dialog.getByText(/photo-1\.png/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Export .mp4" })).toBeDisabled();
+  await shot(page, "07-preflight-missing");
+  await page.keyboard.press("Escape");
+
+  // Adding the same files re-links them in place (no new slideshow is built).
+  await page.locator('input[type="file"]').first().setInputFiles(fixtures.photoPaths);
+  await expect(page.getByText(/everything's back in place/).first()).toBeVisible();
+  await expect(page.getByTitle("Rename project")).toContainText("Round trip");
+  await expect(page.locator("img[src^='blob:']").first()).toBeVisible();
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Export .mp4" })).toBeEnabled();
+  await expect(dialog.getByText(/n't loaded/)).toHaveCount(0);
+  await page.keyboard.press("Escape");
 });
 
 test("error boundary: a crashing panel shows a recover card, the editor keeps working", async ({ page }) => {
