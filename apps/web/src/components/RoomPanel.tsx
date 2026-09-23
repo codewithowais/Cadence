@@ -65,6 +65,7 @@ import {
 import { captionsToSrt, hasCaptions } from "@/lib/srt";
 import { renderFrameBlob, uploadMedia } from "@/lib/api";
 import { VoiceOverRecorder } from "./VoiceOverRecorder";
+import { SoundPanel } from "./SoundPanel";
 import { TranscriptRoom } from "./TranscriptRoom";
 import { DemoRoom } from "./DemoRoom";
 import type { Transcript } from "@cadence/understanding";
@@ -367,6 +368,8 @@ export function RoomPanel(props: RoomPanelProps) {
         onSplitAtBeats={onSplitAtBeats}
         canDetectBeats={canDetectBeats}
         markerCount={markerCount}
+        urls={urls}
+        timeSec={timeSec}
       />
     );
   }
@@ -2151,6 +2154,8 @@ function AudioRoom({
   onSplitAtBeats,
   canDetectBeats,
   markerCount,
+  urls,
+  timeSec,
 }: {
   doc: EditDoc;
   mediaList: MediaAsset[];
@@ -2167,6 +2172,8 @@ function AudioRoom({
   onSplitAtBeats?: () => void;
   canDetectBeats?: boolean;
   markerCount?: number;
+  urls: Record<string, string>;
+  timeSec: number;
 }) {
   const hasAudioMedia = mediaList.some((m) => m.kind === "audio");
   const musicClip = doc.tracks.find((t) => t.id === "music")?.clips.find((c): c is AudioClip => c.kind === "audio");
@@ -2285,6 +2292,9 @@ function AudioRoom({
           Reduces background hiss/hum on export — the preview is unchanged.
         </span>
       </Row>
+
+      {/* Sound made easy: generated music, SFX, smart duck, voice enhance, beat sync, meters */}
+      <SoundPanel doc={doc} busy={busy} timeSec={timeSec} urls={urls} onApplyDoc={onApplyDoc} />
 
       <span className="text-[11px] text-faint">Music, voice-over, fades, pan &amp; the normalized mix render on export.</span>
       {hiddenInput}

@@ -1797,7 +1797,7 @@ export const generateMusicTool: DirectorTool<{ mood?: MusicMood; bpm?: number; d
     return commit(
       ctx.project,
       doc,
-      `Composed a ${MOOD_DEFS[mood].label.toLowerCase()} bed (${g ? `${Math.round(g.arrangement.bpm)} BPM, ${g.arrangement.bars} bars, ` : ""}${Math.round(g?.recipe.durationSec ?? 0)}s) fitted to your video — royalty-free, made on your machine. You'll hear it in the preview and the export.`,
+      `Composed ${/^[aeiou]/i.test(MOOD_DEFS[mood].label) ? "an" : "a"} ${MOOD_DEFS[mood].label.toLowerCase()} bed (${g ? `${Math.round(g.arrangement.bpm)} BPM, ${g.arrangement.bars} bars, ` : ""}${Math.round(g?.recipe.durationSec ?? 0)}s) fitted to your video — royalty-free, made on your machine. You'll hear it in the preview and the export.`,
     );
   },
 };
