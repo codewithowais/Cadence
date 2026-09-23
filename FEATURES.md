@@ -69,6 +69,22 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - ✅ **Exports exactly as previewed** — media-less docs render every frame through the shared canvas; animated titles over footage export as frame sequences (no more frozen text).
 - ✅ **Text-video templates** in New project (Announcement, Quote, Tips list, Neon promo) + landing prompt chips.
 
+## 3c. Cycle I — specialist agent waves (details in `docs/agents/*.md`)
+**Editing speed & timeline craft** (Senior Video Editor)
+- ✅ J/K/L shuttle (2×/4×, reverse), frame step `,` `.` (⇧ = 10), ↑/↓ cut-to-cut, I/O in/out range → **Remove range** / **Keep only range**, snapping toggle `N` with a snap guide, visible + closable **gaps**, multi-select (⇧/⌘-click, marquee, ⌘A) with group delete/duplicate/nudge, **copy/paste attributes** (⌘⇧C/⌘⇧V), **Split all tracks** (⇧S), speed presets 0.5–2×, **Freeze frame** (`F`). Tools: `split_all_tracks`, `close_gaps`, `cut_range`, `hold_frame`, `retime_clip`. Preview now honors speed/freeze/reverse.
+
+**Graphics, overlays & social elements** (Motion Designer)
+- ✅ Design → Graphics: 34 animated presets — social CTAs (Subscribe with bell, Like, Follow, Link in bio, Swipe up, Comment), countdowns/timers/count-ups, progress bars/story segments/percent ring, 6 lower-third styles, stickers & hand-drawn annotations. Shape motion engine (13 intros, 10 exits, 9 loops) for any shape. Tools: `add_graphic`, `add_lower_third`, `add_progress_bar`, `add_countdown`, `edit_graphic`, `animate_shape`. Preview == export (verify check 68).
+
+**Sound made easy** (Audio Engineer)
+- ✅ Royalty-free **music generator** (5 moods, bar-fitted to the video, rendered locally), procedural **SFX** + **auto-SFX**, **smart ducking** under speech, 🎬 **voice enhance** (export), **beat sync** for slideshows/text videos, **level meters**. Tools: `generate_music`, `add_sfx`, `auto_sfx`, `auto_duck`, `enhance_voice`, `beat_sync` (verify check 67).
+
+**First-run ease & discoverability** (Product Manager)
+- ✅ **⌘K command palette**, self-ticking **Getting started checklist**, **next-step chips** after each edit, **"What can I say?" prompt library** (66 ideas), ↑/↓ **recent prompts**, friendlier "didn't understand" with closest-match chips.
+
+**Reliability, speed & trust** (CTO)
+- ✅ Live **export progress** (% + ETA + phase) with real server-side **cancel**, export **pre-flight** checks, **autosave + crash recovery** (doc + media in IndexedDB) for the scratch editor, panel **error boundaries**, **.cadence.json project files** with media re-link, playback perf (idle panels skip frames). Verify check 69.
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

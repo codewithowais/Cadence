@@ -4,6 +4,17 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S6.1 — Cycle I: five specialist agents (parallel worktrees, merged + integrated)
+- **Senior Video Editor** — JKL/frame-step/in-out range, snapping, gaps, multi-select, paste attributes, split all, speed presets, freeze; 5 tools.
+- **Motion Designer** — 34 animated graphics presets (CTAs, countdowns, progress, lower thirds, stickers) + shape motion engine; 6 tools.
+- **Audio Engineer** — music generator, SFX/auto-SFX, smart duck, voice enhance, beat sync, meters; 6 tools.
+- **Product Manager** — ⌘K palette, onboarding checklist, next-step chips, prompt library, recent prompts, did-you-mean.
+- **CTO** — export progress/ETA/cancel, pre-flight, autosave + recovery, error boundaries, project files, playback perf.
+- **Integration fixes** (found by the combined gates): memoized checklist element so the chat rail skips playback frames again; empty-project Director keeps any result that creates content (graphics work with no media); J/K/L shuttle no longer cancels itself at 0:00 (negative first rAF delta) or on a slow frame; order-independent registry test.
+- **Landing**: catalog grows to 75 plain-language features (new Graphics group; sound, editing, workflow and export additions).
+- *verified:* typecheck (root+web) · unit **162/162** · verify **70/70** (checks 67 sound · 68 graphics · 69 export progress · 70 editing craft) · evals **6/6** · `next build` · Playwright e2e **41/41**.
+
+
 ### S5.1 — Cycle H: Text videos (Canva parity) + mature text
 - **Shared draw module** (`core/draw.ts`, structural `Ctx2D`): text/solid/shape/callout/cursor/VFX drawing now runs identically in the browser preview, the Skia renderer, and export. All 61 legacy verify frames byte-identical.
 - **Text animation engine** (`core/text-anim.ts`): 16 new intros (fade, rise, drop, slide, zoom-in, stomp, blur-in, wipe, baseline, tumble, spin, flip, neon, glitch, scramble) × whole/line/word/letter staggering + delay; 10 exits; 7 loops. Legacy kinetic/pop/bounce equal `textKinetic` exactly.

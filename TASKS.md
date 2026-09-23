@@ -10,6 +10,12 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
   - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
 
+## Cycle I — specialist agent waves — ✅ COMPLETE
+
+Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*
+
+- ⬜ **Known limitations carried forward:** shuttle ≠1× is silent; group drag with the mouse; graphics words edited in the Graphics panel (not the Text room); no color-emoji stickers in export; stereo pan not heard in preview; exporting before generated music finishes composing; autosave is scratch-editor only; progress stream untested behind Render's proxy; export z-order draws all text before shapes over footage (general fix belongs in render-ffmpeg/plan.ts).
+
 ## Cycle H — Text video (Canva parity) + mature text — ✅ COMPLETE
 
 Goal: make a video from text alone (no upload), Canva-style, with preview == export for every animation. Root gaps found: (1) the editor gates prompt/play/export on uploaded media; (2) the Stage draws text as a plain DOM span (ignores font/outline/shadow/box/wrap/typewriter/keyframes) and never draws solid clips; (3) export renders animated text FROZEN at rest and ignores solid backgrounds; (4) no script→scenes tool; (5) no way to edit an existing text clip.
