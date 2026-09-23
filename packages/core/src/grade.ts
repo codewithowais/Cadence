@@ -284,10 +284,12 @@ export function textKinetic(clip: TextClip, timeSec: number): KineticState {
   const a = clip.anim;
   // "typewriter" reveals characters over time (see typewriterText); it never
   // slides or scales, so it is identity for the kinetic transform.
-  if (a.style === "none" || a.style === "typewriter" || a.durationSec <= 0) {
+  // Only the three legacy motion styles move/scale here; every newer style is
+  // resolved by `textUnitState` (text-anim.ts), which reproduces these exactly.
+  if ((a.style !== "kinetic" && a.style !== "pop" && a.style !== "bounce") || a.durationSec <= 0) {
     return { dx: 0, dy: 0, scaleMul: 1 };
   }
-  const p = (timeSec - clip.start) / a.durationSec;
+  const p = (timeSec - clip.start - (a.delaySec ?? 0)) / a.durationSec;
   if (a.style === "pop") {
     // Scale overshoots past its resting 1 then settles; offsets follow the same curve.
     const e = easeOutBack(p);
@@ -671,7 +673,7 @@ export function typewriterText(clip: TextClip, timeSec: number): TypewriterState
   if (a.style !== "typewriter" || a.durationSec <= 0 || len === 0) {
     return { text: full, count: len, caretVisible: false, done: true };
   }
-  const p = clamp01((timeSec - clip.start) / a.durationSec);
+  const p = clamp01((timeSec - clip.start - (a.delaySec ?? 0)) / a.durationSec);
   // round() so the exact midpoint reveals ~half the string (a partial reveal).
   const count = Math.max(0, Math.min(len, Math.round(p * len)));
   const done = count >= len;

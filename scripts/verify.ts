@@ -57,6 +57,7 @@ import {
   TRANSITION_TYPES,
   TRANSITION_GROUPS,
   valueAt,
+  clipAnimatedWindows,
   toSrt,
   toVtt,
   formatTimestamp,
@@ -3171,6 +3172,56 @@ async function checkTransformKeyframes(): Promise<void> {
  * encodes cleanly on the bundled ffmpeg — the direct proof the user's captioned
  * export works. Text overlays are rendered per doc and threaded into buildExportPlan.
  */
+async function checkTextAnimEngine(): Promise<void> {
+  // A text-video-shaped doc: an animated aurora background + a per-letter "rise"
+  // title with a fade exit + a gradient-filled, neon-effect subtitle.
+  const doc = parseEditDoc({
+    version: 1,
+    meta: { title: "text engine", width: 1280, height: 720, fps: 30, background: "#000000" },
+    tracks: [
+      {
+        id: "bg",
+        kind: "visual",
+        clips: [
+          { id: "bg1", kind: "solid", start: 0, duration: 4, color: "#070b1d", gradient: { stops: ["#1a1446", "#7b2ff7", "#00c2ff"], motion: "aurora" }, pattern: { kind: "dots", opacity: 0.15 } },
+          { id: "bg2", kind: "solid", start: 4, duration: 3, color: "#101010", gradient: { stops: ["#ff9a9e", "#a18cd1"], angle: 120 } },
+        ],
+      },
+      {
+        id: "text",
+        kind: "visual",
+        clips: [
+          { id: "t1", kind: "text", start: 0.2, duration: 3.6, text: "Letters rise\ninto place", fontSize: 96, fontWeight: "bold", transform: { x: 640, y: 330 }, anim: { style: "rise", unit: "letter", durationSec: 1, exit: { style: "fade", durationSec: 0.5 } } },
+          { id: "t2", kind: "text", start: 4, duration: 3, text: "Glow", fontSize: 120, transform: { x: 640, y: 360 }, effect: { style: "neon", color: "#ff3df2" }, fillGradient: { stops: ["#ffffff", "#ffd1f5"], angle: 90 } },
+        ],
+      },
+    ],
+  });
+  const mid = await renderBytes(doc, 0.6);
+  const rest1 = await renderBytes(doc, 2.2);
+  assert(!mid.equals(rest1), "per-letter rise: mid-intro frame must differ from the settled frame");
+  // Static background + settled static text ⇒ identical frames.
+  const s1 = await renderBytes(doc, 5);
+  const s2 = await renderBytes(doc, 6);
+  assert(s1.equals(s2), "a static gradient + static text must render identical frames");
+  // Aurora animates continuously.
+  const a1 = await renderBytes(doc, 2.2);
+  const a2 = await renderBytes(doc, 3.0);
+  assert(!a1.equals(a2), "aurora background must move over time");
+  // Exit fades the title out by the clip end.
+  const exitLate = await renderBytes(doc, 3.78);
+  assert(!exitLate.equals(a2), "exit animation must change the frame");
+  // The resolver's animated windows drive the exporter's frame sequences.
+  const t1 = doc.tracks[1]!.clips[0] as TextClip;
+  const wins = clipAnimatedWindows(t1);
+  assert(wins.length === 2, `title should have intro+exit windows, got ${JSON.stringify(wins)}`);
+  await renderAndAssert(doc, 0.6, "verify-textanim-mid.png");
+  await renderAndAssert(doc, 5, "verify-textanim-neon.png");
+  console.log(
+    `  [32m✔[0m check 65 (text animation engine): per-letter rise mid≠rest, exit fades, aurora moves, static gradient+text frames identical; animated windows ${JSON.stringify(wins)}`,
+  );
+}
+
 async function checkRealEncode(): Promise<void> {
   const info = await detectFfmpeg();
   if (!info.available) {
@@ -3652,6 +3703,7 @@ async function main(): Promise<void> {
   await checkLutImport();
   await checkAdjustmentLayer();
   await checkTransformKeyframes();
+  await checkTextAnimEngine();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

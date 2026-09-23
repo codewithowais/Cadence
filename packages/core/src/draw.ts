@@ -20,12 +20,23 @@ import {
   cursorPositionAt,
   cursorRipples,
   fontWeightToCss,
-  textKinetic,
+  transitionMotion,
   transitionOpacity,
+  transitionSpec,
   typewriterText,
   valueAt,
+  type TransitionSpec,
 } from "./grade";
+import {
+  IDENTITY_UNIT_STATE,
+  exitProgress,
+  introProgress,
+  scrambleText,
+  textUnitState,
+} from "./text-anim";
 import type {
+  BackgroundGradient,
+  BackgroundPattern,
   CalloutClip,
   CaptionWord,
   CursorClip,
@@ -33,6 +44,7 @@ import type {
   ShapeClip,
   SolidClip,
   TextClip,
+  TextFillGradient,
   VideoClip,
   Vfx,
 } from "./schema";
@@ -342,74 +354,289 @@ function drawKaraokeLines(
 
 // ---- text ------------------------------------------------------------------
 
+/** Options for drawing into a canvas whose backing pixels ≠ composition pixels. */
+export interface DrawOpts {
+  /**
+   * Device pixels per composition pixel (1 for the node/export renderer). Canvas
+   * `shadowBlur`, shadow offsets, and `filter: blur()` are NOT scaled by the
+   * current transform, so a preview canvas drawn under a scale transform passes
+   * its scale here to keep blurs/shadows proportional (preview == export).
+   */
+  pxScale?: number;
+}
+
 /** The CSS/canvas `font` shorthand for a text clip (weight + optional italic). */
 export function textFont(clip: TextClip): string {
   const style = clip.italic ? "italic " : "";
   return `${style}${fontWeightToCss(clip.fontWeight)} ${clip.fontSize}px ${clip.fontFamily}`;
 }
 
+/** `#RRGGBB[AA]` → `rgba(r,g,b,a)` with the alpha multiplied by `mul`. */
+export function hexToRgba(hex: string, mul = 1): string {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16) || 0;
+  const g = parseInt(h.slice(2, 4), 16) || 0;
+  const b = parseInt(h.slice(4, 6), 16) || 0;
+  const a = h.length >= 8 ? (parseInt(h.slice(6, 8), 16) || 0) / 255 : 1;
+  return `rgba(${r},${g},${b},${Math.max(0, Math.min(1, a * mul)).toFixed(3)})`;
+}
+
+/** Linear mix of two `#RRGGBB` colors (t = 0 → a, 1 → b), as `#RRGGBB`. */
+export function mixHex(a: string, b: string, t: number): string {
+  const pa = a.replace("#", "");
+  const pb = b.replace("#", "");
+  const ch = (s: string, i: number): number => parseInt(s.slice(i, i + 2), 16) || 0;
+  const out = [0, 2, 4].map((i) => Math.round(ch(pa, i) + (ch(pb, i) - ch(pa, i)) * t));
+  return `#${out.map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** One positioned run of text (a line in whole mode, or one animation unit). */
+interface TextRun {
+  text: string;
+  x: number;
+  y: number;
+  align: "left" | "center" | "right";
+}
+
+/** Draw one run (fill or stroke), laying glyphs out by hand when letter-spaced. */
+function drawRun(ctx: Ctx2D, run: TextRun, ls: number, mode: "fill" | "stroke"): void {
+  if (ls === 0) {
+    ctx.textAlign = run.align;
+    if (mode === "fill") ctx.fillText(run.text, run.x, run.y);
+    else ctx.strokeText(run.text, run.x, run.y);
+    return;
+  }
+  const chars = [...run.text];
+  const widths = chars.map((c) => ctx.measureText(c).width);
+  const total = widths.reduce((a, b) => a + b, 0) + ls * Math.max(0, chars.length - 1);
+  let x = run.align === "center" ? run.x - total / 2 : run.align === "right" ? run.x - total : run.x;
+  const prevAlign = ctx.textAlign;
+  ctx.textAlign = "left";
+  for (let k = 0; k < chars.length; k++) {
+    if (mode === "fill") ctx.fillText(chars[k]!, x, run.y);
+    else ctx.strokeText(chars[k]!, x, run.y);
+    x += widths[k]! + ls;
+  }
+  ctx.textAlign = prevAlign;
+}
+
+/** The text block's bounding box in block-local coordinates (centered on y=0). */
+interface BlockBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Left edge of a line of width `w` for an alignment anchored at x=0. */
+const alignLeft = (align: "left" | "center" | "right", w: number): number =>
+  align === "center" ? -w / 2 : align === "right" ? -w : 0;
+
+/** A gradient fill spanning `block`, expressed relative to `origin` (the current translate). */
+function textGradient(
+  ctx: Ctx2D,
+  grad: TextFillGradient,
+  block: BlockBox,
+  origin: { x: number; y: number },
+): Gradient2D {
+  const th = degToRad(grad.angle);
+  const cx = block.x + block.w / 2 - origin.x;
+  const cy = block.y + block.h / 2 - origin.y;
+  const half = (Math.abs(block.w * Math.cos(th)) + Math.abs(block.h * Math.sin(th))) / 2 || 1;
+  const g = ctx.createLinearGradient(
+    cx - Math.cos(th) * half,
+    cy - Math.sin(th) * half,
+    cx + Math.cos(th) * half,
+    cy + Math.sin(th) * half,
+  );
+  const n = grad.stops.length;
+  grad.stops.forEach((c, i) => g.addColorStop(n === 1 ? 0 : i / (n - 1), c));
+  return g;
+}
+
+interface PaintFx {
+  block: BlockBox;
+  gradOrigin: { x: number; y: number };
+  /** 0..1 animation-driven RGB split (glitch intro). */
+  glitch: number;
+  px: number;
+}
+
 /**
- * Draw a text / caption / title clip at time `t`: keyframed transform, transition
- * opacity, kinetic intro, typewriter reveal, word-wrap, letter spacing, background
- * panel, outline, shadow, and karaoke highlighting.
+ * Paint a set of runs with the clip's full look: effect copies (echo / splice /
+ * glitch) behind, the outline, then the fill (solid or gradient) with its shadow,
+ * lift, or neon glow — or a hollow stroke. With no effect/gradient this issues the
+ * exact historical sequence (outline → shadow → fill).
  */
-export function drawText(ctx: Ctx2D, clip: TextClip, t: number): void {
-  // Keyframes (if any) override the static transform; opacity keyframes multiply
-  // the transition ramp — all resolved by the shared PURE valueAt helper.
-  const kfs = keyframeTransformState(clip, t);
-  const op = transitionOpacity(clip, t) * kfs.opacityMul;
-  if (op <= 0) return;
-  const kin = textKinetic(clip, t);
-  const effScale = kfs.scale * kin.scaleMul;
-  ctx.save();
-  ctx.translate(kfs.x + kin.dx, kfs.y + kin.dy);
-  if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
-  if (effScale !== 1) ctx.scale(effScale, effScale);
-  ctx.globalAlpha = op;
-  ctx.font = textFont(clip);
-  ctx.textAlign = clip.align;
-  ctx.textBaseline = "middle";
+function paintRuns(ctx: Ctx2D, clip: TextClip, runs: TextRun[], ls: number, fx: PaintFx): void {
+  const fs = clip.fontSize;
+  const eff = clip.effect && clip.effect.style !== "none" ? clip.effect : null;
+  const drawAll = (mode: "fill" | "stroke", dx = 0, dy = 0): void => {
+    for (const r of runs) drawRun(ctx, dx || dy ? { ...r, x: r.x + dx, y: r.y + dy } : r, ls, mode);
+  };
+  const baseAlpha = ctx.globalAlpha;
+  const dir = degToRad(eff?.direction ?? -45);
+  const dist = fs * 0.14 * (eff?.offset ?? 0.5);
+  const ox = Math.cos(dir) * dist;
+  const oy = -Math.sin(dir) * dist;
 
-  // Typewriter: reveal only the substring visible at this time (shared core
-  // helper), and optionally a blinking caret.
-  const tw = clip.anim.style === "typewriter" ? typewriterText(clip, t) : null;
-  const rawShown = tw ? tw.text + (tw.caretVisible ? "|" : "") : clip.text;
-  const upper = (s: string): string => (clip.uppercase ? s.toUpperCase() : s);
-  const shownText = upper(rawShown);
-  // Size the panel to the FULL text so it doesn't grow while typing.
-  const fullText = upper(tw ? clip.text : rawShown);
+  // ---- copies behind the text ----
+  if (eff?.style === "echo") {
+    const col = eff.color ?? clip.color;
+    const k = [0.5, 0.3, 0.15];
+    const strength = Math.min(1, 0.4 + eff.intensity * 1.2);
+    for (let i = 3; i >= 1; i--) {
+      ctx.globalAlpha = baseAlpha * k[i - 1]! * strength;
+      ctx.fillStyle = col;
+      drawAll("fill", ox * i, oy * i);
+    }
+    ctx.globalAlpha = baseAlpha;
+  }
+  if (eff?.style === "splice") {
+    ctx.fillStyle = eff.color ?? "#00d1ff";
+    drawAll("fill", ox, oy);
+  }
+  const effGlitch = eff?.style === "glitch" ? fs * 0.06 * (0.4 + eff.offset * 1.2) * (0.5 + eff.intensity) : 0;
+  const animGlitch = fx.glitch > 0 ? fs * 0.12 * fx.glitch : 0;
+  const gd = effGlitch + animGlitch;
+  if (gd > 0) {
+    ctx.globalAlpha = baseAlpha * 0.85;
+    ctx.fillStyle = "#00e5ff";
+    drawAll("fill", -gd, 0);
+    ctx.fillStyle = "#ff2bd6";
+    drawAll("fill", gd, 0);
+    ctx.globalAlpha = baseAlpha;
+  }
 
-  const ls = clip.letterSpacing ?? 0;
-  const lineStep = clip.fontSize * (clip.lineHeight ?? 1.2);
+  // ---- outline (under the fill) ----
+  if (clip.outline && clip.outline.width > 0) {
+    ctx.lineWidth = clip.outline.width * 2; // half sits under the fill → visible width
+    ctx.strokeStyle = clip.outline.color;
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 2;
+    drawAll("stroke");
+  }
 
-  // Karaoke: word-by-word highlight. Active only when enabled AND the clip carries
-  // per-word timings; otherwise every path below is byte-identical to a static
-  // caption.
-  const karaokeOn = !!(clip.karaoke?.enabled && clip.words && clip.words.length > 0);
-  const karaokeWords = karaokeOn ? clip.words! : [];
-  const karaokeSpace = ctx.measureText(" ").width + ls;
-  const karaokeLines = karaokeOn
-    ? wrapKaraokeTokens(ctx, karaokeWords.map((w) => upper(w.text)), karaokeSpace, clip.maxWidth)
-    : [];
-  const shownLines = karaokeOn
-    ? karaokeLines.map((l) => l.map((tk) => tk.text).join(" "))
-    : clip.maxWidth
-      ? wrapText(ctx, shownText, clip.maxWidth)
-      : [shownText];
-  const fullLines = karaokeOn
-    ? shownLines
-    : clip.maxWidth
-      ? wrapText(ctx, fullText, clip.maxWidth)
-      : [fullText];
+  const fill: unknown = clip.fillGradient ? textGradient(ctx, clip.fillGradient, fx.block, fx.gradOrigin) : clip.color;
 
-  // --- Background panel (pill / box). `box` supersedes the legacy `background`
-  // pill; with neither, nothing is drawn.
+  // ---- hollow / splice: stroke only ----
+  if (eff && (eff.style === "hollow" || eff.style === "splice")) {
+    ctx.lineWidth = Math.max(1, fs * (0.03 + 0.05 * eff.intensity));
+    ctx.strokeStyle = fill;
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 2;
+    drawAll("stroke");
+    return;
+  }
+
+  // ---- neon: colored glow + bright core ----
+  if (eff?.style === "neon") {
+    const glow = eff.color ?? clip.color;
+    ctx.shadowColor = glow;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    ctx.fillStyle = glow;
+    ctx.shadowBlur = fs * (0.2 + 0.5 * eff.intensity) * fx.px;
+    drawAll("fill");
+    ctx.shadowBlur = fs * (0.08 + 0.2 * eff.intensity) * fx.px;
+    drawAll("fill");
+    ctx.fillStyle = clip.fillGradient ? fill : mixHex(clip.color.slice(0, 7), "#ffffff", 0.65);
+    ctx.shadowBlur = fs * 0.05 * fx.px;
+    drawAll("fill");
+    return;
+  }
+
+  // ---- shadow / lift, then the fill ----
+  if (eff?.style === "lift") {
+    ctx.shadowColor = `rgba(0,0,0,${(0.25 + 0.5 * eff.intensity).toFixed(3)})`;
+    ctx.shadowBlur = fs * (0.15 + 0.35 * eff.intensity) * fx.px;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = fs * 0.08 * fx.px;
+  } else if (clip.shadow) {
+    ctx.shadowColor = clip.shadow.color;
+    ctx.shadowBlur = clip.shadow.blur * fx.px;
+    ctx.shadowOffsetX = clip.shadow.offsetX * fx.px;
+    ctx.shadowOffsetY = clip.shadow.offsetY * fx.px;
+  }
+  ctx.fillStyle = fill;
+  drawAll("fill");
+}
+
+/** A laid-out animation unit: its text and resting center/width in block space. */
+interface UnitBox {
+  text: string;
+  cx: number;
+  cy: number;
+  w: number;
+}
+
+/** Split `lines` into positioned animation units (line / word / letter). */
+function layoutUnits(
+  ctx: Ctx2D,
+  lines: string[],
+  unit: "line" | "word" | "letter",
+  lineStep: number,
+  ls: number,
+  align: "left" | "center" | "right",
+): UnitBox[] {
+  const out: UnitBox[] = [];
+  const n = lines.length;
+  lines.forEach((line, li) => {
+    const cy = (li - (n - 1) / 2) * lineStep;
+    if (unit === "line") {
+      const w = lineWidth(ctx, line, ls);
+      if (line.trim()) out.push({ text: line, cx: alignLeft(align, w) + w / 2, cy, w });
+      return;
+    }
+    if (unit === "word") {
+      const words = line.split(" ").filter((w) => w.length > 0);
+      const space = ctx.measureText(" ").width + ls;
+      const widths = words.map((w) => lineWidth(ctx, w, ls));
+      const total = widths.reduce((a, b) => a + b, 0) + space * Math.max(0, words.length - 1);
+      let x = alignLeft(align, total);
+      words.forEach((w, i) => {
+        out.push({ text: w, cx: x + widths[i]! / 2, cy, w: widths[i]! });
+        x += widths[i]! + space;
+      });
+      return;
+    }
+    const chars = [...line];
+    const adv = chars.map((c) => ctx.measureText(c).width);
+    const total = adv.reduce((a, b) => a + b, 0) + ls * Math.max(0, chars.length - 1);
+    let x = alignLeft(align, total);
+    chars.forEach((c, i) => {
+      if (!/\s/.test(c)) out.push({ text: c, cx: x + adv[i]! / 2, cy, w: adv[i]! });
+      x += adv[i]! + ls;
+    });
+  });
+  return out;
+}
+
+/** Block-level (panel / highlight) opacity while per-unit text animates in/out. */
+function blockAlpha(clip: TextClip, t: number): number {
+  const a = clip.anim;
+  let v = 1;
+  const moveOnly = a.style === "none" || a.style === "kinetic" || a.style === "pop" || a.style === "bounce";
+  if (!moveOnly && a.durationSec > 0) v *= Math.min(1, introProgress(clip, t, 0, 1) * 1.6);
+  if (a.exit.style !== "none") v *= 1 - exitProgress(clip, t, 0, 1);
+  return v;
+}
+
+/** Draw the background panel (pill / box) and the per-line highlight effect. */
+function paintPanels(
+  ctx: Ctx2D,
+  clip: TextClip,
+  lines: string[],
+  lineStep: number,
+  ls: number,
+  op: number,
+): void {
   const boxStyle = clip.box?.style ?? (clip.background ? "pill" : "none");
   if (boxStyle !== "none") {
     const padX = clip.box?.padX ?? clip.fontSize * 0.4;
     const padY = clip.box?.padY ?? clip.fontSize * 0.28;
-    const nFull = fullLines.length;
-    const widest = fullLines.reduce((m, l) => Math.max(m, lineWidth(ctx, l, ls)), 0);
+    const nFull = lines.length;
+    const widest = lines.reduce((m, l) => Math.max(m, lineWidth(ctx, l, ls)), 0);
     const w = widest + padX * 2;
     const h = (nFull - 1) * lineStep + clip.fontSize + padY * 2;
     const bx = clip.align === "center" ? -w / 2 : clip.align === "right" ? -w + padX : -padX;
@@ -424,31 +651,179 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number): void {
     ctx.fill();
     ctx.restore();
   }
+  const eff = clip.effect;
+  if (eff?.style === "highlight") {
+    const fs = clip.fontSize;
+    const n = lines.length;
+    ctx.save();
+    ctx.globalAlpha = op * (0.45 + 0.55 * eff.intensity);
+    ctx.fillStyle = eff.color ?? "#ffd54a";
+    lines.forEach((line, i) => {
+      if (!line.trim()) return;
+      const lw = lineWidth(ctx, line, ls);
+      const y = (i - (n - 1) / 2) * lineStep;
+      const h = fs * 1.08;
+      ctx.beginPath();
+      ctx.roundRect(alignLeft(clip.align, lw) - fs * 0.2, y - h / 2 + fs * 0.03, lw + fs * 0.4, h, h * 0.5 * eff.offset);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+}
 
-  // Stroked outline first (under the fill), for readability over busy footage.
-  if (clip.outline && clip.outline.width > 0) {
-    ctx.lineWidth = clip.outline.width * 2; // half sits under the fill → visible width
-    ctx.strokeStyle = clip.outline.color;
-    ctx.lineJoin = "round";
-    ctx.miterLimit = 2;
-    drawTextLines(ctx, shownLines, lineStep, ls, "stroke", clip.align);
+/**
+ * Draw a text / caption / title clip at time `t`: keyframed transform, transition
+ * opacity, the intro / loop / exit animation (whole block or staggered per line,
+ * word, or letter — see text-anim.ts), typewriter and scramble reveals, word-wrap
+ * (and explicit newlines), letter spacing, background panel, highlight, outline,
+ * shadow, text effects, gradient fill, and karaoke highlighting.
+ */
+export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts = {}): void {
+  const px = opts.pxScale ?? 1;
+  // Keyframes (if any) override the static transform; opacity keyframes multiply
+  // the transition ramp — all resolved by the shared PURE valueAt helper.
+  const kfs = keyframeTransformState(clip, t);
+  const op = transitionOpacity(clip, t) * kfs.opacityMul;
+  if (op <= 0) return;
+  const a = clip.anim;
+  const perUnit = a.unit !== "whole";
+  const whole = perUnit ? IDENTITY_UNIT_STATE : textUnitState(clip, t, 0, 1);
+  if (!whole.visible || whole.opacity <= 0) return;
+
+  ctx.save();
+  // Block transform. For the legacy styles this is exactly the historical
+  // translate(x+dx, y+dy) · rotate(kf) · scale(kf·kinetic) sequence.
+  const combine = whole.rotation === 0 && !whole.baselineMask;
+  ctx.translate(kfs.x + (whole.baselineMask ? 0 : whole.dx), kfs.y + (whole.baselineMask ? 0 : whole.dy));
+  if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
+  if (combine) {
+    const sx = kfs.scale * whole.scaleX;
+    const sy = kfs.scale * whole.scaleY;
+    if (sx !== 1 || sy !== 1) ctx.scale(sx, sy);
+  } else if (kfs.scale !== 1) {
+    ctx.scale(kfs.scale, kfs.scale);
+  }
+  ctx.globalAlpha = op * whole.opacity;
+  ctx.font = textFont(clip);
+  ctx.textAlign = clip.align;
+  ctx.textBaseline = "middle";
+
+  // Typewriter: reveal only the substring visible at this time (whole block).
+  const tw = a.style === "typewriter" && !perUnit ? typewriterText(clip, t) : null;
+  const rawShown = tw ? tw.text + (tw.caretVisible ? "|" : "") : clip.text;
+  const upper = (s: string): string => (clip.uppercase ? s.toUpperCase() : s);
+  const shownText = whole.scramble > 0 ? scrambleText(upper(rawShown), whole.scramble, t) : upper(rawShown);
+  // Size the panel to the FULL text so it doesn't grow while typing.
+  const fullText = upper(tw ? clip.text : rawShown);
+
+  const ls = clip.letterSpacing ?? 0;
+  const lineStep = clip.fontSize * (clip.lineHeight ?? 1.2);
+  const split = (s: string): string[] => (clip.maxWidth ? wrapText(ctx, s, clip.maxWidth) : s.split("\n"));
+
+  const karaokeOn = !!(clip.karaoke?.enabled && clip.words && clip.words.length > 0);
+  const karaokeWords = karaokeOn ? clip.words! : [];
+  const karaokeSpace = ctx.measureText(" ").width + ls;
+  const karaokeLines = karaokeOn
+    ? wrapKaraokeTokens(ctx, karaokeWords.map((w) => upper(w.text)), karaokeSpace, clip.maxWidth)
+    : [];
+  const shownLines = karaokeOn ? karaokeLines.map((l) => l.map((tk) => tk.text).join(" ")) : split(shownText);
+  const fullLines = karaokeOn ? shownLines : split(fullText);
+
+  const nFull = fullLines.length;
+  const widest = fullLines.reduce((m, l) => Math.max(m, lineWidth(ctx, l, ls)), 0);
+  const blockH = (nFull - 1) * lineStep + clip.fontSize;
+  const block: BlockBox = { x: alignLeft(clip.align, widest), y: -blockH / 2, w: widest, h: blockH };
+
+  // ---------------- per-unit (line / word / letter) animation ----------------
+  if (perUnit && !karaokeOn) {
+    const unit = a.unit as "line" | "word" | "letter";
+    paintPanels(ctx, clip, fullLines, lineStep, ls, op * blockAlpha(clip, t));
+    const units = layoutUnits(ctx, fullLines, unit, lineStep, ls, clip.align);
+    const n = units.length;
+    for (let i = 0; i < n; i++) {
+      const u = units[i]!;
+      const s = textUnitState(clip, t, i, n);
+      if (!s.visible || s.opacity <= 0) continue;
+      ctx.save();
+      ctx.translate(u.cx, u.cy);
+      if (s.baselineMask) {
+        ctx.beginPath();
+        ctx.rect(-u.w / 2 - clip.fontSize * 0.25, -lineStep / 2, u.w + clip.fontSize * 0.5, lineStep);
+        ctx.clip();
+      }
+      ctx.translate(s.dx, s.dy);
+      if (s.rotation !== 0) ctx.rotate(degToRad(s.rotation));
+      if (s.scaleX !== 1 || s.scaleY !== 1) ctx.scale(s.scaleX, s.scaleY);
+      if (s.revealFrom > 0 || s.revealTo < 1) {
+        ctx.beginPath();
+        ctx.rect(-u.w / 2 + s.revealFrom * u.w, -lineStep, Math.max(0, s.revealTo - s.revealFrom) * u.w, lineStep * 2);
+        ctx.clip();
+      }
+      ctx.globalAlpha = op * s.opacity;
+      if (s.blur > 0) ctx.filter = `blur(${(s.blur * px).toFixed(2)}px)`;
+      const text = s.scramble > 0 ? scrambleText(u.text, s.scramble, t, i) : u.text;
+      paintRuns(ctx, clip, [{ text, x: -u.w / 2, y: 0, align: "left" }], ls, {
+        block,
+        gradOrigin: { x: u.cx, y: u.cy },
+        glitch: s.glitch,
+        px,
+      });
+      ctx.restore();
+    }
+    ctx.restore();
+    return;
   }
 
+  // ---------------- whole-block animation ----------------
+  if (!combine) {
+    if (whole.baselineMask) {
+      // Rise from behind the resting line box: clip first, then move the text.
+      ctx.beginPath();
+      ctx.rect(block.x - clip.fontSize * 0.3, block.y - lineStep * 0.1, block.w + clip.fontSize * 0.6, block.h + lineStep * 0.2);
+      ctx.clip();
+      ctx.translate(whole.dx, whole.dy);
+    }
+    if (whole.rotation !== 0) ctx.rotate(degToRad(whole.rotation));
+    if (whole.scaleX !== 1 || whole.scaleY !== 1) ctx.scale(whole.scaleX, whole.scaleY);
+  }
+  if (whole.revealFrom > 0 || whole.revealTo < 1) {
+    const pad = clip.fontSize * 0.3;
+    ctx.beginPath();
+    ctx.rect(
+      block.x - pad + whole.revealFrom * (block.w + pad * 2),
+      block.y - lineStep,
+      Math.max(0, whole.revealTo - whole.revealFrom) * (block.w + pad * 2),
+      block.h + lineStep * 2,
+    );
+    ctx.clip();
+  }
+  if (whole.blur > 0) ctx.filter = `blur(${(whole.blur * px).toFixed(2)}px)`;
+
+  paintPanels(ctx, clip, fullLines, lineStep, ls, op * whole.opacity);
+
   if (karaokeOn) {
+    // Karaoke fill: draw each word, highlighting the one active at this frame time
+    // (per-word PNGs mirror this on export). Handles its own shadow.
+    if (clip.outline && clip.outline.width > 0) {
+      ctx.lineWidth = clip.outline.width * 2;
+      ctx.strokeStyle = clip.outline.color;
+      ctx.lineJoin = "round";
+      ctx.miterLimit = 2;
+      drawTextLines(ctx, shownLines, lineStep, ls, "stroke", clip.align);
+    }
     drawKaraokeLines(ctx, karaokeLines, lineStep, clip, karaokeWords, t, op);
     ctx.restore();
     return;
   }
 
-  if (clip.shadow) {
-    ctx.shadowColor = clip.shadow.color;
-    ctx.shadowBlur = clip.shadow.blur;
-    ctx.shadowOffsetX = clip.shadow.offsetX;
-    ctx.shadowOffsetY = clip.shadow.offsetY;
-  }
-
-  ctx.fillStyle = clip.color;
-  drawTextLines(ctx, shownLines, lineStep, ls, "fill", clip.align);
+  const n = shownLines.length;
+  const runs: TextRun[] = shownLines.map((line, i) => ({
+    text: line,
+    x: 0,
+    y: (i - (n - 1) / 2) * lineStep,
+    align: clip.align,
+  }));
+  paintRuns(ctx, clip, runs, ls, { block, gradOrigin: { x: 0, y: 0 }, glitch: whole.glitch, px });
   ctx.restore();
 }
 
@@ -560,15 +935,195 @@ export function drawCalloutLabel(ctx: Ctx2D, clip: CalloutClip, frameW: number, 
 
 // ---- solid / shape ---------------------------------------------------------
 
-/** A full-frame solid color fill (backgrounds, letterbox, fades to/from black). */
+/**
+ * Clip the context to a directional transition REVEAL at fraction `f` (0..1) —
+ * the canvas mirror of `transitionClipPath` (wipes reveal from an edge/corner/
+ * center, circles open/close), in frame coordinates. No-op when fully revealed.
+ */
+export function clipTransitionReveal(ctx: Ctx2D, spec: TransitionSpec, f: number, W: number, H: number): void {
+  if (f >= 1) return;
+  ctx.beginPath();
+  if (spec.kind === "circle") {
+    const pct = (spec.circleClose ? 1 - f : f) * 0.75;
+    ctx.arc(W / 2, H / 2, Math.max(0.5, pct * Math.hypot(W, H) / Math.SQRT2), 0, Math.PI * 2);
+    ctx.clip();
+    return;
+  }
+  const h = 1 - f;
+  const hc = h / 2;
+  // inset(top right bottom left) as fractions → the visible rect.
+  let top = 0;
+  let right = 0;
+  let bottom = 0;
+  let left = 0;
+  switch (spec.edge) {
+    case "right":
+      left = h;
+      break;
+    case "top":
+      bottom = h;
+      break;
+    case "bottom":
+      top = h;
+      break;
+    case "tl":
+      right = h;
+      bottom = h;
+      break;
+    case "tr":
+      bottom = h;
+      left = h;
+      break;
+    case "bl":
+      top = h;
+      right = h;
+      break;
+    case "br":
+      top = h;
+      left = h;
+      break;
+    case "center-h":
+      left = hc;
+      right = hc;
+      break;
+    case "center-v":
+      top = hc;
+      bottom = hc;
+      break;
+    case "rect":
+      top = right = bottom = left = hc;
+      break;
+    case "left":
+    default:
+      right = h;
+  }
+  ctx.rect(left * W, top * H, Math.max(0, (1 - left - right) * W), Math.max(0, (1 - top - bottom) * H));
+  ctx.clip();
+}
+
+/**
+ * Paint an (optionally animated) gradient over the whole frame. `local` is seconds
+ * since the clip started. Linear gradients sway (drift) or rotate (spin) their
+ * angle; radial gradients breathe (pulse); aurora floats one soft blob per stop
+ * over a static base gradient. Deterministic in `local`.
+ */
+export function paintBackgroundGradient(ctx: Ctx2D, g: BackgroundGradient, W: number, H: number, local: number): void {
+  const u = local * g.speed;
+  const stops = g.stops;
+  const n = stops.length;
+  const linear = (angleDeg: number, spread = 1): Gradient2D => {
+    const th = degToRad(angleDeg);
+    const half = ((Math.abs(W * Math.cos(th)) + Math.abs(H * Math.sin(th))) / 2) * spread || 1;
+    const gr = ctx.createLinearGradient(
+      W / 2 - Math.cos(th) * half,
+      H / 2 - Math.sin(th) * half,
+      W / 2 + Math.cos(th) * half,
+      H / 2 + Math.sin(th) * half,
+    );
+    stops.forEach((c, i) => gr.addColorStop(i / (n - 1), c));
+    return gr;
+  };
+  ctx.save();
+  if (g.motion === "aurora") {
+    ctx.fillStyle = linear(g.angle);
+    ctx.fillRect(0, 0, W, H);
+    const R = Math.max(W, H) * 0.62;
+    for (let i = 0; i < n; i++) {
+      const color = stops[(i + 1) % n]!;
+      const cx = W * (0.5 + 0.38 * Math.sin(u * 0.35 + i * 2.1));
+      const cy = H * (0.5 + 0.38 * Math.cos(u * 0.27 + i * 1.7));
+      const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+      rg.addColorStop(0, hexToRgba(color, 0.55));
+      rg.addColorStop(1, hexToRgba(color, 0));
+      ctx.fillStyle = rg;
+      ctx.fillRect(0, 0, W, H);
+    }
+    ctx.restore();
+    return;
+  }
+  if (g.kind === "radial") {
+    const pulse = g.motion === "pulse" ? 1 + 0.2 * Math.sin(u * 1.6) : 1;
+    const r = (Math.hypot(W, H) / 2) * pulse;
+    const rg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(1, r));
+    stops.forEach((c, i) => rg.addColorStop(i / (n - 1), c));
+    ctx.fillStyle = rg;
+  } else {
+    let angle = g.angle;
+    if (g.motion === "drift") angle += 22 * Math.sin(u * 0.8);
+    else if (g.motion === "spin") angle += u * 40;
+    const spread = g.motion === "pulse" ? 1 + 0.25 * Math.sin(u * 1.6) : 1;
+    ctx.fillStyle = linear(angle, spread);
+  }
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+/** Paint a subtle texture (dots / grid / lines / diagonal) over the frame. */
+export function paintBackgroundPattern(ctx: Ctx2D, p: BackgroundPattern, W: number, H: number): void {
+  const unit = Math.max(6, Math.min(W, H) * 0.04 * p.scale);
+  ctx.save();
+  ctx.globalAlpha = ctx.globalAlpha * p.opacity;
+  ctx.fillStyle = p.color;
+  ctx.strokeStyle = p.color;
+  ctx.lineWidth = Math.max(1, unit * 0.05);
+  ctx.beginPath();
+  if (p.kind === "dots") {
+    const r = unit * 0.12;
+    let row = 0;
+    for (let y = unit / 2; y < H + unit; y += unit, row++) {
+      const off = row % 2 === 0 ? 0 : unit / 2;
+      for (let x = unit / 2 + off; x < W + unit; x += unit) {
+        ctx.moveTo(x + r, y);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+      }
+    }
+    ctx.fill();
+  } else if (p.kind === "grid" || p.kind === "lines") {
+    for (let y = unit; y < H; y += unit) {
+      ctx.moveTo(0, y);
+      ctx.lineTo(W, y);
+    }
+    if (p.kind === "grid") {
+      for (let x = unit; x < W; x += unit) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+      }
+    }
+    ctx.stroke();
+  } else {
+    for (let d = -H; d < W; d += unit) {
+      ctx.moveTo(d, H);
+      ctx.lineTo(d + H, 0);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * A full-frame solid / background fill: base color, optional (animated) gradient,
+ * optional pattern — revealed by its transition (fades ramp opacity; slides move it;
+ * wipes/circles reveal it directionally), so text-video scene changes preview and
+ * export identically.
+ */
 export function drawSolid(ctx: Ctx2D, clip: SolidClip, frameW: number, frameH: number, t: number): void {
-  // A solid fills the frame, so only its (keyframed) opacity is meaningful here.
-  const op = transitionOpacity(clip, t) * keyframeTransformState(clip, t).opacityMul;
-  if (op <= 0) return;
+  const tm = transitionMotion(clip, t, frameW, frameH);
+  const op =
+    (tm.fadeOpacity ? transitionOpacity(clip, t) : clip.transform.opacity) * keyframeTransformState(clip, t).opacityMul;
+  if (op <= 0 || tm.wipeFrac <= 0) return;
   ctx.save();
   ctx.globalAlpha = op;
+  if (tm.dx !== 0 || tm.dy !== 0) ctx.translate(tm.dx, tm.dy);
+  if (tm.scaleMul !== 1) {
+    ctx.translate(frameW / 2, frameH / 2);
+    ctx.scale(tm.scaleMul, tm.scaleMul);
+    ctx.translate(-frameW / 2, -frameH / 2);
+  }
+  if (tm.wipeFrac < 1) clipTransitionReveal(ctx, transitionSpec(clip.transitionType ?? "crossfade"), tm.wipeFrac, frameW, frameH);
   ctx.fillStyle = clip.color;
   ctx.fillRect(0, 0, frameW, frameH);
+  if (clip.gradient) paintBackgroundGradient(ctx, clip.gradient, frameW, frameH, Math.max(0, t - clip.start));
+  if (clip.pattern) paintBackgroundPattern(ctx, clip.pattern, frameW, frameH);
   ctx.restore();
 }
 

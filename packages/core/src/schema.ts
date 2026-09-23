@@ -103,22 +103,116 @@ export type KenBurns = z.infer<typeof KenBurns>;
  * browser (CSS transform) exactly as it renders on the server canvas and on
  * export (drawtext x/y expressions). Faithful: moves/scales the title only.
  */
+/**
+ * Every text INTRO animation. The first five are the original styles and behave
+ * exactly as before; the rest are the Canva-style set, each resolved by the ONE
+ * pure `textUnitState` helper (grade.ts) so the browser preview, the node canvas,
+ * and the export agree frame-for-frame:
+ *  - fade        — opacity 0→1.
+ *  - rise / drop — float up from below / fall in from above while fading in.
+ *  - slide-left / slide-right — travel in horizontally while fading in.
+ *  - zoom-in     — grow from small while fading in.
+ *  - stomp       — slam down from big (impact).
+ *  - blur-in     — resolve from a heavy blur.
+ *  - wipe        — revealed left→right.
+ *  - baseline    — rise up from behind an invisible baseline (masked).
+ *  - tumble      — rotate + scale into place.
+ *  - spin        — a full spin while growing in.
+ *  - flip        — flip in on the horizontal axis.
+ *  - neon        — flicker on like a neon sign.
+ *  - glitch      — RGB-split jitter that settles.
+ *  - scramble    — random glyphs that resolve into the real text.
+ * Combine any style with `unit` (whole / line / word / letter) for staggered
+ * per-line, per-word, or per-letter animation.
+ */
+export const TEXT_ANIM_STYLES = [
+  "none",
+  "kinetic",
+  "pop",
+  "bounce",
+  "typewriter",
+  "fade",
+  "rise",
+  "drop",
+  "slide-left",
+  "slide-right",
+  "zoom-in",
+  "stomp",
+  "blur-in",
+  "wipe",
+  "baseline",
+  "tumble",
+  "spin",
+  "flip",
+  "neon",
+  "glitch",
+  "scramble",
+] as const;
+export const TextAnimStyle = z.enum(TEXT_ANIM_STYLES);
+export type TextAnimStyle = z.infer<typeof TextAnimStyle>;
+
+/** The granularity a text animation staggers over. */
+export const TEXT_ANIM_UNITS = ["whole", "line", "word", "letter"] as const;
+export const TextAnimUnit = z.enum(TEXT_ANIM_UNITS);
+export type TextAnimUnit = z.infer<typeof TextAnimUnit>;
+
+/**
+ * How text LEAVES over the last `durationSec` of the clip (staggered by the intro's
+ * `unit`). "none" = no exit motion (the default — existing docs are unchanged).
+ */
+export const TEXT_EXIT_STYLES = [
+  "none",
+  "fade",
+  "rise",
+  "sink",
+  "slide-left",
+  "slide-right",
+  "zoom-out",
+  "blow-up",
+  "blur-out",
+  "wipe",
+  "tumble",
+] as const;
+export const TextExitStyle = z.enum(TEXT_EXIT_STYLES);
+export type TextExitStyle = z.infer<typeof TextExitStyle>;
+
+export const TextExit = z.object({
+  style: TextExitStyle.default("none"),
+  /** How long the exit lasts (seconds), ending exactly at the clip end. */
+  durationSec: z.number().nonnegative().default(0.5),
+});
+export type TextExit = z.infer<typeof TextExit>;
+
+/**
+ * A continuous EMPHASIS loop while the text is on screen. `speed` is cycles per
+ * second; `amount` 0..1 scales the motion. With a per-word/per-letter `unit`, each
+ * unit is phase-offset so the loop ripples across the text ("wave" is built for it).
+ */
+export const TEXT_LOOP_STYLES = ["none", "breathe", "float", "wiggle", "flicker", "pulse", "shake", "wave"] as const;
+export const TextLoopStyle = z.enum(TEXT_LOOP_STYLES);
+export type TextLoopStyle = z.infer<typeof TextLoopStyle>;
+
+export const TextLoop = z.object({
+  style: TextLoopStyle.default("none"),
+  speed: z.number().min(0.05).max(8).default(0.8),
+  amount: z.number().min(0).max(1).default(0.5),
+});
+export type TextLoop = z.infer<typeof TextLoop>;
+
 export const TextAnim = z.object({
   /**
-   * How the title animates in over `durationSec`, resolved by the PURE
-   * `textKinetic` helper in grade.ts so canvas, Stage, and export agree:
+   * How the title animates in over `durationSec` (see TEXT_ANIM_STYLES). The
+   * original five keep their exact historical behavior:
    *  - "none"    — static (the default).
    *  - "kinetic" — slide + scale in, eased (ease-out cubic).
    *  - "pop"     — scale in with a small overshoot (ease-out-back).
    *  - "bounce"  — slide in with a damped bounce settle (ease-out-bounce).
    *  - "typewriter" — the text TYPES OUT one character at a time over
-   *                   `durationSec`, with an optional blinking caret. The visible
-   *                   substring is resolved by the PURE `typewriterText` helper in
-   *                   grade.ts (canvas draws the substring; the ffmpeg export
-   *                   sequences time-gated drawtext slices) — no slide/scale, so it
-   *                   is the natural style for typing into a form field in a demo.
+   *                   `durationSec`, with an optional blinking caret (PURE
+   *                   `typewriterText` helper) — the natural style for typing into
+   *                   a form field in a demo.
    */
-  style: z.enum(["none", "kinetic", "pop", "bounce", "typewriter"]).default("none"),
+  style: TextAnimStyle.default("none"),
   /** Offset (composition px) the text slides FROM, toward its resting x. */
   fromX: z.number().default(0),
   /** Offset (composition px) the text slides FROM, toward its resting y. */
@@ -132,6 +226,18 @@ export const TextAnim = z.object({
    * Ignored by every other style. Off by default so existing docs are unchanged.
    */
   caret: z.boolean().default(false),
+  /**
+   * Stagger granularity: animate the text as one block ("whole", the default), or
+   * line-by-line, word-by-word, or letter-by-letter. The whole sequence still
+   * settles exactly `durationSec` after the intro starts.
+   */
+  unit: TextAnimUnit.default("whole"),
+  /** Seconds after the clip starts before the intro begins (0 = immediately). */
+  delaySec: z.number().nonnegative().default(0),
+  /** Exit animation over the clip's last `exit.durationSec` (off by default). */
+  exit: TextExit.prefault({}),
+  /** Continuous emphasis loop while on screen (off by default). */
+  loop: TextLoop.prefault({}),
 });
 export type TextAnim = z.infer<typeof TextAnim>;
 
@@ -704,6 +810,44 @@ export const Karaoke = z.object({
 });
 export type Karaoke = z.infer<typeof Karaoke>;
 
+/**
+ * Canva-style TEXT EFFECTS, drawn by the shared canvas `drawText` (so preview ==
+ * export):
+ *  - lift      — a soft, diffuse shadow that lifts the text off the frame.
+ *  - hollow    — outline only (transparent fill) in the text color.
+ *  - splice    — a hollow outline with a solid, offset fill behind it.
+ *  - echo      — trailing offset copies that fade out behind the text.
+ *  - glitch    — cyan/magenta RGB-split copies either side.
+ *  - neon      — a bright core with a colored glow.
+ *  - highlight — a marker-style rounded background behind each line.
+ * `color` is the effect color (a sensible default per style when absent),
+ * `intensity` 0..1 its strength, `offset` 0..1 the copy distance (splice / echo /
+ * glitch) or highlight roundness, and `direction` (degrees) the offset angle.
+ */
+export const TEXT_EFFECT_STYLES = ["none", "lift", "hollow", "splice", "echo", "glitch", "neon", "highlight"] as const;
+export const TextEffectStyle = z.enum(TEXT_EFFECT_STYLES);
+export type TextEffectStyle = z.infer<typeof TextEffectStyle>;
+
+export const TextEffect = z.object({
+  style: TextEffectStyle.default("none"),
+  color: HexColor.optional(),
+  intensity: z.number().min(0).max(1).default(0.5),
+  offset: z.number().min(0).max(1).default(0.5),
+  direction: z.number().default(-45),
+});
+export type TextEffect = z.infer<typeof TextEffect>;
+
+/**
+ * A gradient TEXT fill (2–4 color stops along `angle` degrees, 0 = left→right,
+ * 90 = top→bottom) spanning the whole text block, so every letter shares one
+ * continuous gradient. Overrides `color` for the fill when present.
+ */
+export const TextFillGradient = z.object({
+  stops: z.array(HexColor).min(2).max(4),
+  angle: z.number().default(0),
+});
+export type TextFillGradient = z.infer<typeof TextFillGradient>;
+
 /** A text / title clip drawn directly by the renderer (no media needed). */
 export const TextClip = z.object({
   ...clipBase,
@@ -748,7 +892,11 @@ export const TextClip = z.object({
   outline: TextOutline.optional(),
   /** Optional drop shadow behind the text (readability over busy footage). */
   shadow: TextShadow.optional(),
-  /** Kinetic intro animation (slide + scale in); "none" by default. */
+  /** Optional Canva-style text effect (lift / hollow / splice / echo / glitch / neon / highlight). */
+  effect: TextEffect.optional(),
+  /** Optional gradient fill across the whole text block (overrides `color`). */
+  fillGradient: TextFillGradient.optional(),
+  /** Intro / exit / loop animation; "none" by default. */
   anim: TextAnim.prefault({}),
   /** Optional animation keyframes (x/y/scale/rotation/opacity), resolved by `valueAt`. */
   keyframes: z.array(Keyframe).optional(),
@@ -805,11 +953,52 @@ export const AudioClip = z.object({
 });
 export type AudioClip = z.infer<typeof AudioClip>;
 
+/**
+ * How an animated gradient background moves (resolved by the shared `drawSolid`):
+ *  - none   — static.
+ *  - drift  — the gradient angle sways gently back and forth.
+ *  - spin   — the gradient angle rotates continuously.
+ *  - pulse  — a radial gradient breathes in and out.
+ *  - aurora — soft color blobs (one per stop) float across the frame.
+ */
+export const BACKGROUND_MOTIONS = ["none", "drift", "spin", "pulse", "aurora"] as const;
+export const BackgroundMotion = z.enum(BACKGROUND_MOTIONS);
+export type BackgroundMotion = z.infer<typeof BackgroundMotion>;
+
+/**
+ * A gradient fill for a solid/background clip: 2–5 color stops, linear (along
+ * `angle` degrees, 0 = left→right, 90 = top→bottom) or radial (center-out), with an
+ * optional `motion` at `speed` (1 = default pace).
+ */
+export const BackgroundGradient = z.object({
+  kind: z.enum(["linear", "radial"]).default("linear"),
+  angle: z.number().default(135),
+  stops: z.array(HexColor).min(2).max(5),
+  motion: BackgroundMotion.default("none"),
+  speed: z.number().min(0).max(4).default(1),
+});
+export type BackgroundGradient = z.infer<typeof BackgroundGradient>;
+
+/** A subtle texture drawn over a background: dots, grid, lines, or diagonal stripes. */
+export const BACKGROUND_PATTERNS = ["dots", "grid", "lines", "diagonal"] as const;
+export const BackgroundPattern = z.object({
+  kind: z.enum(BACKGROUND_PATTERNS),
+  color: HexColor.default("#ffffff"),
+  opacity: z.number().min(0).max(1).default(0.08),
+  /** Pattern spacing multiplier (1 = ~4% of the frame's short edge). */
+  scale: z.number().positive().default(1),
+});
+export type BackgroundPattern = z.infer<typeof BackgroundPattern>;
+
 /** A solid color fill — full-frame backgrounds, letterbox, and fades to/from black. */
 export const SolidClip = z.object({
   ...clipBase,
   kind: z.literal("solid"),
   color: HexColor.default("#000000"),
+  /** Optional gradient (static or animated) painted over `color`. */
+  gradient: BackgroundGradient.optional(),
+  /** Optional subtle pattern texture drawn over the fill. */
+  pattern: BackgroundPattern.optional(),
   transform: Transform.prefault({}),
   transitionInSec,
   transitionOutSec,
