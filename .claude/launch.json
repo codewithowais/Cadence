@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "cadence-web",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--workspace", "@cadence/web"],
+      "runtimeExecutable": "/bin/zsh",
+      "runtimeArgs": ["-c", "PATH=$HOME/.n/bin:$PATH npm run dev --workspace @cadence/web"],
       "port": 3000
     }
   ]

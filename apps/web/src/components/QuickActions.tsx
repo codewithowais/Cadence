@@ -1,7 +1,7 @@
 "use client";
 
 interface QuickActionsProps {
-  mode: "video" | "images" | "none";
+  mode: "video" | "images" | "text" | "none";
   busy: boolean;
   onAction: (prompt: string) => void;
 }
@@ -38,9 +38,23 @@ const IMAGE_ACTIONS: Action[] = [
   { label: "Make 4K", icon: "M12 3l2.5 5 5.5.8-4 3.9 1 5.4L12 21l-5-2.6 1-5.4-4-3.9 5.5-.8z", prompt: "make it high quality 4K" },
 ];
 
+const TEXT_ACTIONS: Action[] = [
+  { label: "Letters pop", icon: "M4 18l4-12 4 12 M5.5 14h5 M15 18V8 M15 8a3 3 0 016 0v10", prompt: "letters pop in one by one" },
+  { label: "Words rise", icon: "M12 20V6 M7 11l5-5 5 5", prompt: "words rise in one by one" },
+  { label: "Typewriter", icon: "M4 6h16v10H4z M8 20h8 M7 10h2 M11 10h2 M15 10h2", prompt: "typewriter text" },
+  { label: "Neon glow", icon: "M12 3v4 M12 17v4 M3 12h4 M17 12h4 M6 6l2.5 2.5 M15.5 15.5L18 18", prompt: "neon glow text" },
+  { label: "Gradient text", icon: "M4 17l8-12 8 12z", prompt: "gradient text" },
+  { label: "Aurora bg", icon: "M3 17c4-8 14-8 18 0 M6 14c3-4 9-4 12 0", prompt: "aurora background" },
+  { label: "Wiggle", icon: "M3 12c3-6 6 6 9 0s6 6 9 0", prompt: "add a wiggle to the text" },
+  { label: "9:16", icon: "M8 3h8v18H8z", prompt: "make it vertical 9:16" },
+  { label: "Slower", icon: "M12 6v6l4 2 M12 21a9 9 0 110-18 9 9 0 010 18z", prompt: "make the text animation slower" },
+  { label: "Music", icon: "M9 18V5l10-2v13 M9 18a3 3 0 11-6 0 3 3 0 016 0z M19 16a3 3 0 11-6 0 3 3 0 016 0z", prompt: "add background music" },
+  { label: "Make 4K", icon: "M12 3l2.5 5 5.5.8-4 3.9 1 5.4L12 21l-5-2.6 1-5.4-4-3.9 5.5-.8z", prompt: "make it 4K high quality" },
+];
+
 export function QuickActions({ mode, busy, onAction }: QuickActionsProps) {
   if (mode === "none") return null;
-  const actions = mode === "images" ? IMAGE_ACTIONS : VIDEO_ACTIONS;
+  const actions = mode === "images" ? IMAGE_ACTIONS : mode === "text" ? TEXT_ACTIONS : VIDEO_ACTIONS;
   return (
     <div className="flex items-center gap-2 overflow-x-auto border-b border-line-soft bg-panel/30 px-4 py-2">
       <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted">one-tap</span>

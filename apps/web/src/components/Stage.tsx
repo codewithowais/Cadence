@@ -6,16 +6,14 @@ import {
   cssFilter,
   emphasisScale,
   imageMotion,
-  textKinetic,
   transitionOpacity,
   transitionStyle,
   type AudioClip,
   type EditDoc,
   type ImageClip,
-  type ShapeClip,
-  type TextClip,
   type VideoClip,
 } from "@cadence/core";
+import { SyntheticLayer } from "./SyntheticLayer";
 import { computePreview } from "@/lib/preview";
 import { fmtTime } from "@/lib/format";
 import type { PlacementRequest, PlacementResult } from "@/lib/placement";
@@ -42,6 +40,9 @@ interface StageProps {
   placement?: PlacementRequest | null;
   /** Resolve the armed placement with a result, or `null` to cancel. */
   onFinishPlacement?: (result: PlacementResult | null) => void;
+  /** Empty-state actions: start a text video / open the media picker. */
+  onStartWithText?: () => void;
+  onAddMedia?: () => void;
 }
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
@@ -134,6 +135,9 @@ export function Stage(props: StageProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const [frameH, setFrameH] = useState(0);
+  const [frameW, setFrameW] = useState(0);
+  // Anything to show/play? Text videos have no media but plenty of content.
+  const hasContent = durationSec > 0;
 
   const preview = useMemo(() => computePreview(doc, timeSec), [doc, timeSec]);
   const activeOnTracks = useMemo(() => activeClipsAt(doc, timeSec), [doc, timeSec]);
@@ -160,8 +164,6 @@ export function Stage(props: StageProps) {
     .filter((c) => c.track.id !== "broll")
     .map((c) => c.clip)
     .filter((c): c is ImageClip => c.kind === "image");
-  const activeTexts = activeOnTracks.map((c) => c.clip).filter((c): c is TextClip => c.kind === "text");
-  const activeShapes = activeOnTracks.map((c) => c.clip).filter((c): c is ShapeClip => c.kind === "shape");
   // Every audio clip in the doc (music + voice-over across all tracks). Rendered
   // as always-present hidden <audio> elements so the playhead crossing into a
   // clip can start it — each one plays only while it's active.
@@ -179,7 +181,10 @@ export function Stage(props: StageProps) {
     const el = frameRef.current;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setFrameH(e.contentRect.height);
+      for (const e of entries) {
+        setFrameH(e.contentRect.height);
+        setFrameW(e.contentRect.width);
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -211,12 +216,35 @@ export function Stage(props: StageProps) {
           className="relative flex max-h-full items-center justify-center overflow-hidden rounded-2xl border border-line bg-[#12181a] shadow-[0_18px_50px_-20px_rgba(24,34,38,0.30)]"
           style={{ aspectRatio: `${doc.meta.width} / ${doc.meta.height}`, maxWidth: "100%", height: "100%" }}
         >
-          {!hasMedia && (
-            <div className="grid h-full w-full place-items-center px-6 text-center">
-              <div className="flex flex-col items-center gap-2.5 text-white/45">
-                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 9h20M7 5v14M17 5v14M5 5v14M19 5v14" /></svg>
-                <span className="text-sm font-medium text-white/70">Preview will appear here</span>
-                <span className="text-xs text-white/40">Add media in the Media room, then describe an edit or use the timeline.</span>
+          {/* Backgrounds + synthetic clips BENEATH the footage (shared canvas drawing). */}
+          {frameW > 0 && <SyntheticLayer doc={doc} timeSec={timeSec} layer="under" width={frameW} height={frameH} />}
+
+          {!hasContent && (
+            <div className="absolute inset-0 z-10 grid place-items-center px-6 text-center">
+              <div className="flex max-w-sm flex-col items-center gap-3 text-white/60">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7V5h16v2M9 19h6M12 5v14" /></svg>
+                <span className="text-sm font-medium text-white/85">Start with words or footage</span>
+                <span className="text-xs text-white/50">Type a script and get an animated text video — no upload needed. Or add a video or photos to edit.</span>
+                <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+                  {props.onStartWithText && (
+                    <button
+                      type="button"
+                      onClick={props.onStartWithText}
+                      className="rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-onaccent transition hover:bg-amber-bright"
+                    >
+                      Start with text
+                    </button>
+                  )}
+                  {props.onAddMedia && (
+                    <button
+                      type="button"
+                      onClick={props.onAddMedia}
+                      className="rounded-full border border-white/25 px-4 py-1.5 text-xs font-medium text-white/85 transition hover:border-white/50"
+                    >
+                      Add media
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -306,120 +334,9 @@ export function Stage(props: StageProps) {
               );
             })}
 
-          {/* Vector shapes (rect / ellipse / line / arrow) — one SVG in composition
-              coordinates so it matches the canvas/export at any display size. */}
-          {activeShapes.length > 0 && (
-            <svg
-              className="pointer-events-none absolute inset-0 h-full w-full"
-              viewBox={`0 0 ${doc.meta.width} ${doc.meta.height}`}
-              preserveAspectRatio="none"
-            >
-              {activeShapes.map((s) => {
-                const op = transitionOpacity(s, timeSec);
-                if (op <= 0 || s.w <= 0 || s.h <= 0) return null;
-                const gt = `translate(${s.transform.x} ${s.transform.y}) rotate(${s.transform.rotation}) scale(${s.transform.scale})`;
-                const fill = s.fill === "" ? "none" : s.fill;
-                const hasStroke = s.stroke !== "" && s.strokeWidth > 0;
-                if (s.shape === "rect") {
-                  return (
-                    <g key={s.id} transform={gt} opacity={op}>
-                      <rect
-                        x={-s.w / 2}
-                        y={-s.h / 2}
-                        width={s.w}
-                        height={s.h}
-                        rx={s.radius}
-                        fill={fill}
-                        fillOpacity={s.fillOpacity}
-                        stroke={hasStroke ? s.stroke : "none"}
-                        strokeWidth={hasStroke ? s.strokeWidth : 0}
-                      />
-                    </g>
-                  );
-                }
-                if (s.shape === "ellipse") {
-                  return (
-                    <g key={s.id} transform={gt} opacity={op}>
-                      <ellipse
-                        cx={0}
-                        cy={0}
-                        rx={s.w / 2}
-                        ry={s.h / 2}
-                        fill={fill}
-                        fillOpacity={s.fillOpacity}
-                        stroke={hasStroke ? s.stroke : "none"}
-                        strokeWidth={hasStroke ? s.strokeWidth : 0}
-                      />
-                    </g>
-                  );
-                }
-                // line / arrow
-                const color = s.stroke !== "" ? s.stroke : s.fill !== "" ? s.fill : "#ffffff";
-                const thick = s.strokeWidth > 0 ? s.strokeWidth : 8;
-                const half = s.w / 2;
-                const headLen = s.shape === "arrow" ? Math.max(thick * 3.2, 20) : 0;
-                return (
-                  <g key={s.id} transform={gt} opacity={op}>
-                    <line
-                      x1={-half}
-                      y1={0}
-                      x2={half - headLen}
-                      y2={0}
-                      stroke={color}
-                      strokeWidth={thick}
-                      strokeLinecap="round"
-                    />
-                    {s.shape === "arrow" && (
-                      <polygon
-                        points={`${half},0 ${half - headLen},${-headLen * 0.47} ${half - headLen},${headLen * 0.47}`}
-                        fill={color}
-                      />
-                    )}
-                  </g>
-                );
-              })}
-            </svg>
-          )}
-
-          {/* Text / caption overlays */}
-          {scale > 0 &&
-            activeTexts.map((t) => {
-              const anchor =
-                t.align === "center" ? "translate(-50%, -50%)" : t.align === "right" ? "translate(-100%, -50%)" : "translate(0, -50%)";
-              // Kinetic intro (slide + scale in) — same core helper as canvas/export.
-              const kin = textKinetic(t, timeSec);
-              return (
-                <div
-                  key={t.id}
-                  className="pointer-events-none absolute font-semibold will-change-transform"
-                  style={{
-                    left: `${(t.transform.x / doc.meta.width) * 100}%`,
-                    top: `${(t.transform.y / doc.meta.height) * 100}%`,
-                    transform: `${anchor} translate(${kin.dx * scale}px, ${kin.dy * scale}px) scale(${kin.scaleMul}) rotate(${t.transform.rotation}deg)`,
-                    opacity: transitionOpacity(t, timeSec),
-                    maxWidth: "92%",
-                  }}
-                >
-                  <span
-                    className={t.background ? "" : "voice"}
-                    style={{
-                      display: "inline-block",
-                      whiteSpace: "nowrap",
-                      fontSize: `${t.fontSize * scale}px`,
-                      lineHeight: 1.1,
-                      color: t.color,
-                      background: t.background ?? "transparent",
-                      padding: t.background ? `${t.fontSize * scale * 0.28}px ${t.fontSize * scale * 0.5}px` : 0,
-                      borderRadius: t.background ? `${t.fontSize * scale * 0.4}px` : 0,
-                      fontFamily: "var(--font-chrome)",
-                      textShadow: t.background ? "none" : "0 2px 20px rgba(0,0,0,0.55)",
-                    }}
-                  >
-                    {t.text}
-                  </span>
-                </div>
-              );
-            })}
+          {/* Text, shapes, callouts, cursors (and backgrounds above footage) — drawn by
+              the SAME shared canvas code as the export, so the preview is exact. */}
+          {frameW > 0 && <SyntheticLayer doc={doc} timeSec={timeSec} layer="over" width={frameW} height={frameH} />}
 
           {/* Audio layer — hidden <audio> per music/voice-over clip, synced to the
               transport so they're heard in the preview (not just on export). */}
@@ -452,7 +369,7 @@ export function Stage(props: StageProps) {
         <button
           type="button"
           onClick={props.onTogglePlay}
-          disabled={!hasMedia}
+          disabled={!hasContent}
           aria-label={playing ? "Pause" : "Play"}
           className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-amber text-onaccent transition hover:bg-amber-bright disabled:opacity-40"
         >
@@ -475,7 +392,7 @@ export function Stage(props: StageProps) {
           step={0.01}
           value={Math.min(timeSec, durationSec)}
           onChange={(e) => props.onSeek(Number(e.target.value))}
-          disabled={!hasMedia}
+          disabled={!hasContent}
           aria-label="Scrubber"
         />
 

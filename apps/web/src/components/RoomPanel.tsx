@@ -47,6 +47,7 @@ import {
   trackPan,
 } from "@/lib/fx";
 import { EMOJI_STICKERS, TEXT_PRESETS, insertSticker, type PlaceOpts } from "@/lib/text-presets";
+import { TextRoom } from "./TextRoom";
 import { fmtTime, download, downloadBlob } from "@/lib/format";
 import { describeDoc } from "@/lib/status";
 import {
@@ -130,6 +131,9 @@ interface RoomPanelProps {
   markerCount?: number;
   /** Words room: the clip selected on the timeline (enables "this caption only"). */
   selectedClipId?: string | null;
+  /** Text room: select a clip (e.g. a freshly-added heading) / seek to a scene. */
+  onSelectClip?: (id: string | null) => void;
+  onSeek?: (t: number) => void;
 }
 
 /** Shared wrapper so every room reads as the same contextual strip. */
@@ -237,6 +241,8 @@ export function RoomPanel(props: RoomPanelProps) {
     canDetectBeats,
     markerCount,
     selectedClipId,
+    onSelectClip,
+    onSeek,
   } = props;
   const fileRef = useRef<HTMLInputElement>(null);
   const openPicker = () => fileRef.current?.click();
@@ -257,6 +263,22 @@ export function RoomPanel(props: RoomPanelProps) {
       }}
     />
   );
+
+  if (room === "text") {
+    return (
+      <TextRoom
+        doc={doc}
+        busy={busy}
+        timeSec={timeSec}
+        hasVisualMedia={mediaList.some((m) => m.kind === "video" || m.kind === "image")}
+        selectedClipId={selectedClipId ?? null}
+        onApplyDoc={onApplyDoc}
+        onAction={onAction}
+        onSelectClip={onSelectClip}
+        onSeek={onSeek}
+      />
+    );
+  }
 
   if (room === "media") {
     return (
@@ -2010,7 +2032,8 @@ function TextStylesGallery({
   onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
   onBeginPlacement?: BeginPlacement;
 }) {
-  const disabled = busy || mediaList.length === 0;
+  const disabled = busy;
+  void mediaList;
   const [draft, setDraft] = useState("");
   const [placeMode, setPlaceMode] = useState(false);
   const startSec = round2(Math.max(0, timeSec));

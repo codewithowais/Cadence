@@ -298,6 +298,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     return extras.length ? [...mediaList, ...extras] : mediaList;
   }, [mediaList, doc.media]);
   const hasMedia = projectMedia.length > 0;
+  // A text video has no media but is fully playable / exportable.
+  const hasContent = durationSec > 0;
+  const docHasText = useMemo(() => doc.tracks.some((t) => t.clips.some((c) => c.kind === "text")), [doc]);
   const mode: "video" | "images" | "none" = projectMedia.some((m) => m.kind === "video")
     ? "video"
     : projectMedia.some((m) => m.kind === "image")
@@ -564,19 +567,27 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
    * user's line has already been shown (a queued describe-first request), so we
    * don't repeat it. Commits the result (undoable) and shows an Undo toast.
    */
-  async function runDirector(text: string, echo = true) {
+  async function runDirector(text: string, echo = true): Promise<number> {
     if (echo) say("you", text);
     setBusy(true);
     setBusyLabel("Applying your edit…");
     setPlaying(false);
     try {
       const res = await askDirector({ request: text, media: projectMedia, transcripts: Object.values(transcripts), doc });
+      if (res.toolCalls.length === 0) {
+        say("director", res.summary, "info");
+        return 0;
+      }
       commit(parseEditDoc(res.doc)); // undoable Director edit
       setTimeSec(0);
       say("director", res.summary, "edit");
       showUndoToast(res.summary);
+      // A text video lands with no media — open the Text room so its scenes are editable.
+      if (res.toolCalls.some((c) => c.name === "make_text_video")) setRoom("text");
+      return res.toolCalls.length;
     } catch (err) {
       say("director", err instanceof Error ? err.message : "I couldn't make that edit.", "error");
+      return -1;
     } finally {
       setBusy(false);
       setBusyLabel("");
@@ -588,11 +599,15 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
    * queue the request and fire it automatically once footage loads instead of
    * dropping it — the composer is never a dead end.
    */
-  function handleSend(text: string) {
+  async function handleSend(text: string) {
     if (projectMedia.length === 0) {
-      setPendingRequest(text);
-      say("you", text);
-      say("director", "Got it — add a video or photos and I'll do this the moment they load.", "info");
+      // No footage: the Director can still make/edit a TEXT video. Anything it
+      // can't do without media is queued and fires once footage loads.
+      const ran = await runDirector(text);
+      if (ran === 0 && !hasContent) {
+        setPendingRequest(text);
+        say("director", "If that needs footage, add a video or photos and I'll run it the moment they load.", "info");
+      }
       return;
     }
     void runDirector(text);
@@ -621,7 +636,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   }
 
   function togglePlay() {
-    if (!hasMedia) return;
+    if (!hasContent) return;
     if (!playing && timeSec >= durationSec) setTimeSec(0);
     setPlaying((p) => !p);
   }
@@ -639,7 +654,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
    * back to the JSON edit-doc export.
    */
   async function exportDoc(overrideDoc?: EditDoc) {
-    if (!hasMedia || durationSec <= 0) return;
+    if (durationSec <= 0) return;
     // `overrideDoc` lets the export-options popover render freshly-applied
     // quality settings without waiting for a state re-render.
     const source = overrideDoc ?? doc;
@@ -1385,7 +1400,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (e.key === "[") { e.preventDefault(); toggleRail(); return; }
     if (e.key === "]") { e.preventDefault(); toggleCode(); return; }
     if (e.key === "\\") { e.preventDefault(); toggleFocus(); return; }
-    if (!hasMedia) return;
+    if (!hasContent) return;
     if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); togglePlay(); return; }
     if (e.key === "ArrowLeft") { e.preventDefault(); seek(timeSec - (e.shiftKey ? 5 : 1)); return; }
     if (e.key === "ArrowRight") { e.preventDefault(); seek(timeSec + (e.shiftKey ? 5 : 1)); return; }
@@ -1453,7 +1468,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               busy={busy}
               busyLabel={busyLabel}
               hasMedia={hasMedia}
-              onSend={handleSend}
+              onSend={(p) => void handleSend(p)}
               onFiles={handleFiles}
               onCancel={exporting ? cancelExport : undefined}
               onCollapse={toggleRail}
@@ -1501,7 +1516,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onToggleCode={() => setCodeOpen((c) => !c)}
           doc={doc}
           onExport={exportWith}
-          canExport={hasMedia && durationSec > 0}
+          canExport={hasContent}
           busy={busy}
           onUndo={undo}
           onRedo={redo}
@@ -1514,9 +1529,13 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onSave={onSave ? handleSave : undefined}
           saveState={saveState}
         />
-        <AppliedStatus doc={doc} hasMedia={hasMedia} />
+        <AppliedStatus doc={doc} hasMedia={hasMedia || hasContent} />
         {room === "edit" ? (
-          <QuickActions mode={hasMedia ? mode : "none"} busy={busy} onAction={handleSend} />
+          <QuickActions
+            mode={mode !== "none" ? mode : docHasText ? "text" : "none"}
+            busy={busy}
+            onAction={(p) => void handleSend(p)}
+          />
         ) : (
           <div
             // Capped, self-scrolling options panel. `min()` guarantees it can
@@ -1532,11 +1551,11 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             mediaList={projectMedia}
             urls={urls}
             busy={busy}
-            onAction={handleSend}
+            onAction={(p) => void handleSend(p)}
             onApplyDoc={(d, coalesceKey) => commit(d, coalesceKey ? { coalesce: coalesceKey } : undefined)}
             onFiles={handleFiles}
             onExport={exportDoc}
-            canExport={hasMedia && durationSec > 0}
+            canExport={hasContent}
             timeSec={timeSec}
             muted={muted}
             onToggleMute={() => setMuted((m) => !m)}
@@ -1556,6 +1575,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             canDetectBeats={!!beatSource}
             markerCount={markers.length}
             selectedClipId={selectedClipId}
+            onSelectClip={setSelectedClipId}
+            onSeek={seek}
           />
           </div>
         )}
@@ -1582,6 +1603,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onToggleMute={() => setMuted((m) => !m)}
           placement={placement}
           onFinishPlacement={finishPlacement}
+          onStartWithText={() => setRoom("text")}
+          onAddMedia={() => setRoom("media")}
         />
         <ResizeHandle
           orientation="horizontal"

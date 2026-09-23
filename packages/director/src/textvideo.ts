@@ -583,7 +583,8 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
     const exit = last ? { style: "fade" as const, durationSec: Math.max(0.3, T.exit.durationSec) } : T.exit;
 
     if (scene.num) {
-      textClips.push({
+      // On the Accents lane so it doesn't stack under the headline on the timeline.
+      accClips.push({
         id: `tv-s${i}-num`,
         kind: "text",
         start: tIn,

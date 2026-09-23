@@ -23,6 +23,14 @@ const SUGGESTIONS = [
   "Give it a cinematic look",
 ];
 
+/** One-tap text-video starters (no media needed). */
+const TEXT_STARTERS: { label: string; hint: string; prompt: string }[] = [
+  { label: "Announcement", hint: "bold, animated", prompt: "make a bold announcement video: Big news. We just launched. Edit videos by typing. Try it free today." },
+  { label: "Quote", hint: "elegant serif", prompt: "make an elegant quote video: “The best way to predict the future is to create it.” — Peter Drucker" },
+  { label: "Tips list", hint: "vertical, for Reels", prompt: "make a vertical list video: 3 tips for better sleep\n1. No screens after 10pm\n2. Keep the room cool\n3. Same bedtime every night" },
+  { label: "Neon promo", hint: "glowing signs", prompt: "make a neon text video: Tonight only. Live music. Doors at 9." },
+];
+
 export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFiles, onCancel, onCollapse }: DirectorRailProps) {
   const [text, setText] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -79,6 +87,23 @@ export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFi
             >
               Choose video or photos
             </button>
+            <div className="mt-5 border-t border-line-soft pt-4 text-left">
+              <p className="text-xs font-medium text-text">…or make a video from words</p>
+              <p className="mt-0.5 text-[11px] text-faint">No footage needed — tap one, or type your own script.</p>
+              <div className="mt-2 flex flex-col gap-1.5">
+                {TEXT_STARTERS.map((s) => (
+                  <button
+                    key={s.label}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onSend(s.prompt)}
+                    className="rounded-lg border border-line bg-elevated px-3 py-1.5 text-left text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:opacity-50"
+                  >
+                    <span className="font-medium text-text">{s.label}</span> — {s.hint}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
@@ -155,7 +180,7 @@ export function DirectorRail({ messages, busy, busyLabel, hasMedia, onSend, onFi
               }
             }}
             rows={1}
-            placeholder={hasMedia ? "Describe the edit…" : "Describe what you want — add footage next…"}
+            placeholder={hasMedia ? "Describe the edit…" : "Describe a video — e.g. “text video: …” — or add footage"}
             disabled={busy}
             className="max-h-32 min-h-[2rem] flex-1 resize-none bg-transparent py-1 text-sm text-text placeholder:text-faint focus:outline-none disabled:cursor-not-allowed"
           />
