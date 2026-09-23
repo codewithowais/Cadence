@@ -55,6 +55,7 @@ import {
   insertMediaClipInDoc,
 } from "@/lib/doc";
 import { UndoToast } from "./UndoToast";
+import { useEditingCraft } from "@/lib/use-editing-craft";
 import {
   findClip,
   isMainSequentialTrack,
@@ -1385,6 +1386,23 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (selectedClipId && !findClip(doc, selectedClipId)) setSelectedClipId(null);
   }, [doc, selectedClipId]);
 
+  // Editing speed & timeline craft (JKL shuttle, in/out, snapping, multi-select,
+  // split all, gaps, speed presets, freeze, copy/paste attributes) — its own
+  // hook; every doc change still goes through `commit`.
+  const editingCraft = useEditingCraft({
+    doc,
+    commit,
+    timeSec,
+    durationSec,
+    playing,
+    setPlaying,
+    setTimeSec,
+    seek,
+    selectedClipId,
+    setSelectedClipId,
+    notify: showUndoToast,
+  });
+
   // Keyboard shortcuts. The ref always holds the latest closures, so we bind the
   // window listener exactly once. Shortcuts are ignored while typing in a field.
   const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
@@ -1400,6 +1418,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             (target as HTMLInputElement).type,
           )));
     const mod = e.metaKey || e.ctrlKey;
+    if (editingCraft.handleKey(e, typing)) return; // J/K/L · I/O · N · ↑/↓ · ⇧S · F · ⌘A/⌘D · ⌘⇧C/V · ⌥←/→
 
     // Undo / redo (⌘/Ctrl+Z, ⌘/Ctrl+Shift+Z, Ctrl+Y) — never while typing.
     if (mod && (e.key === "z" || e.key === "Z")) {
@@ -1699,6 +1718,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
                 }
                 setRoom("text");
               },
+              craft: editingCraft.craft,
             }}
           />
         </div>

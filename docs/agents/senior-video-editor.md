@@ -99,3 +99,25 @@ the Director as a typed tool.
   magnetic main lane stay back-to-back (reorder them instead).
 - Group drag (dragging several clips at once with the mouse) is not included —
   use nudge / cut / paste for groups.
+- The marquee starts from the ruler or an empty lane with ⇧ held (a plain click
+  there still seeks, as before).
+- Esc: an open dialog (shortcuts sheet, command palette, paste picker) always
+  gets it first; otherwise Esc clears the selection, then the in/out marks.
+- The ShortcutsHelp list is now grouped (Playback · Navigate · Cut & edit ·
+  Select · Panels) and includes the ⌘K / Ctrl+K command palette row. `SHORTCUTS`
+  keeps its `{ keys, label }` shape (plus a `group` field), so any consumer still works.
+- Web `splitClip` now delegates to the engine's `splitClipAtTime`: split halves
+  get per-half keyframes / audio fades / speed-ramp curves / karaoke words and
+  deterministic ids (`<id>-b`). No existing test needed changing.
+
+## Results (gates)
+
+- `npm run typecheck` ✔ · web `tsc --noEmit` ✔
+- `npm run test:unit` ✔ 93/93 (15 new in `tests/editor-craft.test.ts`)
+- `npm run verify` ✔ incl. new check 67 (editing craft: split-all frames
+  byte-identical, range cut slides the tail intact, freeze = tpad clone,
+  2× retime = setpts /2, paste look)
+- `npm run evals` ✔ 6/6
+- `npm run build -w @cadence/web` ✔
+- Playwright on :3101 — `e2e/editing-craft.spec.ts` ✔ and the FULL suite ✔ 26/26
+  (incl. `e2e/flows.spec.ts` 4/4).
