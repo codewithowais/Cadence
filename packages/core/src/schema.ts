@@ -1274,6 +1274,19 @@ export const Marker = z.object({
 export type Marker = z.infer<typeof Marker>;
 
 /**
+ * The RECIPE behind a text video (made by the Director's `make_text_video`): the
+ * theme / format / pace it was built with. The scenes themselves live in the clips
+ * (ids `tv-s{n}-{role}`), so direct text edits are the source of truth; the recipe
+ * lets restyle / reframe / scene edits rebuild the video consistently.
+ */
+export const TextVideoRecipe = z.object({
+  theme: z.string().default("bold"),
+  format: z.string().default("story"),
+  pace: z.enum(["slow", "normal", "fast"]).default("normal"),
+});
+export type TextVideoRecipe = z.infer<typeof TextVideoRecipe>;
+
+/**
  * The whole project as a declarative document. `version` is the schema version
  * so stored docs can be migrated. This object is what the Director emits and
  * what the DB versions.
@@ -1307,6 +1320,8 @@ export const EditDoc = z.object({
    * attenuates steady background noise only, never a content change.
    */
   cleanAudio: z.boolean().default(false),
+  /** Present when this doc is a text video (see TextVideoRecipe). */
+  textVideo: TextVideoRecipe.optional(),
 });
 export type EditDoc = z.infer<typeof EditDoc>;
 

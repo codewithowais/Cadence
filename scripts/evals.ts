@@ -183,6 +183,23 @@ const EVALS: Eval[] = [
     },
     proof: "eval-e-filler-4k.png",
   },
+
+  // (f) TEXT ONLY — a whole video from words, no media at all (Canva-style).
+  {
+    id: "f",
+    capability: "text only · script → text video (no media)",
+    prompt: "make a vertical neon text video: Stay weird. Stay loud. Stay you.",
+    setup: async () => new ProjectState({ media: [] }),
+    expectTools: ["make_text_video"],
+    extra: (doc) => {
+      assert(doc.textVideo?.theme === "neon", `expected the neon theme, got ${doc.textVideo?.theme}`);
+      assert(doc.meta.width === 1080 && doc.meta.height === 1920, "expected a vertical 1080×1920 frame");
+      const texts = doc.tracks.flatMap((t) => t.clips).filter((c) => c.kind === "text");
+      assert(texts.length === 3, `expected 3 text scenes, got ${texts.length}`);
+      assert(doc.media.length === 0, "a text video needs no media");
+    },
+    proof: "eval-f-text-video.png",
+  },
 ];
 
 interface EvalOutcome {

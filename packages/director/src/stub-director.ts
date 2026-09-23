@@ -6,12 +6,25 @@
  *   "cut a 30s highlight, make it vertical with captions and a warm look"
  * The real Director swaps this rules brain for an LLM but calls the same tools.
  */
-import { docDurationSec, type ColorGrade, type EditDoc } from "@cadence/core";
+import { docDurationSec, FONT_LIBRARY, fontStack, type ColorGrade, type EditDoc, type TextAnimStyle } from "@cadence/core";
+import {
+  isTextVideo,
+  type TextVideoAspect,
+  type TextVideoFormat,
+  type TextVideoPace,
+  type TextVideoTheme,
+} from "./textvideo";
+import type { AnimateTextInput, SetBackgroundInput, StyleTextInput } from "./text-ops";
 import type { ProjectState } from "./project";
 import type { TransitionType } from "@cadence/core";
 import {
   addCalloutTool,
   addMarkerTool,
+  animateTextTool,
+  makeTextVideoTool,
+  restyleTextVideoTool,
+  setBackgroundTool,
+  styleTextTool,
   addMaskTool,
   adjustColorTool,
   adjustCurvesTool,
@@ -296,6 +309,249 @@ function parseCaptionStyle(req: string): CaptionStyleOpts | null {
   else if (/at the bottom|bottom of (the )?(screen|frame)/.test(req)) out.position = "bottom";
   if (/big(ger)? captions?|large captions?/.test(req)) out.fontSize = 84;
   else if (/small(er)? captions?|tiny captions?/.test(req)) out.fontSize = 40;
+  return Object.keys(out).length ? out : null;
+}
+
+
+// ---- text video ------------------------------------------------------------
+
+const TEXT_VIDEO_TRIGGER =
+  /text[- ]?(?:only[- ])?video|typography video|kinetic typography|animated text video|motion text video|video (?:from|out of) (?:this |my |the |some )?(?:text|script|words|quote|list)|(?:script|text|words|quote|list|tips) (?:in)?to (?:a )?video|quote video|lyrics? video|list video|tips video|announcement video|make (?:me )?(?:a )?video (?:that says|saying|with (?:the )?(?:text|words))|(?:video|reel|short|story) (?:that says|saying)/;
+
+const THEME_WORDS: [RegExp, TextVideoTheme][] = [
+  [/\bneon\b|glow(?:ing)? sign/, "neon"],
+  [/\bminimal|minimalist|\bclean\b|\bsimple\b/, "minimal"],
+  [/elegant|luxury|luxurious|classy|\bgold(?:en)?\b|wedding/, "elegant"],
+  [/playful|\bfun\b|cute|pastel|kids?\b|birthday/, "playful"],
+  [/corporate|business|professional|\bpitch\b|company/, "corporate"],
+  [/\bretro\b|vintage|70s|80s|groovy/, "retro"],
+  [/aurora|dreamy|northern lights|ethereal/, "aurora"],
+  [/cinematic|movie|trailer|\bepic\b|dramatic/, "cinematic"],
+  [/hand-?written|handwriting|notebook|\bnotes?\b|marker/, "handwritten"],
+  [/\bbold\b|\bloud\b|punchy|energetic|hype/, "bold"],
+];
+
+function parseTheme(instr: string): TextVideoTheme | undefined {
+  for (const [re, key] of THEME_WORDS) if (re.test(instr)) return key;
+  return undefined;
+}
+
+function parseTextVideoFormat(instr: string): TextVideoFormat | undefined {
+  if (/\bquote\b|quotation/.test(instr)) return "quote";
+  if (/\blist\b|\btips?\b|\bsteps?\b|top \d+|countdown|reasons/.test(instr)) return "list";
+  if (/announce|announcement|launch|\bsale\b|promo|event|invite|invitation/.test(instr)) return "announcement";
+  if (/lyrics?\b|song/.test(instr)) return "lyrics";
+  if (/\bstory\b/.test(instr)) return "story";
+  return undefined;
+}
+
+function parseTextVideoAspect(instr: string): TextVideoAspect | undefined {
+  if (/9:16|vertical|portrait|reels?|shorts|tik ?tok|stor(?:y|ies)/.test(instr)) return "9:16";
+  if (/1:1|square|feed post/.test(instr)) return "1:1";
+  if (/4:5/.test(instr)) return "4:5";
+  if (/16:9|widescreen|landscape|horizontal|youtube/.test(instr)) return "16:9";
+  return undefined;
+}
+
+/**
+ * Pull the SCRIPT (the words to show) out of a request, preserving case:
+ * text after the first colon, else the longest quoted span, else after
+ * "saying/that says/with the text", else every line after the first. Returns the
+ * script and the remaining INSTRUCTION (lowercased) so theme/format/aspect words
+ * are only read from the instruction — never from the user's own script.
+ */
+export function extractScript(original: string): { script: string; instruction: string } {
+  const text = original.trim();
+  const colon = text.indexOf(":");
+  if (colon > 0 && colon < 160) {
+    const rest = text.slice(colon + 1).trim();
+    if (rest.split(/\s+/).filter(Boolean).length >= 2) {
+      return { script: rest, instruction: text.slice(0, colon).toLowerCase() };
+    }
+  }
+  const quoted = [...text.matchAll(/[“"]([^”"]{3,})[”"]/g)].map((m) => m[1]!).sort((a, b) => b.length - a.length)[0];
+  if (quoted) return { script: quoted.trim(), instruction: text.replace(quoted, " ").toLowerCase() };
+  const saying = text.match(/\b(?:saying|that says|with the (?:text|words))\s+(.{3,})$/is);
+  if (saying) return { script: saying[1]!.trim(), instruction: text.slice(0, saying.index).toLowerCase() };
+  const lines = text.split("\n");
+  if (lines.length >= 2) return { script: lines.slice(1).join("\n").trim(), instruction: lines[0]!.toLowerCase() };
+  return { script: "", instruction: text.toLowerCase() };
+}
+
+function parseTextVideo(
+  req: string,
+  original: string,
+  hasVisualMedia: boolean,
+): { input: { script: string; theme?: TextVideoTheme; format?: TextVideoFormat; aspect?: TextVideoAspect; pace?: TextVideoPace }; instruction: string } | null {
+  const explicit = TEXT_VIDEO_TRIGGER.test(req);
+  const { script, instruction } = extractScript(original);
+  // Without media, "make a video: <words>" is a text video too.
+  const implicit = !hasVisualMedia && !!script && /\b(?:make|create|build|turn|generate)\b[\s\S]*\bvideo\b|\bvideo\b/.test(instruction);
+  if (!explicit && !implicit) return null;
+  const pace: TextVideoPace | undefined = /\bslow(?:er|ly)?\b|calm|relaxed/.test(instruction)
+    ? "slow"
+    : /\bfast(?:er)?\b|quick|snappy|rapid/.test(instruction)
+      ? "fast"
+      : undefined;
+  const theme = parseTheme(instruction);
+  const format = parseTextVideoFormat(instruction);
+  const aspect = parseTextVideoAspect(instruction);
+  return {
+    input: { script, ...(theme ? { theme } : {}), ...(format ? { format } : {}), ...(aspect ? { aspect } : {}), ...(pace ? { pace } : {}) },
+    instruction,
+  };
+}
+
+/** "switch to the neon theme", "make it elegant", "restyle as retro" — on a text video. */
+function parseRestyle(req: string): TextVideoTheme | null {
+  if (!/theme|style|restyle|make it|switch|change|look|turn it|go /.test(req)) return null;
+  return parseTheme(req) ?? null;
+}
+
+const ANIM_WORDS: [RegExp, TextAnimStyle][] = [
+  [/typewriter|type(?:s|d)? (?:out|in)|typing/, "typewriter"],
+  [/scrambl|decod|hacker|matrix/, "scramble"],
+  [/glitch/, "glitch"],
+  [/neon|flicker(?:s)? on/, "neon"],
+  [/stomp|slam/, "stomp"],
+  [/blur(?:s|red)?[- ]?in|unblur|come into focus|focus in/, "blur-in"],
+  [/baseline|rise from (?:behind|below) (?:a |the )?line/, "baseline"],
+  [/tumble/, "tumble"],
+  [/\bspin/, "spin"],
+  [/\bflip/, "flip"],
+  [/wipe|reveal/, "wipe"],
+  [/zoom(?:s)?[- ]?in|grow(?:s)? in|scale(?:s)? in/, "zoom-in"],
+  [/slide(?:s)?[- ]?(?:in )?from (?:the )?left|from the left/, "slide-right"],
+  [/slide(?:s)?[- ]?in|slide(?:s)?[- ]?(?:in )?from (?:the )?right|from the right/, "slide-left"],
+  [/\bdrop(?:s)?\b|fall(?:s)? in|from above/, "drop"],
+  [/\brise|rising|float(?:s)? up|from below|slide(?:s)? up/, "rise"],
+  [/\bpop/, "pop"],
+  [/bounc/, "bounce"],
+  [/fade(?:s)?[- ]?in|\bfade\b/, "fade"],
+];
+
+function parseAnimateText(rawReq: string): AnimateTextInput | null {
+  // "fade in and out" / "fade to black" are whole-video fades (add_fades), and a
+  // request that CREATES a title carries its own animation — neither re-animates text.
+  const req = rawReq.replace(/fade(?:s)? (?:in and out|in\/out|in & out|(?:from|to) black|out at the end)/g, " ");
+  const explicitAnim = /animat|letter[- ]by[- ]letter|word[- ]by[- ]word|line[- ]by[- ]line|each (?:letter|word|line)/.test(req);
+  if (!explicitAnim && /kinetic title|add (?:a |an )?(?:\w+ )?title|title card|lower.?third|name card|intro text/.test(req)) return null;
+  const textish = /\btext\b|title|letters?|words?|lines?|heading|typography|caption/.test(req);
+  if (!textish && !/animat/.test(req)) return null;
+  const out: AnimateTextInput = {};
+  const introPart = req.replace(/(?:fade|slide|zoom|blur|wipe|sink|rise|tumble|blow)(?:s)?[- ]?(?:out|away)[^,.;]*/g, " ");
+  for (const [re, style] of ANIM_WORDS) {
+    if (re.test(introPart)) {
+      out.style = style;
+      break;
+    }
+  }
+  if (/letter[- ]by[- ]letter|each letter|per letter|\bletters\b|character by character/.test(req)) out.unit = "letter";
+  else if (/word[- ]by[- ]word|each word|per word|one word at a time|\bwords\b/.test(req)) out.unit = "word";
+  else if (/line[- ]by[- ]line|each line|per line/.test(req)) out.unit = "line";
+  const ex = req.match(/(fade|slide|zoom|blur|wipe|sink|rise|tumble|blow)(?:s)?[- ]?(?:out|away)/);
+  if (ex) {
+    const w = ex[1]!;
+    out.exit = w === "fade" ? "fade" : w === "slide" ? "slide-left" : w === "zoom" ? "zoom-out" : w === "blur" ? "blur-out" : w === "wipe" ? "wipe" : w === "sink" ? "sink" : w === "rise" ? "rise" : w === "tumble" ? "tumble" : "blow-up";
+  }
+  const loop = req.match(/\b(breath(?:e|ing)|float(?:ing)?|bob(?:bing)?|wiggl(?:e|ing)|flicker(?:ing)?|puls(?:e|ing)|shak(?:e|ing)|wav(?:e|y|ing))\b/);
+  if (loop && !/float(?:s)? up/.test(req)) {
+    const w = loop[1]!;
+    out.loop = w.startsWith("breath") ? "breathe" : w.startsWith("float") || w.startsWith("bob") ? "float" : w.startsWith("wiggl") ? "wiggle" : w.startsWith("flicker") ? "flicker" : w.startsWith("puls") ? "pulse" : w.startsWith("shak") ? "shake" : "wave";
+  }
+  if (!out.style && !out.exit && !out.loop) return null;
+  if (/\ball (?:the )?text|every(?:thing)?\b/.test(req)) out.target = "all";
+  if (/slow(?:ly)?/.test(req) && out.style) out.durationSec = 1.4;
+  else if (/fast|quick|snappy/.test(req) && out.style) out.durationSec = 0.45;
+  return out;
+}
+
+const COLOR_WORDS: Record<string, string> = {
+  ...CAPTION_COLORS,
+  purple: "#a855f7",
+  violet: "#8b5cf6",
+  teal: "#14b8a6",
+  cyan: "#22d3ee",
+  gold: "#e8c77a",
+  golden: "#e8c77a",
+  navy: "#0b2545",
+  gray: "#9ca3af",
+  grey: "#9ca3af",
+  cream: "#f6f1e3",
+  mint: "#a7f3d0",
+  coral: "#ff7f6e",
+};
+
+function colorIn(s: string): string | undefined {
+  for (const [name, hex] of Object.entries(COLOR_WORDS)) if (new RegExp(`\\b${name}\\b`).test(s)) return hex;
+  return undefined;
+}
+
+function parseStyleText(req: string): StyleTextInput | null {
+  if (/caption|subtitle/.test(req)) return null; // captions have their own styler
+  const aboutText = /\btext\b|title|font|letters|heading|typography|words/.test(req);
+  const out: StyleTextInput = {};
+  const font = FONT_LIBRARY.find((f) => req.includes(f.family.toLowerCase()));
+  if (font) out.fontFamily = fontStack(font);
+  if (!aboutText && !font) return null;
+  const color = req.match(/(?:text|title|font|letters)(?: colou?r)?(?: to| in)? (\w+)|(\w+) (?:text|titles?|letters|font)\b/);
+  const cword = color ? (color[1] ?? color[2])! : "";
+  if (COLOR_WORDS[cword]) out.color = COLOR_WORDS[cword];
+  if (/neon|glow(?:ing|y)?\b/.test(req)) out.effect = { style: "neon", intensity: 0.6, offset: 0.5, direction: -45 };
+  else if (/hollow|outlined? (?:text|letters)|outline only/.test(req)) out.effect = { style: "hollow", intensity: 0.5, offset: 0.5, direction: -45 };
+  else if (/\becho\b/.test(req)) out.effect = { style: "echo", intensity: 0.5, offset: 0.5, direction: -45 };
+  else if (/glitch/.test(req) && !/glitch(?:es|ing)? in/.test(req)) out.effect = { style: "glitch", intensity: 0.5, offset: 0.5, direction: -45 };
+  else if (/splice/.test(req)) out.effect = { style: "splice", intensity: 0.5, offset: 0.5, direction: -45 };
+  else if (/\blift\b|drop shadow|shadow/.test(req)) out.effect = { style: "lift", intensity: 0.5, offset: 0.5, direction: -45 };
+  else if (/highlight(?:ed|er)?|marker/.test(req)) out.effect = { style: "highlight", intensity: 0.6, offset: 0.5, direction: -45, ...(colorIn(req) ? { color: colorIn(req)! } : {}) };
+  else if (/no effect|remove (?:the )?effect|plain text/.test(req)) out.effect = null;
+  if (/rainbow/.test(req)) out.fillGradient = { stops: ["#ff5f6d", "#ffc371", "#47e891", "#4facfe"], angle: 0 };
+  else if (/gradient (?:text|fill|title|letters)|(?:text|title|letters) gradient/.test(req)) out.fillGradient = { stops: ["#ff7a18", "#af002d", "#319197"], angle: 0 };
+  if (/all caps|uppercase|capital letters|in caps/.test(req)) out.uppercase = true;
+  else if (/lower ?case|no caps|sentence case/.test(req)) out.uppercase = false;
+  if (/\bbold(?:er)?\b/.test(req) && aboutText) out.fontWeight = "bold";
+  if (/\bitalic/.test(req)) out.italic = true;
+  if (/(?:text|title|font|letters) (?:bigger|larger)|bigger (?:text|title|font)|larger (?:text|title|font)/.test(req)) out.sizeScale = 1.2;
+  else if (/(?:text|title|font|letters) smaller|smaller (?:text|title|font)/.test(req)) out.sizeScale = 0.85;
+  if (/wide(?:r)? (?:letter )?spacing|spaced out|tracking/.test(req)) out.letterSpacing = 8;
+  if (/\ball (?:the )?text|every(?:thing)?\b/.test(req)) out.target = "all";
+  const keys = Object.keys(out).filter((k) => k !== "target");
+  return keys.length ? out : null;
+}
+
+function parseBackground(req: string): SetBackgroundInput | null {
+  if (!/background|backdrop/.test(req) || /background music|\bbgm\b|background (?:song|track|audio|sound)/.test(req)) return null;
+  const out: SetBackgroundInput = {};
+  const colors = Object.entries(COLOR_WORDS)
+    .filter(([name]) => new RegExp(`\\b${name}\\b`).test(req))
+    .map(([, hex]) => hex);
+  const motion = /aurora|northern lights/.test(req)
+    ? "aurora"
+    : /spin(?:ning)?|rotat/.test(req)
+      ? "spin"
+      : /puls|breath/.test(req)
+        ? "pulse"
+        : /animat|moving|drift|flow/.test(req)
+          ? "drift"
+          : "none";
+  if (/gradient|aurora|animat|moving|drift|flow|pulse|spin/.test(req)) {
+    const stops =
+      colors.length >= 2
+        ? colors.slice(0, 4)
+        : motion === "aurora"
+          ? ["#1a1446", "#7b2ff7", "#00c2ff", "#ff5edb"]
+          : colors.length === 1
+            ? [colors[0]!, "#0b0b12"]
+            : ["#ff512f", "#dd2476"];
+    out.gradient = { kind: /radial|spotlight|glow/.test(req) ? "radial" : "linear", angle: 135, stops, motion, speed: 1 };
+    out.color = stops[0]!;
+  } else if (colors.length > 0) {
+    out.color = colors[0]!;
+    out.gradient = null;
+  }
+  const pattern = /polka|dots?\b|dotted/.test(req) ? "dots" : /grid/.test(req) ? "grid" : /diagonal|stripes?/.test(req) ? "diagonal" : /\blines?\b|lined|ruled/.test(req) ? "lines" : null;
+  if (pattern) out.pattern = { kind: pattern, color: "#ffffff", opacity: 0.1, scale: 1 };
+  else if (/no pattern|remove (?:the )?pattern|plain background/.test(req)) out.pattern = null;
   return Object.keys(out).length ? out : null;
 }
 
@@ -620,8 +876,38 @@ export class StubDirector {
   readonly mode = "stub" as const;
 
   async interpret(request: string, project: ProjectState): Promise<DirectorResult> {
-    const req = request.toLowerCase();
+    let req = request.toLowerCase();
     const steps: PlannedStep[] = [];
+
+    // ---- text video: a whole video from words (no footage needed) ----
+    // Detected FIRST, and the rest of the request is then read from the
+    // INSTRUCTION only, so words inside the user's own script ("stay vertical")
+    // can never trigger an unrelated edit.
+    const hasVisualMedia = project.media.some((m) => m.kind === "video" || m.kind === "image");
+    const tv = parseTextVideo(req, request, hasVisualMedia);
+    if (tv) {
+      const input = tv.input;
+      steps.push({
+        run: (p) => makeTextVideoTool.execute(input, { project: p }),
+        call: { name: makeTextVideoTool.name, input },
+      });
+      req = tv.instruction;
+    } else if (isTextVideo(project.doc)) {
+      const theme = parseRestyle(req);
+      if (theme) {
+        const input = { theme };
+        steps.push({
+          run: (p) => restyleTextVideoTool.execute(input, { project: p }),
+          call: { name: restyleTextVideoTool.name, input },
+        });
+      }
+    }
+    const docHasText = project.doc.tracks.some((t) => t.clips.some((c) => c.kind === "text"));
+    // In TEXT MODE (a text-video build or restyle is queued) the generic media
+    // parsers are switched off; only text-relevant follow-ups are read below.
+    const textMode = steps.length > 0;
+    const textInstr = req;
+    if (textMode) req = "";
 
     // ---- builders (replace the doc); pick at most one ----
     const hasImages = project.media.some((m) => m.kind === "image");
@@ -652,7 +938,9 @@ export class StubDirector {
     // phrasing routes to remove_silence instead.
     const wantsFiller = /filler|remove (?:the )?(?:um|uh|ums|uhs|ers?)\b|clean ?up/.test(req);
 
-    if (wantsDemo && hasImages) {
+    if (textMode) {
+      // The text video (or its restyle) is the builder for this request.
+    } else if (wantsDemo && hasImages) {
       const login = wantsLoginDemo || /\blog ?in\b|\bsign ?in\b|\blogin\b/.test(req);
       const input = { login };
       steps.push({
@@ -1032,6 +1320,35 @@ export class StubDirector {
       });
     }
 
+    // ---- text: platform / music (text mode), then animate / style / background ----
+    // Theme words ("neon", "bold") describe the text video's theme, not an extra
+    // animation/effect, so they're stripped before the text parsers run.
+    const tReq = textMode ? textInstr.replace(/\b(?:neon|bold|minimal|elegant|playful|corporate|retro|aurora|cinematic|handwritten)\b/g, " ") : req;
+    if (textMode) {
+      const plat = parsePlatform(textInstr);
+      if (plat) {
+        const input = { platform: plat };
+        steps.push({ run: (p) => platformTool.execute(input, { project: p }), call: { name: platformTool.name, input } });
+      }
+      if (/\b(?:music|song|soundtrack)\b/.test(textInstr) && project.media.some((m) => m.kind === "audio")) {
+        steps.push({ run: (p) => musicTool.execute({}, { project: p }), call: { name: musicTool.name, input: {} } });
+      }
+    }
+    if (docHasText || textMode) {
+      const anim = parseAnimateText(tReq);
+      if (anim) {
+        steps.push({ run: (p) => animateTextTool.execute(anim, { project: p }), call: { name: animateTextTool.name, input: anim } });
+      }
+      const style = parseStyleText(tReq);
+      if (style) {
+        steps.push({ run: (p) => styleTextTool.execute(style, { project: p }), call: { name: styleTextTool.name, input: style } });
+      }
+    }
+    const bg = parseBackground(tReq);
+    if (bg && (textMode || docHasText || !hasVisualMedia || /background/.test(tReq))) {
+      steps.push({ run: (p) => setBackgroundTool.execute(bg, { project: p }), call: { name: setBackgroundTool.name, input: bg } });
+    }
+
     if (steps.length === 0) {
       return {
         doc: project.doc,
@@ -1064,7 +1381,10 @@ export class StubDirector {
   private helpMessage(project: ProjectState): string {
     const hasVideo = project.media.some((m) => m.kind === "video");
     const hasImages = project.media.some((m) => m.kind === "image");
-    if (!hasVideo && !hasImages) return "Add a video or some photos to begin.";
+    if (isTextVideo(project.doc))
+      return 'Try: "switch to the neon theme", "make it elegant", "letters pop in one by one", "words rise in", "add a wiggle", "use Bebas Neue font", "gradient text", "aurora background", "make it vertical", or "slower pace".';
+    if (!hasVideo && !hasImages)
+      return 'No footage needed — try: "make a text video: Big news. We just launched. Try it free today." or "quote video: “Stay hungry, stay foolish.” — Steve Jobs" or "list video: 3 tips for better sleep\n1. No screens\n2. Cool room\n3. Same bedtime". Or add a video or photos to edit.';
     if (hasImages && !hasVideo)
       return 'Try: "make a slideshow", "make an interactive demo from these screenshots", "type email and password then click login", "highlight the sign-in button", "zoom into the menu", "zoom in over time", "make it 21:9", "golden-hour look", "use dissolve transitions", "export for instagram feed", or "make it high quality".';
     return 'Try: "cut a 60-second highlight", "remove filler words", "remove dead air", "cut the sentence about pricing", "keep only where they mention the product", "delete every um", "auto-reframe to vertical and keep me centered", "voice this over: \'…\'", "make it vertical with captions", "cinematic look", "reframe to 1600x900", "slow motion", "zoom in over time", "reverse the clip", "freeze frame at 3s", "add background music", "export for tiktok", or "make it 4K".';

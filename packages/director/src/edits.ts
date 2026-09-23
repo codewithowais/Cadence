@@ -27,6 +27,7 @@ import {
   type VideoClip,
 } from "@cadence/core";
 import type { Transcript } from "@cadence/understanding";
+import { isTextVideo, retargetTextVideo } from "./textvideo";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -94,6 +95,9 @@ export const ASPECT_KEYS = Object.keys(ASPECTS) as AspectKey[];
 export function reframeTo(doc: EditDoc, width: number, height: number): EditDoc {
   const targetW = Math.max(2, Math.round(width / 2) * 2);
   const targetH = Math.max(2, Math.round(height / 2) * 2);
+  // A text video re-lays its scenes for the new frame (sizes, wraps, positions)
+  // instead of stretching them.
+  if (isTextVideo(doc)) return retargetTextVideo(doc, targetW, targetH);
   const oldW = doc.meta.width;
   const oldH = doc.meta.height;
   const clone: EditDoc = structuredClone(doc);

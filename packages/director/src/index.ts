@@ -7,7 +7,9 @@ export * from "./trims";
 export * from "./filler";
 export * from "./slideshow";
 export * from "./demo";
-export { StubDirector, type DirectorResult } from "./stub-director";
+export * from "./textvideo";
+export * from "./text-ops";
+export { StubDirector, extractScript, type DirectorResult } from "./stub-director";
 export {
   runDirectorLoop,
   type DirectorFeedback,

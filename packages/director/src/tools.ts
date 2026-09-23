@@ -6,9 +6,17 @@
  */
 import { z } from "zod";
 import {
+  BackgroundGradient,
+  BackgroundPattern,
   docDurationSec,
   EditDoc,
   SHAPE_KINDS,
+  TEXT_ANIM_STYLES,
+  TEXT_ANIM_UNITS,
+  TEXT_EXIT_STYLES,
+  TEXT_LOOP_STYLES,
+  TextEffect,
+  TextFillGradient,
   TransitionType,
   type BlendMode,
   type CurvePoint,
@@ -30,6 +38,26 @@ import { buildSlideshowDoc } from "./slideshow";
 import { buildDemo, type BuildDemoOptions } from "./demo";
 import { addTrack, moveClipToTrack, removeTrack, reorderTrack, setTrack } from "./tracks";
 import { rollEdit, slipEdit, slideEdit } from "./trims";
+import {
+  buildTextVideo,
+  restyleTextVideo,
+  textVideoScenes,
+  TEXT_VIDEO_FORMATS,
+  TEXT_VIDEO_THEME_DEFS,
+  TEXT_VIDEO_THEMES,
+  type TextVideoAspect,
+  type TextVideoFormat,
+  type TextVideoPace,
+  type TextVideoTheme,
+} from "./textvideo";
+import {
+  animateText,
+  setBackground,
+  styleText,
+  type AnimateTextInput,
+  type SetBackgroundInput,
+  type StyleTextInput,
+} from "./text-ops";
 import {
   addAdjustment,
   addBroll,
@@ -1630,6 +1658,119 @@ export const slideEditTool: DirectorTool<{ clipId: string; deltaSec: number }> =
   },
 };
 
+// ---- text video (Canva-style: a whole video from words) ----------------------
+
+const TV_THEME_ENUM = TEXT_VIDEO_THEMES;
+const TV_FORMAT_ENUM = TEXT_VIDEO_FORMATS;
+
+export const makeTextVideoTool: DirectorTool<{
+  script: string;
+  theme?: TextVideoTheme;
+  format?: TextVideoFormat;
+  aspect?: TextVideoAspect;
+  pace?: TextVideoPace;
+}> = {
+  name: "make_text_video",
+  description:
+    "Make a complete video from TEXT alone (no footage needed): split `script` into timed scenes (auto-detects a quote, a numbered/bulleted list, or a story; or force `format`), each an animated-typography scene on a themed background with scene transitions. `theme`: bold | minimal | neon | elegant | playful | corporate | retro | aurora | cinematic | handwritten. `aspect` 16:9 | 9:16 | 1:1 | 4:5. `pace` slow | normal | fast (reading speed). Keeps existing music/voice-over. Every scene stays editable.",
+  inputSchema: z.object({
+    script: z.string().min(1),
+    theme: z.enum(TV_THEME_ENUM).optional(),
+    format: z.enum(TV_FORMAT_ENUM).optional(),
+    aspect: z.enum(["16:9", "9:16", "1:1", "4:5"]).optional(),
+    pace: z.enum(["slow", "normal", "fast"]).optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = buildTextVideo(ctx.project.doc, input);
+    const n = textVideoScenes(doc).length;
+    const theme = TEXT_VIDEO_THEME_DEFS[doc.textVideo!.theme as TextVideoTheme].label;
+    return commit(
+      ctx.project,
+      doc,
+      `Made a ${n}-scene ${theme.toLowerCase()} text video (${doc.textVideo!.format}, ${Math.round(docDurationSec(doc))}s, ${doc.meta.width}×${doc.meta.height}). Edit any scene in the Text room, or ask for another theme.`,
+    );
+  },
+};
+
+export const restyleTextVideoTool: DirectorTool<{ theme: TextVideoTheme }> = {
+  name: "restyle_text_video",
+  description: "Switch a text video to another theme (fonts, colors, backgrounds, motion, transitions), keeping every scene's words and timing.",
+  inputSchema: z.object({ theme: z.enum(TV_THEME_ENUM) }),
+  async execute(input, ctx) {
+    const doc = restyleTextVideo(ctx.project.doc, input.theme);
+    return commit(ctx.project, doc, `Restyled the text video as ${TEXT_VIDEO_THEME_DEFS[input.theme].label}.`);
+  },
+};
+
+const TEXT_TARGET = z
+  .union([z.enum(["all", "titles", "captions"]), z.object({ clipId: z.string().min(1) })])
+  .optional();
+
+export const animateTextTool: DirectorTool<AnimateTextInput> = {
+  name: "animate_text",
+  description:
+    "Animate text clips: intro `style` (fade, rise, drop, slide-left, slide-right, zoom-in, stomp, blur-in, wipe, baseline, tumble, spin, flip, neon, glitch, scramble, typewriter, pop, bounce, kinetic, none) over `durationSec`, staggered by `unit` (whole | line | word | letter), after `delaySec`; `exit` (fade, rise, sink, slide-left, slide-right, zoom-out, blow-up, blur-out, wipe, tumble, none); `loop` emphasis (breathe, float, wiggle, flicker, pulse, shake, wave, none). `target`: titles (default) | all | captions | {clipId}.",
+  inputSchema: z.object({
+    target: TEXT_TARGET,
+    style: z.enum(TEXT_ANIM_STYLES).optional(),
+    unit: z.enum(TEXT_ANIM_UNITS).optional(),
+    durationSec: z.number().nonnegative().optional(),
+    delaySec: z.number().nonnegative().optional(),
+    exit: z.enum(TEXT_EXIT_STYLES).optional(),
+    exitSec: z.number().nonnegative().optional(),
+    loop: z.enum(TEXT_LOOP_STYLES).optional(),
+    loopSpeed: z.number().min(0.05).max(8).optional(),
+    loopAmount: z.number().min(0).max(1).optional(),
+  }) as z.ZodType<AnimateTextInput>,
+  async execute(input, ctx) {
+    const { doc, count } = animateText(ctx.project.doc, input);
+    if (count === 0) throw new Error("There's no text to animate yet — add a title or make a text video first.");
+    const parts = [input.style && `${input.style}${input.unit && input.unit !== "whole" ? ` by ${input.unit}` : ""}`, input.exit && `${input.exit} exit`, input.loop && `${input.loop} loop`].filter(Boolean);
+    return commit(ctx.project, doc, `Animated ${count} text clip${count === 1 ? "" : "s"}${parts.length ? ` (${parts.join(", ")})` : ""}.`);
+  },
+};
+
+export const styleTextTool: DirectorTool<StyleTextInput> = {
+  name: "style_text",
+  description:
+    "Restyle text clips: `fontFamily` (a bundled face like \"'Bebas Neue', sans-serif\"), `fontWeight`, `italic`, `color`, `uppercase`, `letterSpacing`, `sizeScale` (1.2 = 20% bigger), `align`, `effect` {style: lift|hollow|splice|echo|glitch|neon|highlight|none, color?, intensity?, offset?} (null removes), `fillGradient` {stops:[2-4 hex], angle} (null removes). `target`: titles (default) | all | captions | {clipId}.",
+  inputSchema: z.object({
+    target: TEXT_TARGET,
+    fontFamily: z.string().optional(),
+    fontWeight: z.enum(["normal", "medium", "semibold", "bold"]).optional(),
+    italic: z.boolean().optional(),
+    color: z.string().regex(/^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/).optional(),
+    uppercase: z.boolean().optional(),
+    letterSpacing: z.number().optional(),
+    sizeScale: z.number().positive().max(5).optional(),
+    align: z.enum(["left", "center", "right"]).optional(),
+    effect: TextEffect.nullable().optional(),
+    fillGradient: TextFillGradient.nullable().optional(),
+  }) as z.ZodType<StyleTextInput>,
+  async execute(input, ctx) {
+    const { doc, count } = styleText(ctx.project.doc, input);
+    if (count === 0) throw new Error("There's no text to style yet — add a title or make a text video first.");
+    return commit(ctx.project, doc, `Restyled ${count} text clip${count === 1 ? "" : "s"}.`);
+  },
+};
+
+export const setBackgroundTool: DirectorTool<SetBackgroundInput> = {
+  name: "set_background",
+  description:
+    "Set the background: a solid `color`, a `gradient` {kind: linear|radial, angle, stops:[2-5 hex], motion: none|drift|spin|pulse|aurora, speed}, and/or a subtle `pattern` {kind: dots|grid|lines|diagonal, color, opacity, scale} (null removes either). Applies to every background scene (or one `clipId`); adds a full-length background layer when there is none.",
+  inputSchema: z.object({
+    color: z.string().regex(/^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/).optional(),
+    gradient: BackgroundGradient.nullable().optional(),
+    pattern: BackgroundPattern.nullable().optional(),
+    clipId: z.string().optional(),
+  }) as z.ZodType<SetBackgroundInput>,
+  async execute(input, ctx) {
+    const { doc, count } = setBackground(ctx.project.doc, input);
+    const what = input.gradient ? `${input.gradient.motion && input.gradient.motion !== "none" ? `${input.gradient.motion} ` : ""}gradient` : input.pattern ? `${input.pattern.kind} pattern` : "color";
+    return commit(ctx.project, doc, `Set a ${what} background on ${count} scene${count === 1 ? "" : "s"}.`);
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
   edit_by_transcript: editByTranscriptTool,
@@ -1696,4 +1837,9 @@ export const DIRECTOR_TOOLS = {
   roll_edit: rollEditTool,
   slip_edit: slipEditTool,
   slide_edit: slideEditTool,
+  make_text_video: makeTextVideoTool,
+  restyle_text_video: restyleTextVideoTool,
+  animate_text: animateTextTool,
+  style_text: styleTextTool,
+  set_background: setBackgroundTool,
 } as const;
