@@ -17,3 +17,5 @@ export {
   type DirectorLoopResult,
   type RunDirectorLoopOptions,
 } from "./agentic";
+export * from "./graphics";
+export * from "./graphics-tools";

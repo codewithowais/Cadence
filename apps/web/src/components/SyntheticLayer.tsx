@@ -108,7 +108,7 @@ export function SyntheticLayer({
       try {
         if (clip.kind === "solid") drawSolid(ctx, clip, W, H, timeSec);
         else if (clip.kind === "text") drawText(ctx, clip, timeSec, opts);
-        else if (clip.kind === "shape") drawShape(ctx, clip, timeSec);
+        else if (clip.kind === "shape") drawShape(ctx, clip, timeSec, opts);
         else if (clip.kind === "callout") drawCallout(ctx, clip, W, H);
         else if (clip.kind === "cursor") drawCursor(ctx, clip, timeSec);
       } finally {

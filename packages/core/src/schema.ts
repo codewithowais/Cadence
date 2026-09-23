@@ -849,6 +849,28 @@ export const TextFillGradient = z.object({
 });
 export type TextFillGradient = z.infer<typeof TextFillGradient>;
 
+/**
+ * A live COUNTER on a text clip (countdowns, timers, count-ups): the drawn text is
+ * `prefix + format(value) + suffix`, where value runs `from` → `to` over the clip
+ * span (resolved per frame by the pure `counterText`, shape-anim.ts):
+ *  - mode "tick"   — whole steps (a countdown holds 3, 2, 1 for a second each)
+ *  - mode "smooth" — a continuous count (eased by `easing`), e.g. 0 → 10,000
+ * `format`: number (thousands separators, `decimals`), mm:ss, hh:mm:ss, percent.
+ * `endText` replaces the value at the very end ("GO!"); "" keeps the final value.
+ */
+export const TextCounter = z.object({
+  from: z.number().default(3),
+  to: z.number().default(0),
+  format: z.enum(["number", "mm:ss", "hh:mm:ss", "percent"]).default("number"),
+  mode: z.enum(["tick", "smooth"]).default("tick"),
+  easing: z.enum(["linear", "ease-out"]).default("linear"),
+  decimals: z.number().int().min(0).max(3).default(0),
+  prefix: z.string().default(""),
+  suffix: z.string().default(""),
+  endText: z.string().default(""),
+});
+export type TextCounter = z.infer<typeof TextCounter>;
+
 /** A text / title clip drawn directly by the renderer (no media needed). */
 export const TextClip = z.object({
   ...clipBase,
@@ -913,6 +935,8 @@ export const TextClip = z.object({
    * today's static caption. Additive/optional — fully backward compatible.
    */
   karaoke: Karaoke.optional(),
+  /** Optional live counter (countdown / timer / count-up); absent ⇒ static `text`. */
+  counter: TextCounter.optional(),
 });
 export type TextClip = z.infer<typeof TextClip>;
 
@@ -1127,9 +1151,179 @@ export const AdjustmentClip = z.object({
 export type AdjustmentClip = z.infer<typeof AdjustmentClip>;
 
 /** The vector shapes the Design room / `add_shape` can place. */
-export const SHAPE_KINDS = ["rect", "ellipse", "line", "arrow"] as const;
+export const SHAPE_KINDS = [
+  "rect",
+  "ellipse",
+  "line",
+  "arrow",
+  // Graphics pack (appended — the original four keep their exact behavior):
+  "star",
+  "heart",
+  "burst",
+  "triangle",
+  "check",
+  "play",
+  "bell",
+  "chevron",
+  "scribble",
+  "arrow-curve",
+  "sparkle",
+  "speech",
+  "squiggle",
+] as const;
 export const ShapeKind = z.enum(SHAPE_KINDS);
 export type ShapeKind = z.infer<typeof ShapeKind>;
+
+/**
+ * How a SHAPE animates IN over `durationSec` (after `delaySec`), resolved by the pure
+ * `shapeAnimState` (shape-anim.ts) so preview, node render, and export agree:
+ *  - fade / pop (overshoot scale) / grow (scale from 0) / drop (falls + bounces)
+ *  - grow-x / grow-y — stretch from the LEFT / BOTTOM edge (bars, underlines)
+ *  - slide-up / slide-down / slide-left / slide-right — travel in + fade
+ *  - draw  — the outline / stroke draws on along its path (lines, arrows, scribbles,
+ *            circles), then any fill fades in
+ *  - wipe  — revealed left → right
+ *  - spin  — a full turn while growing in
+ */
+export const SHAPE_INTRO_STYLES = [
+  "none",
+  "fade",
+  "pop",
+  "grow",
+  "grow-x",
+  "grow-y",
+  "slide-up",
+  "slide-down",
+  "slide-left",
+  "slide-right",
+  "draw",
+  "wipe",
+  "spin",
+  "drop",
+] as const;
+export const ShapeIntroStyle = z.enum(SHAPE_INTRO_STYLES);
+export type ShapeIntroStyle = z.infer<typeof ShapeIntroStyle>;
+
+/** How a shape LEAVES over the last `durationSec` of its clip. */
+export const SHAPE_EXIT_STYLES = [
+  "none",
+  "fade",
+  "shrink",
+  "shrink-x",
+  "slide-up",
+  "slide-down",
+  "slide-left",
+  "slide-right",
+  "undraw",
+  "wipe",
+  "pop",
+] as const;
+export const ShapeExitStyle = z.enum(SHAPE_EXIT_STYLES);
+export type ShapeExitStyle = z.infer<typeof ShapeExitStyle>;
+
+/** A continuous loop while the shape is on screen (`speed` = cycles / second). */
+export const SHAPE_LOOP_STYLES = [
+  "none",
+  "pulse",
+  "bounce",
+  "wiggle",
+  "float",
+  "spin",
+  "blink",
+  "heartbeat",
+  "swing",
+  "shimmer",
+] as const;
+export const ShapeLoopStyle = z.enum(SHAPE_LOOP_STYLES);
+export type ShapeLoopStyle = z.infer<typeof ShapeLoopStyle>;
+
+export const ShapeExit = z.object({
+  style: ShapeExitStyle.default("none"),
+  durationSec: z.number().nonnegative().default(0.4),
+});
+export type ShapeExit = z.infer<typeof ShapeExit>;
+
+export const ShapeLoop = z.object({
+  style: ShapeLoopStyle.default("none"),
+  speed: z.number().min(0.05).max(8).default(1),
+  amount: z.number().min(0).max(1).default(0.5),
+});
+export type ShapeLoop = z.infer<typeof ShapeLoop>;
+
+/** Intro / exit / loop motion for a shape (the shape twin of `TextAnim`). */
+export const ShapeAnim = z.object({
+  style: ShapeIntroStyle.default("none"),
+  durationSec: z.number().nonnegative().default(0.5),
+  delaySec: z.number().nonnegative().default(0),
+  exit: ShapeExit.prefault({}),
+  loop: ShapeLoop.prefault({}),
+});
+export type ShapeAnim = z.infer<typeof ShapeAnim>;
+
+/**
+ * A PROGRESS fill: the shape is revealed from `from` to `to` (0..1) over
+ * [clip.start + startSec, + durationSec] (durationSec absent ⇒ to the clip end),
+ * eased by `easing`, `repeat` times (a ring that sweeps once a second = repeat N).
+ *  - style "wipe" — the fill is clipped from the `direction` edge (progress bars)
+ *  - style "draw" — the stroke draws along its path (progress rings, drawn lines)
+ * `knob` (a hex color) draws a round knob at the leading edge ("" = none).
+ */
+export const ShapeProgress = z.object({
+  from: z.number().min(0).max(1).default(0),
+  to: z.number().min(0).max(1).default(1),
+  startSec: z.number().nonnegative().default(0),
+  durationSec: z.number().positive().optional(),
+  easing: z.enum(["linear", "ease-in-out", "ease-out"]).default("linear"),
+  direction: z.enum(["right", "left", "up", "down"]).default("right"),
+  style: z.enum(["wipe", "draw"]).default("wipe"),
+  repeat: z.number().int().min(1).max(600).default(1),
+  knob: z.union([HexColor, z.literal("")]).default(""),
+});
+export type ShapeProgress = z.infer<typeof ShapeProgress>;
+
+/**
+ * A TEXT drawn INSIDE a shape (a CTA label, a badge word, a lower-third name, a
+ * countdown number): positioned at (dx, dy) from the shape center, it rides every
+ * shape motion (pop / bounce / wiggle) as one piece and is drawn by the SAME
+ * `drawText` as a text clip (fonts, weights, its own optional intro/exit `anim`,
+ * and live `counter`), timed from the shape clip's start.
+ */
+export const ShapeTextPart = z.object({
+  kind: z.literal("text"),
+  text: z.string(),
+  dx: z.number().default(0),
+  dy: z.number().default(0),
+  fontFamily: z.string().default("sans-serif"),
+  fontSize: z.number().positive().default(48),
+  fontWeight: FontWeight.default("bold"),
+  italic: z.boolean().default(false),
+  color: HexColor.default("#ffffff"),
+  align: z.enum(["left", "center", "right"]).default("center"),
+  letterSpacing: z.number().default(0),
+  uppercase: z.boolean().default(false),
+  anim: TextAnim.optional(),
+  counter: TextCounter.optional(),
+  /** Optional drop shadow / outline for legibility over footage. */
+  shadow: TextShadow.optional(),
+  outline: TextOutline.optional(),
+});
+export type ShapeTextPart = z.infer<typeof ShapeTextPart>;
+
+/** A small vector ICON inside a shape (the play mark on a Subscribe pill, a heart on a Like). */
+export const ShapeIconPart = z.object({
+  kind: z.literal("icon"),
+  shape: ShapeKind,
+  dx: z.number().default(0),
+  dy: z.number().default(0),
+  w: z.number().positive().default(40),
+  h: z.number().positive().default(40),
+  color: HexColor.default("#ffffff"),
+  strokeWidth: z.number().min(0).default(0),
+});
+export type ShapeIconPart = z.infer<typeof ShapeIconPart>;
+
+export const ShapePart = z.discriminatedUnion("kind", [ShapeTextPart, ShapeIconPart]);
+export type ShapePart = z.infer<typeof ShapePart>;
 
 /**
  * A vector SHAPE overlay — rectangle, ellipse, line, or arrow — for annotations,
@@ -1171,6 +1365,12 @@ export const ShapeClip = z.object({
   transitionType,
   /** Optional animation keyframes (x/y/scale/rotation/opacity), resolved by `valueAt`. */
   keyframes: z.array(Keyframe).optional(),
+  /** Optional intro / exit / loop motion (absent ⇒ static, exactly as before). */
+  anim: ShapeAnim.optional(),
+  /** Optional progress fill (progress bars / rings); absent ⇒ fully drawn. */
+  progress: ShapeProgress.optional(),
+  /** Optional text / icon parts drawn inside the shape (labels, badges, counters). */
+  parts: z.array(ShapePart).optional(),
 });
 export type ShapeClip = z.infer<typeof ShapeClip>;
 
