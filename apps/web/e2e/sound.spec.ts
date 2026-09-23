@@ -82,7 +82,9 @@ test("sound: compose music, add SFX, beat sync, meters, export with audio", asyn
   expect(sfxCount).toBeGreaterThan(1);
   await shot(page, "02-sfx");
 
-  // 3. Cut to the beat, voice enhance, meters.
+  // 3. Exact beats from the generated grid → markers; cut to the beat, voice enhance, meters.
+  await page.getByRole("button", { name: "Detect beats" }).click();
+  await expect(page.getByText(/Found \d+ beats \(~\d+ BPM/).first()).toBeVisible({ timeout: 30_000 });
   await panel.getByRole("button", { name: "Cut to the beat" }).click();
   await expect(panel.getByRole("status")).toContainText(/lands on the beat/);
   await panel.getByRole("button", { name: "Enhance voice" }).click();

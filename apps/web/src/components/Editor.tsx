@@ -76,7 +76,7 @@ import {
   type TrimEdge,
 } from "@/lib/edit-ops";
 import { clearAllTransitions, setAllTransitions } from "@/lib/transition-ops";
-import { detectBeats as detectBeatsLib } from "@/lib/beats";
+import { detectBeats as detectBeatsLib, generatedBeats } from "@/lib/beats";
 import { isGeneratedAudio, materializeSynth } from "@/lib/synth-audio";
 import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
@@ -1362,7 +1362,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setBusyLabel("Detecting beats…");
     setPlaying(false);
     try {
-      const res = await detectBeatsLib(beatSource.mediaId, beatSource.source, durationSec || undefined);
+      // Generated music has an exact tempo grid — use it instead of estimating.
+      const res =
+        generatedBeats(doc, durationSec || undefined) ??
+        (await detectBeatsLib(beatSource.mediaId, beatSource.source, durationSec || undefined));
       if (!res || res.times.length === 0) {
         say("director", "Couldn't find a clear beat in that audio — try a track with a stronger rhythm.", "info");
         return;

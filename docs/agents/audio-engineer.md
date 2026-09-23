@@ -75,6 +75,19 @@ peak ≤ −1 dBFS (no clipping), |DC| < 0.002, RMS in a sane band, silent tail 
 the very end (seamless end), and that a real ffmpeg encode of generated music +
 SFX + voice-enhance + auto-duck produces a non-empty mp4 with an audio stream.
 
+## Results (listen-proxy + gates)
+
+- Music, 44.1 kHz, 8 s per mood: peak −3.00 dBFS (normalized), 0 clipped samples,
+  |DC| < 2e-5, RMS lo-fi −19 / upbeat −17 / cinematic −18 / corporate −20 /
+  ambient −15 dBFS, last 10 ms below −75 dBFS (clean ending). SFX: peak −3…−5 dBFS,
+  0 clipped, |DC| < 5e-4.
+- Tempo fitting: e.g. 30 s → lo-fi 80 BPM × 10 bars, upbeat 120 × 15, cinematic 72 × 9.
+- Duck measured in the decoded export (verify 67): 19 dB dip under the caption at
+  −18 dB depth.
+- Beat sync: every slideshow cut within 2 ms of the generated grid; music re-fitted.
+- Also: "Detect beats" on generated music returns the exact grid (`generatedBeats`
+  in `apps/web/src/lib/beats.ts`) instead of the Web-Audio estimate.
+
 ## Known limitations
 
 - Voice enhance is export-only (the browser preview plays the untreated voice).
