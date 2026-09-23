@@ -160,3 +160,30 @@ test("export: Cancel stops the render (server-side ffmpeg is killed)", async ({ 
   await expect.poll(() => exportFfmpegRunning(), { timeout: 5_000 }).not.toBe(true);
   await shot(page, "05-cancelled");
 });
+
+test("error boundary: a crashing panel shows a recover card, the editor keeps working", async ({ page }) => {
+  // Dev-only fault injection: the timeline throws once after mount.
+  await page.goto(`${EDITOR_URL}?cadence-crash=timeline`);
+  await page.waitForLoadState("networkidle");
+  const card = page.getByRole("alert").filter({ hasText: "The timeline hit a snag" });
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("Your edit is safe");
+  await shot(page, "06-panel-crash");
+
+  // Everything outside the crashed panel still works: build a text video…
+  await makeTextVideo(page);
+  await expect(page.getByLabel("Scene 1 text")).toBeVisible();
+  // …and because the doc changed, the timeline retried by itself and recovered.
+  await expect(card).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "+ Marker" })).toBeVisible();
+
+  // "Try again" path: crash the preview, then retry it by hand.
+  await page.goto(`${EDITOR_URL}?cadence-crash=preview`);
+  await page.waitForLoadState("networkidle");
+  const previewCard = page.getByRole("alert").filter({ hasText: "The preview hit a snag" });
+  await expect(previewCard).toBeVisible();
+  await expect(page.getByRole("button", { name: "+ Marker" })).toBeVisible(); // timeline unaffected
+  await previewCard.getByRole("button", { name: "Try again" }).click();
+  await expect(previewCard).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start with text" })).toBeVisible();
+});

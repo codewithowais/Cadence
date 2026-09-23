@@ -86,6 +86,7 @@ import type { ExportUiProgress } from "./ExportMenu";
 import { useAutosave } from "@/lib/use-autosave";
 import { SCRATCH_DRAFT_KEY } from "@/lib/autosave";
 import { RecoverDraftBanner } from "./RecoverDraftBanner";
+import { ErrorBoundary } from "./ErrorBoundary";
 import type { Message } from "@/lib/types";
 import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
 
@@ -1574,6 +1575,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             className="h-full w-full shrink-0 md:w-[var(--rail-w)]"
             style={{ "--rail-w": `${railWidth}px` } as CSSProperties}
           >
+            <ErrorBoundary label="Director chat" resetKey={messages}>
             <DirectorRail
               messages={messages}
               busy={busy}
@@ -1584,6 +1586,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onCancel={exporting ? cancelExport : undefined}
               onCollapse={toggleRail}
             />
+            </ErrorBoundary>
           </div>
           <ResizeHandle
             className="hidden md:block"
@@ -1653,11 +1656,13 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             the wrapper is `contents` and the layout is exactly the stacked one. */}
         <div className={sideDock ? "flex min-h-0 flex-1 flex-col md:flex-row-reverse" : "contents"}>
         {room === "edit" ? (
+          <ErrorBoundary label="quick actions" resetKey={doc} onUndo={canUndo ? undo : undefined} compact>
           <QuickActions
             mode={mode !== "none" ? mode : docHasText ? "text" : "none"}
             busy={busy}
             onAction={(p) => void handleSend(p)}
           />
+          </ErrorBoundary>
         ) : (
           <div
             // Capped, self-scrolling options panel. `min()` guarantees it can
@@ -1671,6 +1676,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             }
             style={{ "--room-h": `${roomHeight}px` } as CSSProperties}
           >
+          <ErrorBoundary label={`${room} room`} resetKey={doc} onUndo={canUndo ? undo : undefined}>
           <RoomPanel
             room={room}
             doc={doc}
@@ -1704,6 +1710,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onSelectClip={setSelectedClipId}
             onSeek={seek}
           />
+          </ErrorBoundary>
           </div>
         )}
         {room !== "edit" && !sideDock && (
@@ -1714,6 +1721,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onDelta={(dy) => setRoomHeight((h) => clampPx(h + dy, ROOM_MIN, ROOM_MAX))}
           />
         )}
+        <ErrorBoundary label="preview" resetKey={doc} onUndo={canUndo ? undo : undefined} className="min-h-0 flex-1">
         <Stage
           urls={urls}
           hasMedia={hasMedia}
@@ -1732,6 +1740,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onStartWithText={() => setRoom("text")}
           onAddMedia={() => setRoom("media")}
         />
+        </ErrorBoundary>
         </div>
         <ResizeHandle
           orientation="horizontal"
@@ -1743,6 +1752,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           className="shrink-0 overflow-y-auto md:h-[var(--tl-h)]"
           style={{ "--tl-h": `${timelineHeight}px` } as CSSProperties}
         >
+          <ErrorBoundary label="timeline" resetKey={doc} onUndo={canUndo ? undo : undefined} compact>
           <CutsStrip
             doc={doc}
             timeSec={timeSec}
@@ -1797,6 +1807,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               },
             }}
           />
+          </ErrorBoundary>
         </div>
       </main>
       {codeOpen && (
@@ -1810,7 +1821,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             className="h-full w-full shrink-0 md:w-[var(--code-w)]"
             style={{ "--code-w": `${codeWidth}px` } as CSSProperties}
           >
+            <ErrorBoundary label="code view" resetKey={doc}>
             <CodeDrawer doc={doc} onClose={() => setCodeOpen(false)} />
+            </ErrorBoundary>
           </div>
         </>
       )}
