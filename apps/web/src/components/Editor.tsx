@@ -83,6 +83,9 @@ import { useDocHistory } from "@/lib/history";
 import { applyExportSettings, type ExportSettings } from "@/lib/export-presets";
 import { preflightExport, stripUnusedMedia } from "@/lib/export-preflight";
 import type { ExportUiProgress } from "./ExportMenu";
+import { useAutosave } from "@/lib/use-autosave";
+import { SCRATCH_DRAFT_KEY } from "@/lib/autosave";
+import { RecoverDraftBanner } from "./RecoverDraftBanner";
 import type { Message } from "@/lib/types";
 import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
 
@@ -230,6 +233,21 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const exportPreflight = useMemo(
     () => ({ hasFile: (id: string) => !!files[id], fileBytes: (id: string) => files[id]?.size }),
     [files],
+  );
+  // Autosave + crash recovery (scratch editor only — a project-bound editor saves
+  // versions to the DB). Doc + media registry + transcripts + the media Files
+  // themselves go to IndexedDB; a reload offers "Restore your last session".
+  const autosave = useAutosave({
+    enabled: !initialDoc && !onSave,
+    draftKey: SCRATCH_DRAFT_KEY,
+    doc,
+    mediaList,
+    transcripts,
+    files,
+  });
+  const autosaveChip = useMemo(
+    () => (autosave.status === "off" ? undefined : { status: autosave.status, unsavedMedia: autosave.unsavedMedia }),
+    [autosave.status, autosave.unsavedMedia],
   );
   // Leaving mid-export would silently kill the render — ask first.
   useEffect(() => {
@@ -825,6 +843,35 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setSelectedClipId(null);
     reset(emptyDoc());
     say("director", "Cleared the timeline — added media and edits are gone. Add a video or photos to begin again.", "info");
+  }
+
+  /** Restore the autosaved session: doc + media registry + transcripts + Files. */
+  async function restoreSession() {
+    const s = await autosave.restore();
+    if (!s) return;
+    for (const u of Object.values(urlsRef.current)) URL.revokeObjectURL(u);
+    const nextUrls: Record<string, string> = {};
+    for (const [id, f] of Object.entries(s.files)) nextUrls[id] = URL.createObjectURL(f);
+    setUrls(nextUrls);
+    setFiles(s.files);
+    setMediaList(s.draft.mediaList.length ? s.draft.mediaList : s.draft.doc.media);
+    setTranscripts(s.draft.transcripts);
+    setPlaying(false);
+    setTimeSec(0);
+    setSelectedClipId(null);
+    reset(s.draft.doc); // fresh history — the restored doc is the new baseline
+    const title = s.draft.doc.meta.title || "Untitled";
+    const missing = s.missing.length
+      ? ` ${s.missing.length === 1 ? "One file" : `${s.missing.length} files`} couldn't be kept in this browser (${s.missing
+          .map((m) => `“${m.label ?? m.src}”`)
+          .join(", ")}) — add ${s.missing.length === 1 ? "it" : "them"} again and ${s.missing.length === 1 ? "it re-links" : "they re-link"} in place.`
+      : "";
+    say("director", `Restored your last session — “${title}”, right where you left off.${missing}`, missing ? "error" : "info");
+  }
+
+  /** Throw the autosaved session away (the banner's confirmed Discard). */
+  async function discardSession() {
+    await autosave.discard();
   }
 
   /** Download the current edit-doc as a portable JSON copy (a new project seed). */
@@ -1570,6 +1617,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             {notice}
           </div>
         )}
+        {autosave.offer && (
+          <RecoverDraftBanner draft={autosave.offer} onRestore={restoreSession} onDiscard={discardSession} />
+        )}
         <TopBar
           title={doc.meta.title || projectName || "Untitled"}
           onRename={renameProject}
@@ -1595,6 +1645,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           exportProgress={exportProgress}
           onCancelExport={exporting ? cancelExport : undefined}
           exportPreflight={exportPreflight}
+          autosave={autosaveChip}
         />
         <AppliedStatus doc={doc} hasMedia={hasMedia || hasContent} />
         {/* Portrait projects (9:16 / 4:5) dock the room panel BESIDE the preview on

@@ -21,6 +21,17 @@ import {
   formatEta,
 } from "../apps/web/src/lib/export-stream.ts";
 import { preflightExport, stripUnusedMedia, usedMediaIds } from "../apps/web/src/lib/export-preflight.ts";
+import {
+  SCRATCH_DRAFT_KEY,
+  buildDraft,
+  describeDraftAge,
+  draftHasContent,
+  draftMedia,
+  draftSummary,
+  mediaToPersist,
+  mediaToPrune,
+  parseDraft,
+} from "../apps/web/src/lib/autosave.ts";
 
 // A real `-progress pipe:1` transcript captured from the bundled ffmpeg 6.0.
 const REAL_PROGRESS = [
@@ -190,4 +201,56 @@ test("preflight: >4K, very long and huge uploads warn but don't block", () => {
   const long = parseEditDoc({ ...doc, tracks: [{ id: "video", kind: "visual", clips: [{ id: "v", kind: "video", mediaId: "a", start: 0, duration: 3600 }] }] });
   assert.ok(preflightExport(long, { hasFile: () => true }).issues.some((i) => i.code === "very-long"));
   assert.equal(preflightExport(doc, { hasFile: () => true, output: { width: 3840, height: 2160 } }).issues.length, 0, "exactly 4K is fine");
+});
+
+// ---- autosave drafts -------------------------------------------------------------
+
+test("autosave: draft round-trips through structured clone and validates", () => {
+  const doc = footageDoc();
+  const rec = buildDraft({
+    key: SCRATCH_DRAFT_KEY,
+    doc,
+    mediaList: doc.media,
+    transcripts: { a: { mediaId: "a", language: "en", durationSec: 5, segments: [], words: [] } as never },
+    now: 1_000,
+  });
+  const back = parseDraft(structuredClone(rec));
+  assert.ok(back);
+  assert.deepEqual(back.doc, doc);
+  assert.equal(back.savedAt, 1_000);
+  assert.deepEqual(Object.keys(back.transcripts), ["a"]);
+  assert.ok(draftHasContent(back));
+  assert.equal(draftMedia(back).length, 3);
+});
+
+test("autosave: corrupt / foreign / old drafts are rejected, bad parts dropped", () => {
+  assert.equal(parseDraft(null), null);
+  assert.equal(parseDraft({ v: 99, key: "scratch", doc: footageDoc() }), null, "unknown version");
+  assert.equal(parseDraft({ v: 1, key: "scratch", doc: { tracks: "nope" } }), null, "schema-invalid doc");
+  const partial = parseDraft({
+    v: 1,
+    key: "scratch",
+    savedAt: "yesterday",
+    doc: footageDoc(),
+    mediaList: [{ id: "ok", kind: "video", src: "x.mp4" }, { id: "", kind: "bogus" }],
+    transcripts: { a: { segments: [] }, b: "junk" },
+  });
+  assert.ok(partial);
+  assert.deepEqual(partial.mediaList.map((m) => m.id), ["ok"]);
+  assert.deepEqual(Object.keys(partial.transcripts), ["a"]);
+  assert.equal(partial.savedAt, 0);
+  const empty = parseDraft({ v: 1, key: "scratch", doc: { version: 1, media: [], tracks: [] }, mediaList: [] });
+  assert.ok(empty);
+  assert.equal(draftHasContent(empty), false, "an empty project is not worth a restore banner");
+});
+
+test("autosave: media persist/prune sets and banner copy", () => {
+  assert.deepEqual(mediaToPersist(["a", "b", "c"], new Set(["a"]), new Set(["c"])), ["b"]);
+  assert.deepEqual(mediaToPrune(["a", "b"], new Set(["b"])), ["a"]);
+  const now = 10_000_000;
+  assert.equal(describeDraftAge(now - 10_000, now), "just now");
+  assert.equal(describeDraftAge(now - 5 * 60_000, now), "5 min ago");
+  assert.equal(describeDraftAge(now - 3 * 3_600_000, now), "3 h ago");
+  assert.equal(describeDraftAge(now - 30 * 3_600_000, now), "yesterday");
+  assert.equal(draftSummary({ doc: footageDoc(), mediaList: [] }), "3 media files · 0:05");
 });

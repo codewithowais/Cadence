@@ -7,6 +7,7 @@ import { fmtTime } from "@/lib/format";
 import type { ExportSettings } from "@/lib/export-presets";
 import { ExportMenu, type ExportUiProgress } from "./ExportMenu";
 import type { PreflightInput } from "@/lib/export-preflight";
+import type { AutosaveStatus } from "@/lib/use-autosave";
 
 interface TopBarProps {
   title: string;
@@ -46,6 +47,43 @@ interface TopBarProps {
   onSaveProjectFile?: () => void;
   /** Open a .cadence.json / edit-doc JSON file. */
   onOpenProjectFile?: () => void;
+  /** Scratch-editor autosave state (a quiet "Saved in this browser" chip). */
+  autosave?: { status: AutosaveStatus; unsavedMedia: string[] };
+}
+
+/** Quiet trust signal: is this work being kept? Renders nothing when N/A. */
+function AutosaveChip({ status, unsavedMedia }: { status: AutosaveStatus; unsavedMedia: string[] }) {
+  const base = "hidden shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] md:inline-flex";
+  if (status === "saving") {
+    return <span role="status" className={`${base} text-faint`}>Saving…</span>;
+  }
+  if (status === "saved" || status === "idle") {
+    if (unsavedMedia.length) {
+      return (
+        <span role="status" className={`${base} text-amber-deep`} title={`Storage is full — not kept: ${unsavedMedia.join(", ")}. The edit itself is saved.`}>
+          Saved · some media not kept
+        </span>
+      );
+    }
+    return status === "saved" ? (
+      <span role="status" className={`${base} text-faint`} title="Your edit and media are autosaved in this browser — a refresh or crash won't lose them.">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
+        Saved in this browser
+      </span>
+    ) : null;
+  }
+  if (status === "unavailable" || status === "error") {
+    return (
+      <span
+        role="status"
+        className={`${base} border border-amber/30 bg-amber/5 text-amber-deep`}
+        title="This browser won't let Cadence store data (private mode or blocked storage). Use ••• → Save project file to keep your work."
+      >
+        {status === "error" ? "Autosave failed" : "Autosave off"}
+      </span>
+    );
+  }
+  return null;
 }
 
 /** Click-to-rename project title. Enter/blur commits, Escape cancels. */
@@ -207,6 +245,7 @@ export function TopBar(props: TopBarProps) {
           </Link>
         )}
         <EditableTitle title={props.title} onRename={props.onRename} />
+        {props.autosave && <AutosaveChip status={props.autosave.status} unsavedMedia={props.autosave.unsavedMedia} />}
         {props.mediaLabel && (
           <span className="hidden truncate rounded-full border border-line bg-elevated px-2.5 py-1 text-xs text-muted sm:inline">
             {props.mediaLabel}
