@@ -11,11 +11,11 @@ export function FinalCta() {
         />
         <div className="relative max-w-xl">
           <h2 className="text-2xl font-semibold tracking-tight sm:text-4xl">
-            Describe your next edit. <span className="voice text-amber">See it made.</span>
+            Your next video starts with a sentence
           </h2>
           <p className="mt-4 text-base leading-relaxed text-muted">
-            Jump straight into the scratch workspace — no account, no setup, no timeline. Sign in
-            whenever you want to save and version your projects.
+            Open the editor and describe it — no account, no install, nothing to learn first. Sign in
+            whenever you want to save projects and keep every version.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
@@ -46,7 +46,7 @@ export function SiteFooter() {
             C
           </div>
           <span className="text-sm font-semibold tracking-tight">Cadence</span>
-          <span className="text-xs text-faint">edits-as-code · runs locally · free-first</span>
+          <span className="text-xs text-faint">Free to start. Runs on your machine.</span>
         </div>
         <nav className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-muted">
           <Link href="/editor" className="transition hover:text-text">

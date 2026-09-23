@@ -132,3 +132,10 @@ test("text video: a landing prompt chip (?prompt=) builds it on arrival", async 
   await expect(page.getByRole("button", { name: "Aurora ✦" })).toBeVisible();
   await shot(page, "08-landing-prompt-design-bg");
 });
+
+test("empty project: a footage prompt queues instead of half-applying", async ({ page }) => {
+  await page.goto(`${EDITOR_URL}?prompt=${encodeURIComponent("make a slideshow from my photos with a warm look")}`);
+  await expect(page.getByText(/add a video or photos and I'll run that/).first()).toBeVisible({ timeout: 30_000 });
+  // Nothing was applied: the empty state is still showing.
+  await expect(page.getByText("Start with words or footage")).toBeVisible();
+});

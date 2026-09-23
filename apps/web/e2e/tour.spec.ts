@@ -26,7 +26,7 @@ test.beforeAll(() => {
 test("page tour: landing → login → dashboard → settings → editor", async ({ page }) => {
   // ---- landing / ----
   await page.goto("/");
-  await expect(page.getByRole("heading", { level: 1, name: /Describe the edit/i })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: /Describe the video/i })).toBeVisible();
   await page.waitForLoadState("networkidle");
   await shot(page, "01-landing");
 

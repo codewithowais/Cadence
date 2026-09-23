@@ -5,10 +5,19 @@ const FAQS: QA[] = [
     q: "Is Cadence free?",
     a: (
       <>
-        Yes — it is free-first and runs locally by default. The Director, live preview and editing
-        tools use deterministic, offline defaults with no API keys required. Optional AI
-        super-resolution is off by default and the only piece that can be metered; you opt into it
-        explicitly.
+        Yes. Everything on this page works for free, with no API keys and no account. A few optional
+        extras that would cost money to run (like AI super-resolution) are switched off unless you
+        turn them on yourself.
+      </>
+    ),
+  },
+  {
+    q: "Can I make a video without any footage?",
+    a: (
+      <>
+        Yes. Type a script, a quote, a list of tips or an announcement and Cadence turns it into an
+        animated text video with backgrounds and transitions. Pick one of 10 themes, change fonts and
+        animations, and export it — no camera needed.
       </>
     ),
   },
@@ -62,12 +71,7 @@ export function Faq() {
   return (
     <section id="faq" className="mx-auto max-w-3xl px-6 py-16 sm:py-20">
       <div className="text-center">
-        <p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-amber">
-          Questions
-        </p>
-        <h2 className="text-2xl font-semibold tracking-tight sm:text-4xl">
-          Straight answers
-        </h2>
+        <h2 className="text-2xl font-semibold tracking-tight sm:text-4xl">Questions people ask</h2>
       </div>
 
       <div className="mt-10 divide-y divide-line-soft border-y border-line-soft">

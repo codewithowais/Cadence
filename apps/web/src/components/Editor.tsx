@@ -568,13 +568,16 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
    * user's line has already been shown (a queued describe-first request), so we
    * don't repeat it. Commits the result (undoable) and shows an Undo toast.
    */
-  async function runDirector(text: string, echo = true): Promise<number> {
+  async function runDirector(text: string, echo = true, onlyTextVideo = false): Promise<number> {
     if (echo) say("you", text);
     setBusy(true);
     setBusyLabel("Applying your edit…");
     setPlaying(false);
     try {
       const res = await askDirector({ request: text, media: projectMedia, transcripts: Object.values(transcripts), doc });
+      // On an EMPTY project only a text video can run now; anything else (a look,
+      // a reframe…) would be a no-op without footage, so the caller queues it.
+      if (onlyTextVideo && !res.toolCalls.some((c) => c.name === "make_text_video")) return 0;
       if (res.toolCalls.length === 0) {
         say("director", res.summary, "info");
         return 0;
@@ -611,10 +614,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (projectMedia.length === 0) {
       // No footage: the Director can still make/edit a TEXT video. Anything it
       // can't do without media is queued and fires once footage loads.
-      const ran = await runDirector(text);
+      const ran = await runDirector(text, true, !hasContent);
       if (ran === 0 && !hasContent) {
         setPendingRequest(text);
-        say("director", "If that needs footage, add a video or photos and I'll run it the moment they load.", "info");
+        say("director", "Got it — add a video or photos and I'll run that the moment they load. (Or make a video from words alone: try “make a text video: …”.)", "info");
       }
       return;
     }

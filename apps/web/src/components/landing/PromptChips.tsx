@@ -28,14 +28,10 @@ export function PromptChips() {
     <section className="mx-auto max-w-6xl px-6 py-16 sm:py-20">
       <div className="rounded-3xl border border-line-soft bg-gradient-to-br from-elevated/70 to-panel/40 p-8 sm:p-12">
         <div className="max-w-2xl">
-          <p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-teal">
-            Start from a prompt
-          </p>
-          <h2 className="text-2xl font-semibold tracking-tight sm:text-4xl">
-            Not sure what to say? <span className="voice text-amber">Try one of these.</span>
-          </h2>
+          <h2 className="text-2xl font-semibold tracking-tight sm:text-4xl">Not sure what to say? Try one of these</h2>
           <p className="mt-4 text-base leading-relaxed text-muted">
-            Tap a prompt to open the scratch editor with the idea ready to go — no account needed.
+            Tap one to open the editor with it ready to go. No account needed. Prompts that need footage wait
+            until you add it.
           </p>
         </div>
 
