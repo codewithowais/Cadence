@@ -76,6 +76,7 @@ import {
   parseWhisperJson,
   pickTranscriber,
   assertLocalMediaPath,
+  mediaBaseDir,
   allTtsProviders,
   buildTtsArgs,
   estimateSpeechSec,
@@ -978,8 +979,9 @@ async function checkAgenticLoop(): Promise<void> {
 }
 
 async function checkSecurityGuard(): Promise<void> {
-  // Create the media base dir so containment is active for the reject cases.
-  const base = pathJoin(tmpdir(), "cadence-uploads");
+  // Create the media base dir so containment is active for the reject cases. Use
+  // the SAME resolver the guard uses (uploads moved out of the OS temp dir).
+  const base = await mediaBaseDir();
   await mkdir(base, { recursive: true });
 
   for (const bad of ["http://evil/x.mp4", "concat:/etc/passwd", "file:/etc/passwd", "-i", "/etc/passwd"]) {
