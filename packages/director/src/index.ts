@@ -4,6 +4,7 @@ export * from "./highlight";
 export * from "./edits";
 export * from "./tracks";
 export * from "./trims";
+export * from "./craft";
 export * from "./filler";
 export * from "./slideshow";
 export * from "./demo";

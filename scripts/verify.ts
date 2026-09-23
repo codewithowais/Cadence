@@ -3318,6 +3318,91 @@ async function checkTextVideoExportParity(): Promise<void> {
   );
 }
 
+async function checkEditingCraft(): Promise<void> {
+  // Editing speed & timeline craft (senior-video-editor): split all · range cut ·
+  // keep range · close gaps · freeze hold · content-preserving retime · paste
+  // attributes. Each result must parse, render a frame, and build an export plan;
+  // cuts must never change a picture (frame bytes identical where time is kept).
+  const craft = await import("@cadence/director");
+  const doc = parseEditDoc({
+    version: 1,
+    meta: { title: "craft", width: 640, height: 360, fps: 30, background: "#101418" },
+    media: [{ id: "clip-001", kind: "video", src: "/media/clip-001.mp4", durationSec: 180 }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [
+        { id: "c0", kind: "video", start: 0, duration: 4, mediaId: "clip-001", sourceIn: 6, transform: { x: 320, y: 180 } },
+        { id: "c1", kind: "video", start: 4, duration: 4, mediaId: "clip-001", sourceIn: 40, transform: { x: 320, y: 180 } },
+        { id: "c2", kind: "video", start: 8, duration: 4, mediaId: "clip-001", sourceIn: 80, transform: { x: 320, y: 180 } },
+      ] },
+      { id: "captions", kind: "visual", clips: [
+        { id: "t0", kind: "text", start: 0.5, duration: 3, text: "ALPHA", fontSize: 48, color: "#ffcf70", transform: { x: 320, y: 300 } },
+        { id: "t1", kind: "text", start: 4.5, duration: 3, text: "BRAVO", fontSize: 48, color: "#70cfff", transform: { x: 320, y: 300 } },
+        { id: "t2", kind: "text", start: 8.5, duration: 3, text: "CHARLIE", fontSize: 48, color: "#b0ff70", transform: { x: 320, y: 300 } },
+      ] },
+    ],
+  });
+  const frame = async (d: EditDoc, t: number) => Buffer.from((await engine.renderFrame(d, t)).data);
+  const plan = (d: EditDoc, name: string) => buildExportPlan(d, (id) => `/media/${id}.mp4`, `/out/${name}.mp4`, fakeTextOverlays(d));
+
+  // (a) split all tracks: more clips, same length, identical pictures either side of the cut.
+  const split = craft.splitAllAtTime(doc, 5.5);
+  assert(split.tracks.flatMap((t) => t.clips).length === 8, "split all: expected the footage + caption under 5.5s split (6 → 8 clips)");
+  assert(docDurationSec(split) === 12, "split all: length must not change");
+  for (const t of [5.2, 5.8]) assert((await frame(split, t)).equals(await frame(doc, t)), `split all: frame at ${t}s must be byte-identical`);
+  plan(split, "craft-split");
+
+  // (b) remove range 3→9: 6s shorter; what played at 9.5s now plays at 3.5s.
+  const cut = craft.rippleDeleteRange(doc, 3, 9);
+  assert(docDurationSec(cut) === 6, `remove range: expected 6s, got ${docDurationSec(cut)}`);
+  assert((await frame(cut, 3.5)).equals(await frame(doc, 9.5)), "remove range: the tail must slide left intact (frame 9.5s → 3.5s)");
+  assert((await frame(cut, 1)).equals(await frame(doc, 1)), "remove range: the head must be untouched");
+  plan(cut, "craft-cut");
+
+  // (c) keep only 4→8: exactly the middle cut, starting at 0.
+  const kept = craft.keepRange(doc, 4, 8);
+  assert(docDurationSec(kept) === 4, "keep range: expected 4s");
+  assert((await frame(kept, 1)).equals(await frame(doc, 5)), "keep range: frame 5s → 1s");
+
+  // (d) close gaps: deleting the middle clip (and its caption) leaves a 4s hole;
+  // closing it packs the lane and the later caption follows its footage.
+  const holed = parseEditDoc({
+    ...doc,
+    tracks: doc.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== "c1" && c.id !== "t1") })),
+  });
+  assert(craft.trackGaps(holed).length === 1, "close gaps: expected one gap");
+  const closed = craft.closeGaps(holed);
+  assert(craft.trackGaps(closed).length === 0 && docDurationSec(closed) === 8, "close gaps: lane packed to 8s");
+  assert((await frame(closed, 4.5)).equals(await frame(holed, 8.5)), "close gaps: c2 + its caption slide left together");
+
+  // (e) freeze hold at 5s for 2s: +2s, a frozen clip, export holds one frame (tpad clone).
+  const frozen = craft.insertFreezeFrame(doc, "c1", 5, 2);
+  const fz = frozen.tracks[0]!.clips.find((c): c is VideoClip => c.kind === "video" && c.freezeAtSec !== undefined);
+  assert(fz && fz.freezeAtSec === 41 && fz.start === 5 && fz.duration === 2, "freeze hold: expected a 2s hold of source 41s at 5s");
+  assert(docDurationSec(frozen) === 14, "freeze hold: +2s");
+  assert(sourceTimeAt(fz!, 5.5) === sourceTimeAt(fz!, 6.9), "freeze hold: one source frame for the whole hold");
+  const nFreeze = await renderAndAssert(frozen, 6, "verify-craft-freeze.png");
+  assert(plan(frozen, "craft-freeze").filterComplex.includes("tpad=stop_mode=clone"), "freeze hold: expected tpad clone on export");
+
+  // (f) retime 2× keeps the footage: c1 becomes 2s, same source window, lane ripples.
+  const fast = craft.retimeClip(doc, "c1", 2);
+  const f1 = fast.tracks[0]!.clips[1] as VideoClip;
+  assert(f1.duration === 2 && f1.speed === 2 && docDurationSec(fast) === 10, "retime: 2× halves the clip and ripples");
+  assert(sourceTimeAt(f1, f1.start + f1.duration) === 44, "retime: same source out-point (40 + 4)");
+  assert(plan(fast, "craft-fast").filterComplex.includes("setpts=(PTS-STARTPTS)/2"), "retime: expected setpts /2 on export");
+
+  // (g) paste attributes: a look copied from one clip lands on others (and renders).
+  const graded = parseEditDoc({ ...doc, tracks: doc.tracks.map((t) => (t.id === "video" ? { ...t, clips: t.clips.map((c) => (c.id === "c0" ? { ...c, look: { warmth: 0.6, saturation: 1.3 } } : c)) } : t)) });
+  const attrs = craft.copyClipAttributes(graded, "c0");
+  assert(attrs && craft.attributeGroupsOf(attrs).includes("look"), "attributes: expected a look to copy");
+  const pasted = craft.pasteClipAttributes(graded, ["c1", "c2"], attrs!, ["look"]);
+  assert(pasted.tracks[0]!.clips.every((c) => c.kind === "video" && c.look.warmth === 0.6), "attributes: look pasted onto every clip");
+  await renderAndAssert(pasted, 6, "verify-craft-paste.png");
+
+  console.log(
+    `  \x1b[32m✔\x1b[0m check 67 (editing craft): split-all keeps frames byte-identical · remove 3→9 slides the tail intact · keep 4→8 · close gaps packs lane + captions · 2s freeze hold (${nFreeze}b, tpad clone) · 2× retime keeps the source window (setpts /2) · paste look onto 2 clips`,
+  );
+}
+
 async function checkRealEncode(): Promise<void> {
   const info = await detectFfmpeg();
   if (!info.available) {
@@ -3801,6 +3886,7 @@ async function main(): Promise<void> {
   await checkTransformKeyframes();
   await checkTextAnimEngine();
   await checkTextVideoExportParity();
+  await checkEditingCraft();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

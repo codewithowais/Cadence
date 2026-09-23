@@ -39,6 +39,17 @@ import { buildDemo, type BuildDemoOptions } from "./demo";
 import { addTrack, moveClipToTrack, removeTrack, reorderTrack, setTrack } from "./tracks";
 import { rollEdit, slipEdit, slideEdit } from "./trims";
 import {
+  closeGaps,
+  FREEZE_HOLD_SEC,
+  insertFreezeFrame,
+  isSequenceTrack,
+  keepRange,
+  retimeClip,
+  rippleDeleteRange,
+  splitAllAtTime,
+  trackGaps,
+} from "./craft";
+import {
   buildTextVideo,
   restyleTextVideo,
   textVideoScenes,
@@ -1772,6 +1783,101 @@ export const setBackgroundTool: DirectorTool<SetBackgroundInput> = {
   },
 };
 
+// ---- editing craft (split all · close gaps · range cut · hold · retime) ------
+
+/** The video clip on a visual SEQUENCE track that is on screen at `atSec` (base footage first). */
+function videoClipAt(doc: EditDocT, atSec: number): string | null {
+  for (const track of doc.tracks) {
+    if (track.kind !== "visual" || !isSequenceTrack(track) || track.locked) continue;
+    for (const c of track.clips) {
+      if (c.kind === "video" && atSec >= c.start - 1e-6 && atSec < c.start + c.duration - 1e-6) return c.id;
+    }
+  }
+  return null;
+}
+
+export const splitAllTracksTool: DirectorTool<{ atSec: number }> = {
+  name: "split_all_tracks",
+  description:
+    "Cut EVERY unlocked track at `atSec` (footage, captions, titles, music, overlays) — the 'add edit to all tracks' blade. Nothing moves; each clip under that time becomes two editable pieces.",
+  inputSchema: z.object({ atSec: z.number().nonnegative() }),
+  async execute(input, ctx) {
+    const count = (d: EditDocT) => d.tracks.reduce((n, t) => n + t.clips.length, 0);
+    const before = count(ctx.project.doc);
+    const doc = splitAllAtTime(ctx.project.doc, input.atSec);
+    const made = count(doc) - before;
+    if (made === 0) throw new Error(`Nothing sits across ${input.atSec}s to split.`);
+    return commit(ctx.project, doc, `Split ${made} clip${made === 1 ? "" : "s"} across every track at ${input.atSec}s.`);
+  },
+};
+
+export const closeGapsTool: DirectorTool<{ trackId?: string }> = {
+  name: "close_gaps",
+  description:
+    "Close the empty gaps on the sequence tracks (the base footage and video/audio layers) so clips play back to back; captions/titles/b-roll over the footage move with it. Optional `trackId` limits it to one track. Free lanes (captions, titles, music) keep their timing.",
+  inputSchema: z.object({ trackId: z.string().optional() }),
+  async execute(input, ctx) {
+    const n = trackGaps(ctx.project.doc, input.trackId).length;
+    if (n === 0) throw new Error("There are no gaps to close — the clips already play back to back.");
+    const doc = closeGaps(ctx.project.doc, input.trackId);
+    return commit(ctx.project, doc, `Closed ${n} gap${n === 1 ? "" : "s"} — the clips now play back to back.`);
+  },
+};
+
+export const cutRangeTool: DirectorTool<{ startSec: number; endSec: number; keep?: boolean }> = {
+  name: "cut_range",
+  description:
+    "Cut a TIME RANGE out of the whole timeline (every unlocked track), closing it up so everything after slides left in sync (footage, captions, music, markers). With `keep: true` it does the opposite: keeps ONLY [startSec, endSec] and removes everything else.",
+  inputSchema: z
+    .object({ startSec: z.number().nonnegative(), endSec: z.number().nonnegative(), keep: z.boolean().optional() })
+    .refine((v) => Math.abs(v.endSec - v.startSec) >= 0.05, { message: "the range must be at least 0.05s long" }),
+  async execute(input, ctx) {
+    const a = Math.min(input.startSec, input.endSec);
+    const b = Math.max(input.startSec, input.endSec);
+    const doc = input.keep ? keepRange(ctx.project.doc, a, b) : rippleDeleteRange(ctx.project.doc, a, b);
+    const len = Math.round((b - a) * 10) / 10;
+    return commit(
+      ctx.project,
+      doc,
+      input.keep ? `Kept only ${a}s–${b}s (${len}s).` : `Removed ${a}s–${b}s (${len}s) and closed the gap.`,
+    );
+  },
+};
+
+export const holdFrameTool: DirectorTool<{ atSec: number; holdSec?: number }> = {
+  name: "hold_frame",
+  description:
+    "Freeze frame HERE: insert a still of the exact frame shown at `atSec` for `holdSec` seconds (default 2), then let the clip keep playing — later clips, captions and titles shift right to make room. (Use freeze_frame to freeze a whole clip instead.)",
+  inputSchema: z.object({ atSec: z.number().nonnegative(), holdSec: z.number().min(0.1).max(60).optional() }),
+  async execute(input, ctx) {
+    const id = videoClipAt(ctx.project.doc, input.atSec);
+    if (!id) throw new Error(`No video is on screen at ${input.atSec}s to freeze.`);
+    const hold = input.holdSec ?? FREEZE_HOLD_SEC;
+    const doc = insertFreezeFrame(ctx.project.doc, id, input.atSec, hold);
+    return commit(ctx.project, doc, `Held the frame at ${input.atSec}s for ${hold}s.`);
+  },
+};
+
+export const retimeClipTool: DirectorTool<{ clipId?: string; atSec?: number; speed: number }> = {
+  name: "retime_clip",
+  description:
+    "Change ONE video clip's speed while keeping the same footage (CapCut-style): 2 plays it twice as fast and halves its length, 0.5 is slow-motion at double length. Target by `clipId` or the clip on screen at `atSec`. The rest of the timeline ripples and captions stay on their moments.",
+  inputSchema: z
+    .object({
+      clipId: z.string().optional(),
+      atSec: z.number().nonnegative().optional(),
+      speed: z.number().min(0.25).max(4),
+    })
+    .refine((v) => v.clipId !== undefined || v.atSec !== undefined, { message: "provide a clipId or atSec" }),
+  async execute(input, ctx) {
+    const id = input.clipId ?? videoClipAt(ctx.project.doc, input.atSec ?? 0);
+    if (!id) throw new Error("No video clip there to retime.");
+    const doc = retimeClip(ctx.project.doc, id, input.speed);
+    const how = input.speed > 1 ? "shorter" : input.speed < 1 ? "longer" : "original length";
+    return commit(ctx.project, doc, `Set that clip to ${input.speed}× (same footage, ${how}).`);
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
   edit_by_transcript: editByTranscriptTool,
@@ -1843,4 +1949,9 @@ export const DIRECTOR_TOOLS = {
   animate_text: animateTextTool,
   style_text: styleTextTool,
   set_background: setBackgroundTool,
+  split_all_tracks: splitAllTracksTool,
+  close_gaps: closeGapsTool,
+  cut_range: cutRangeTool,
+  hold_frame: holdFrameTool,
+  retime_clip: retimeClipTool,
 } as const;
