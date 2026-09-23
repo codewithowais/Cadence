@@ -6,7 +6,7 @@
  * Edits-as-code: a graphic is plain EditDoc data — one or more SHAPE clips (text
  * and icons ride inside them as `parts`, so a label always moves with its pill and
  * exports in the right z-order) on the "graphics" track. Clip ids are
- * `gfx-{n}-{preset}-{role}`, so the group, its preset, and each layer's role read
+ * `gfx-{n}-{preset}-{role}` on the group's own lane `graphics-{n}`, so the group, its preset, and each layer's role read
  * back from the doc with no extra state: every edit (words, colors, timing,
  * position, size, motion) rebuilds the group from its preset deterministically.
  */
@@ -963,7 +963,9 @@ export function findGraphicPreset(key: string): GraphicPresetDef | undefined {
 
 // ---- groups (read back from clip ids) ----------------------------------------------------
 
-export const GRAPHICS_TRACK_ID = "graphics";
+/** Graphics live on their own lanes: `graphics-{n}` (one per group). */
+export const GRAPHICS_TRACK_PREFIX = "graphics-";
+export const graphicTrackId = (uid: number): string => `${GRAPHICS_TRACK_PREFIX}${uid}`;
 const ID_RE = /^gfx-(\d+)-([a-z0-9-]+?)-([a-z0-9]+)$/;
 
 /** Parse a graphics clip id → { group, uid, preset, role } (null when not a graphic). */
@@ -1139,8 +1141,8 @@ function nextUid(doc: EditDoc): number {
 }
 
 /**
- * Insert a graphic preset (see GRAPHIC_PRESETS) at `atSec` on the "graphics" track
- * (created on top of the stack when missing). Returns the new doc and the group id.
+ * Insert a graphic preset (see GRAPHIC_PRESETS) at `atSec` on its own new lane
+ * (`graphics-{n}`, named after the preset) on top of the stack. Returns the new doc and the group id.
  * Pure; the input doc is untouched.
  */
 export function addGraphic(doc: EditDoc, input: AddGraphicInput): { doc: EditDoc; groupId: string; clipIds: string[] } {
@@ -1150,12 +1152,11 @@ export function addGraphic(doc: EditDoc, input: AddGraphicInput): { doc: EditDoc
   const uid = nextUid(clone);
   const p = resolveParams(clone, def, input);
   const clips = buildLayers(clone, def, p, uid, input);
-  let track = clone.tracks.find((t) => t.id === GRAPHICS_TRACK_ID);
-  if (!track) {
-    track = { id: GRAPHICS_TRACK_ID, kind: "visual", name: "Graphics", clips: [], hidden: false, locked: false, muted: false, solo: false };
-    clone.tracks.push(track);
-  }
-  (track.clips as unknown[]).push(...clips);
+  // Each graphic gets its own named lane on top of the stack: it reads as one item
+  // on the timeline, can be hidden / locked on its own, and newer graphics sit above.
+  const track = { id: graphicTrackId(uid), kind: "visual" as const, name: def.label, clips: [] as unknown[], hidden: false, locked: false, muted: false, solo: false };
+  track.clips.push(...clips);
+  (clone.tracks as unknown[]).push(track);
   return { doc: parseEditDoc(clone), groupId: `gfx-${uid}`, clipIds: clips.map((c) => c.id as string) };
 }
 
@@ -1287,14 +1288,14 @@ export function editGraphic(doc: EditDoc, groupId: string, patch: EditGraphicPat
   return parseEditDoc(clone);
 }
 
-/** Remove every layer of a graphic group (drops the graphics track when it empties). */
+/** Remove every layer of a graphic group (drops its lane when it empties). */
 export function removeGraphic(doc: EditDoc, groupId: string): EditDoc {
   const group = findGraphicGroup(doc, groupId);
   if (!group) return doc;
   const ids = new Set(group.layers.map((l) => l.clip.id));
   const clone: EditDoc = structuredClone(doc);
   for (const track of clone.tracks) track.clips = track.clips.filter((c) => !ids.has(c.id));
-  clone.tracks = clone.tracks.filter((t) => t.id !== GRAPHICS_TRACK_ID || t.clips.length > 0);
+  clone.tracks = clone.tracks.filter((t) => !t.id.startsWith(GRAPHICS_TRACK_PREFIX) || t.clips.length > 0);
   return parseEditDoc(clone);
 }
 

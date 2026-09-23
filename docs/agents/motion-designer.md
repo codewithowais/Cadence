@@ -70,4 +70,25 @@ remove — all layers of a group at once) so every graphic is editable after ins
 
 ## Status / notes
 
-(updated as slices land — see bottom)
+**Shipped** (branch `worktree-agent-a020cd1bfacbf3e3c`):
+- Slice 1 — core motion engine + 34 presets + 6 Director tools + StubDirector routing, tests, verify check 67.
+- Slice 2 — Design → Graphics gallery (live hover previews), Selected-graphic inspector (words, amount,
+  colors, 9-point position, size, start/duration, in/loop/out), motion panel for any plain shape,
+  a Graphics section in the Text room, one named timeline lane per graphic, e2e spec.
+
+**Design decisions that changed during the build**
+- Text and icons live INSIDE shapes (`ShapeClip.parts`) instead of separate text clips: a label
+  always moves with its pill (pop / bounce / wiggle), and the export's overlay order (all text,
+  then all shapes) can never put a pill over its own label. So no plan.ts change was needed.
+- Pill / bar widths come from measured per-font glyph averages (`estimateTextWidth`, ±5%) so the
+  ops stay pure and identical in the browser, Node, and tests.
+
+**Known limitations / follow-ups**
+- Export overlays text clips before shape clips over footage, so a user-built shape on a track
+  *below* a separate text clip covers it on export (pre-existing; graphics avoid it via parts).
+  Fix belongs in render-ffmpeg/plan.ts (z-ordered interleave).
+- Graphic text parts are edited in the Graphics inspector, not the Text room text inspector.
+- Group edits rebuild from the preset: per-layer tweaks made elsewhere (e.g. a shape's color in
+  Design → Shapes) are reset by the next group edit; motion overrides are preserved.
+- No emoji stickers (a color-emoji font is not guaranteed in the Skia export) — vector only.
+- No on-canvas drag for graphics yet (the Stage has no move handles); position via the 9-point grid.

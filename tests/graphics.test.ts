@@ -155,13 +155,14 @@ test("addGraphic inserts a group on the graphics track with readable ids", () =>
   const { doc, groupId, clipIds } = addGraphic(emptyDoc(), { preset: "subscribe", atSec: 2 });
   assert.equal(groupId, "gfx-1");
   assert.deepEqual(clipIds, ["gfx-1-subscribe-btn", "gfx-1-subscribe-bell"]);
-  const track = doc.tracks.find((t) => t.id === "graphics")!;
-  assert.equal(track.name, "Graphics");
+  const track = doc.tracks.find((t) => t.id === "graphics-1")!;
+  assert.equal(track.name, "Subscribe + bell", "each graphic gets its own named lane");
   assert.equal(track.clips.length, 2);
   assert.deepEqual(parseGraphicId("gfx-1-lt-bar-edge"), { group: "gfx-1", uid: 1, preset: "lt-bar", role: "edge" });
   assert.equal(parseGraphicId("shape-123"), null);
   const second = addGraphic(doc, { preset: "lt-bar" });
   assert.equal(second.groupId, "gfx-2");
+  assert.equal(second.doc.tracks[second.doc.tracks.length - 1]!.id, "graphics-2", "newer graphics stack on top");
   assert.equal(graphicGroups(second.doc).length, 2);
   // Every layer starts at the playhead, sits inside the frame, and carries motion.
   for (const c of track.clips as ShapeClip[]) {
@@ -234,7 +235,7 @@ test("removeGraphic drops the group (and the empty graphics track); other clips 
   const { doc, groupId } = addGraphic(base, { preset: "heart" });
   const out = removeGraphic(doc, groupId);
   assert.equal(graphicGroups(out).length, 0);
-  assert.equal(out.tracks.some((t) => t.id === "graphics"), false);
+  assert.equal(out.tracks.some((t) => t.id.startsWith("graphics-")), false);
   assert.equal(out.tracks[0]!.clips.length, 1);
 });
 

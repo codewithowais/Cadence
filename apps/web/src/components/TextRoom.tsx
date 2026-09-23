@@ -51,6 +51,7 @@ import {
   type TextVideoTheme,
 } from "@cadence/director";
 import { BackgroundSwatch, TextSwatch, sampleText } from "./TextSwatch";
+import { GraphicsGallery } from "./GraphicsGallery";
 import { addQuickText, allTexts, findText, lastTitleId, patchText, type QuickTextKind } from "@/lib/text-edit";
 import { PRO_TEXT_PRESETS, insertProPreset, presetPreviewClip } from "@/lib/text-presets-pro";
 
@@ -613,7 +614,7 @@ const POSITIONS: { key: string; x: number; y: number; label: string }[] = [
   { key: "br", x: 0.8, y: 0.82, label: "Bottom right" },
 ];
 
-function TextPane({ doc, busy, timeSec, selectedClipId, onApplyDoc, onSelectClip }: TextRoomProps) {
+function TextPane({ doc, busy, timeSec, selectedClipId, onApplyDoc, onSelectClip, onSeek }: TextRoomProps) {
   const selected = findText(doc, selectedClipId);
   const texts = allTexts(doc);
   const add = (kind: QuickTextKind) => {
@@ -657,6 +658,10 @@ function TextPane({ doc, busy, timeSec, selectedClipId, onApplyDoc, onSelectClip
             />
           ))}
         </div>
+      </Section>
+
+      <Section title="Graphics & stickers" hint="Animated CTAs, lower thirds, timers, progress bars, stickers — one click, fully editable.">
+        <GraphicsGallery doc={doc} busy={busy} timeSec={timeSec} selectedClipId={selectedClipId} onApplyDoc={onApplyDoc} onSelectClip={onSelectClip} onSeek={onSeek} />
       </Section>
 
       {texts.length > 0 && (
