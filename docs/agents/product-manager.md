@@ -26,7 +26,7 @@ Walked landing → `/editor` (empty) → first edit → export, as a non-technic
 | F1 | "I don't know what this app can do / where a thing lives." | **⌘K / Ctrl+K command palette** (`CommandPalette.tsx`, `lib/commands.ts`). Fuzzy-searches every room, context-aware one-tap edit, the whole prompt library, project actions (export, undo, redo, panels, shortcuts, play) and recent prompts. Anything that doesn't match becomes "Ask the Director: …". Also opened from a TopBar "Search" button. | Any capability reachable in ≤ 3 keystrokes; zero "no results" dead ends (free text always runs). |
 | F2 | "What's the path to a finished video?" | **Getting-started checklist** (`OnboardingChecklist.tsx`): *Add footage or start with text → Make your first edit → Preview it → Export*. Ticks itself off from real editor state (content present, a doc change after content existed, playback, an export run). Dismissible, progress persisted per browser. Collapsed to one "Next: …" line with a CTA so it never crowds the chat. | % of first sessions reaching "Export" ↑; checklist completion rate. |
 | F3 | "I made one edit — now what?" | **Next-step chips** (`NextSteps.tsx`) under the latest Director edit, from a PURE `nextSteps(doc, mode, lastTools)`: after a highlight → captions / vertical / remove filler; after a text video → another theme / vertical / animation; nothing is suggested that's already applied (captions on, already vertical, a look set…). | Edits per session ↑; share of edits started from a chip. |
-| F4 | "What can I even say?" | **Prompt library** (`PromptLibrary.tsx`): ~50 verified prompts in 8 goals (Make it shorter, Social-ready, Captions, Look & feel, Titles & motion, Sound, Text videos, Quality & export), searchable, context-aware ("needs footage" badges). Click inserts into the composer (tweakable); ↵ runs. Every prompt is unit-tested to route to a real tool. | Library opens → prompt runs conversion; unmatched-request rate ↓. |
+| F4 | "What can I even say?" | **Prompt library** (`PromptLibrary.tsx`): 66 verified ideas in 9 goals (Make it shorter, Social-ready, Captions & titles, Look & feel, Motion & timing, Sound, Text videos, Photos, Quality), searchable, context-aware ("needs footage" badges). Click inserts into the composer (tweakable); ↵ runs. Every prompt is unit-tested to route to a real tool. | Library opens → prompt runs conversion; unmatched-request rate ↓. |
 | F5 | "Let me try that again, slightly different." | **Recent prompts**: ↑/↓ in the composer walks the last 20 prompts (persisted per browser, storage failures ignored); recents also appear in the palette. | Re-runs without retyping. |
 | F6 | "It said it didn't understand and I'm stuck." | **Friendly no-match**: "I'm not sure how to do "…" yet — closest things I can do:" + 3 clickable closest prompts (pure token/synonym ranking) + "See all ideas". Errors get a **Try again** chip. | Recovery rate after a no-match ↑. |
 
@@ -57,14 +57,31 @@ clip*, and never start with *Export / Style / Animate / Background*.
 
 ## 5. Status
 
-Built: F1–F6. See CHANGELOG-style notes below.
+Built: F1–F6, plus QuickActions polish (applied chips show a quiet ✓ — accessible name
+unchanged — and a trailing "More" opens the library).
+
+**Bug fixed on the way (first-run export path):** the Deliver room's "Export .mp4"
+passed its click event into `exportDoc(overrideDoc)`, so export failed with
+"Cannot read properties of undefined (reading 'length')". `Editor.tsx` now wires it
+as `onExport={() => void exportDoc()}` (one token; found by the onboarding e2e).
+
+**Known limitations**
+- The checklist's "Download your video" ticks when an export *starts* (the Editor
+  exposes `exporting`, not success) — a cancelled export still counts.
+- Only the latest Director reply carries chips; older replies stay plain text.
+- Clean audio / stabilize / layouts have no Director routing yet, so the library
+  lists them as "Opens <room>" shortcuts rather than prompts.
+- `SHORTCUTS` (ShortcutsHelp, another lane) doesn't list ⌘K yet; the TopBar search
+  button, the composer hint and the palette footer advertise it instead.
+
+Notes:
 
 - `lib/suggestions.ts` — prompt library, goals, `nextSteps`, `closestIdeas`,
   `onboardingSteps`, `pushRecent`, `fuzzyScore`.
 - `lib/commands.ts` — `buildCommands`, `rankCommands`.
 - `lib/recent-prompts.ts` — localStorage load/save (try/catch).
 - `components/CommandPalette.tsx`, `OnboardingChecklist.tsx`, `NextSteps.tsx`,
-  `PromptLibrary.tsx`; `DirectorRail.tsx`, `QuickActions.tsx` updated.
+  `PromptLibrary.tsx`, `Overlay.tsx` (shared accessible modal shell); `DirectorRail.tsx`, `QuickActions.tsx` updated.
 - Wiring: `Editor.tsx` (palette state + ⌘K binding + action switch + message metadata),
   `TopBar.tsx` (optional `onOpenPalette` search button).
 - Tests: `tests/suggestions.test.ts` (pure logic + every library prompt routes through
