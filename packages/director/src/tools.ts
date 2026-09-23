@@ -61,6 +61,14 @@ import {
   type StyleTextInput,
 } from "./text-ops";
 import {
+  addCountdownTool,
+  addGraphicTool,
+  addLowerThirdTool,
+  addProgressBarTool,
+  animateShapeTool,
+  editGraphicTool,
+} from "./graphics-tools";
+import {
   addAdjustment,
   addBroll,
   addCallout,
@@ -1967,4 +1975,10 @@ export const DIRECTOR_TOOLS = {
   auto_duck: autoDuckTool,
   enhance_voice: enhanceVoiceTool,
   beat_sync: beatSyncTool,
+  add_graphic: addGraphicTool,
+  add_lower_third: addLowerThirdTool,
+  add_progress_bar: addProgressBarTool,
+  add_countdown: addCountdownTool,
+  edit_graphic: editGraphicTool,
+  animate_shape: animateShapeTool,
 } as const;

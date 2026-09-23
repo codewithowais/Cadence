@@ -328,9 +328,11 @@ test("voice enhance: chain on the voice only; off is byte-identical", () => {
 
 // ---- Director ---------------------------------------------------------------------------------
 
-test("the audio tools are appended to DIRECTOR_TOOLS", () => {
+test("the audio tools are registered in DIRECTOR_TOOLS", () => {
   const keys = Object.keys(DIRECTOR_TOOLS);
-  assert.deepEqual(keys.slice(-6), ["generate_music", "add_sfx", "auto_sfx", "auto_duck", "enhance_voice", "beat_sync"]);
+  for (const k of ["generate_music", "add_sfx", "auto_sfx", "auto_duck", "enhance_voice", "beat_sync"]) {
+    assert.ok(keys.includes(k), `${k} is registered`);
+  }
 });
 
 test("StubDirector routes plain-language sound requests", async () => {

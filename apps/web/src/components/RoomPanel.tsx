@@ -48,6 +48,7 @@ import {
 } from "@/lib/fx";
 import { EMOJI_STICKERS, TEXT_PRESETS, insertSticker, type PlaceOpts } from "@/lib/text-presets";
 import { BackgroundPane, TextRoom } from "./TextRoom";
+import { GraphicsGallery } from "./GraphicsGallery";
 import { fmtTime, download, downloadBlob } from "@/lib/format";
 import { describeDoc } from "@/lib/status";
 import {
@@ -346,6 +347,9 @@ export function RoomPanel(props: RoomPanelProps) {
         onApplyDoc={onApplyDoc}
         onBeginPlacement={onBeginPlacement}
         status={status}
+        selectedClipId={selectedClipId}
+        onSelectClip={onSelectClip}
+        onSeek={onSeek}
       />
     );
   }
@@ -829,7 +833,7 @@ function drawParade(cv: HTMLCanvasElement | null, data: Uint8ClampedArray, sw: n
 
 // ---- Design room (unified Looks · Color · Backgrounds · Text · Overlays) ----
 
-type DesignCategory = "looks" | "grade" | "backgrounds" | "text" | "overlays" | "shapes" | "advanced";
+type DesignCategory = "looks" | "grade" | "backgrounds" | "text" | "overlays" | "shapes" | "advanced" | "graphics";
 
 const DESIGN_CATEGORIES: { key: DesignCategory; label: string; hint: string }[] = [
   { key: "looks", label: "Looks", hint: "One-tap filters" },
@@ -839,6 +843,7 @@ const DESIGN_CATEGORIES: { key: DesignCategory; label: string; hint: string }[] 
   { key: "overlays", label: "Overlays / FX", hint: "B-roll, titles, grain" },
   { key: "shapes", label: "Shapes · Layout", hint: "Boxes, arrows, PiP, grid" },
   { key: "advanced", label: "Advanced", hint: "Chroma, blend, mask" },
+  { key: "graphics", label: "Graphics", hint: "CTAs, timers, stickers" },
 ];
 
 const DESIGN_CAT_KEY = "cadence:designCat";
@@ -860,6 +865,9 @@ function DesignRoom({
   onApplyDoc,
   onBeginPlacement,
   status,
+  selectedClipId,
+  onSelectClip,
+  onSeek,
 }: {
   doc: EditDoc;
   mediaList: MediaAsset[];
@@ -870,6 +878,9 @@ function DesignRoom({
   onApplyDoc: (doc: EditDoc, coalesceKey?: string) => void;
   onBeginPlacement?: BeginPlacement;
   status: ReturnType<typeof describeDoc>;
+  selectedClipId?: string | null;
+  onSelectClip?: (id: string | null) => void;
+  onSeek?: (t: number) => void;
 }) {
   void status;
   const [cat, setCat] = useState<DesignCategory>("looks");
@@ -978,6 +989,17 @@ function DesignRoom({
         {cat === "shapes" && <ShapesSection doc={doc} busy={busy} onApplyDoc={onApplyDoc} />}
         {cat === "advanced" && (
           <AdvancedFx doc={doc} mediaList={mediaList} busy={busy} onApplyDoc={onApplyDoc} />
+        )}
+        {cat === "graphics" && (
+          <GraphicsGallery
+            doc={doc}
+            busy={busy}
+            timeSec={timeSec}
+            selectedClipId={selectedClipId}
+            onApplyDoc={onApplyDoc}
+            onSelectClip={onSelectClip}
+            onSeek={onSeek}
+          />
         )}
       </div>
     </div>

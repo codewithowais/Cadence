@@ -12,6 +12,7 @@
  * the intro starts, whatever the unit.
  */
 import type { SolidClip, ShapeClip, TextAnim, TextClip } from "./schema";
+import { counterWindows, shapeMotionWindows } from "./shape-anim";
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 const easeOutCubic = (p: number): number => 1 - Math.pow(1 - clamp01(p), 3);
@@ -419,7 +420,17 @@ export function clipAnimatedWindows(clip: TextClip | ShapeClip | SolidClip): Win
   if (clip.kind === "solid") {
     if (clip.gradient && clip.gradient.motion !== "none" && clip.gradient.speed > 0) return whole;
   }
+  if (clip.kind === "shape") {
+    // Shape motion (intro / exit / loop) and progress fills — see shape-anim.ts.
+    const mw = shapeMotionWindows(clip);
+    if (mw === "whole") return whole;
+    ws.push(...mw);
+  }
   if (clip.kind === "text") {
+    // Live counters change at each tick (or continuously when smooth).
+    const cw = counterWindows(clip);
+    if (cw === "whole") return whole;
+    ws.push(...cw);
     const a = clip.anim;
     if (a.loop.style !== "none" && a.loop.amount > 0) return whole;
     if (clip.karaoke?.enabled && clip.words && clip.words.length > 0) return whole;

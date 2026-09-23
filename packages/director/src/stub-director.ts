@@ -78,6 +78,7 @@ import {
 import { speechRegions } from "./audio";
 import { isSynthSrc } from "./sound-synth";
 import type { MusicMood, SfxKind } from "./sound-synth";
+import { parseGraphicsRequest } from "./graphics-tools";
 import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle, TranscriptEditMode, TranscriptEditUnit } from "./edits";
 import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
 import type { BlendMode, CurvePoint, KeyframeEasing, KeyframeProp } from "@cadence/core";
@@ -1476,6 +1477,11 @@ export class StubDirector {
     const bg = parseBackground(tReq);
     if (bg && (textMode || docHasText || !hasVisualMedia || /background/.test(tReq))) {
       steps.push({ run: (p) => setBackgroundTool.execute(bg, { project: p }), call: { name: setBackgroundTool.name, input: bg } });
+    }
+
+    // ---- graphics: CTAs, progress bars, countdowns, stickers, annotations ----
+    for (const g of parseGraphicsRequest(textMode ? textInstr : req, textMode)) {
+      steps.push({ run: (p) => g.tool.execute(g.input as never, { project: p }), call: { name: g.tool.name, input: g.input } });
     }
 
     if (steps.length === 0) {

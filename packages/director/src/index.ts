@@ -19,3 +19,5 @@ export {
 } from "./agentic";
 export * from "./sound-synth";
 export * from "./audio";
+export * from "./graphics";
+export * from "./graphics-tools";

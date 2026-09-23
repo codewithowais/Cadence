@@ -3469,6 +3469,102 @@ async function checkSoundMadeEasy(): Promise<void> {
   );
 }
 
+/**
+ * check 68 — GRAPHICS pack (motion designer): animated shapes, CTAs, lower thirds,
+ * countdowns, progress bars, stickers. Frames change over intros, settle, loops keep
+ * moving, progress fills, counters tick; plain shapes stay on the static path; the
+ * animated windows drive export; a REAL encode proves preview == export both for a
+ * media-less graphics piece (decoded frames vs the canvas) and over footage (PNG
+ * sequences over the animated windows, one still per timer value).
+ */
+async function checkGraphicsPack(): Promise<void> {
+  const { addGraphic, graphicGroups, editGraphic } = await import("@cadence/director");
+  const { clipAnimatedWindows: windows, counterTickTimes, shapeAnimState } = await import("@cadence/core");
+  const W = 640;
+  const H = 360;
+  const bg = { id: "bg", kind: "visual", clips: [{ id: "bg1", kind: "solid", start: 0, duration: 6, color: "#20283a", gradient: { stops: ["#3b4a66", "#161b26"], angle: 120 } }] };
+  let doc = parseEditDoc({ version: 1, meta: { title: "graphics", width: W, height: H, fps: 30 }, tracks: [bg] });
+  doc = addGraphic(doc, { preset: "subscribe", atSec: 0.2, durationSec: 4, position: "bottom" }).doc;
+  doc = addGraphic(doc, { preset: "lt-bar", atSec: 0.2, durationSec: 4, text: "Graphics", subtext: "Preview == export" }).doc;
+  doc = addGraphic(doc, { preset: "timer", atSec: 0, amount: 5, position: "top-right" }).doc;
+  doc = addGraphic(doc, { preset: "progress-top", atSec: 0, durationSec: 6 }).doc;
+  doc = addGraphic(doc, { preset: "badge-new", atSec: 0.5, durationSec: 4, position: "top-left" }).doc;
+  const groups = graphicGroups(doc);
+  assert(groups.length === 5, `expected 5 graphic groups, got ${groups.length}`);
+
+  // (a) intros animate then settle; the bell's swing + button pulse keep looping.
+  const intro = await renderBytes(doc, 0.35);
+  const settled = await renderBytes(doc, 1.6);
+  assert(!intro.equals(settled), "graphics intro frame must differ from the settled frame");
+  const btn = groups[0]!.layers[0]!.clip;
+  assert(shapeAnimState(btn, 0.3).scale < 1 && Math.abs(shapeAnimState(btn, 1.2).scale - 1) < 0.12, "subscribe pops in then settles near rest");
+  const loopA = await renderBytes(doc, 1.6);
+  const loopB = await renderBytes(doc, 1.9);
+  assert(!loopA.equals(loopB), "looping CTA + ticking timer + filling progress must keep changing");
+
+  // (b) windows: loops span the clip, progress spans its range, the timer ticks.
+  const bell = groups[0]!.layers[1]!.clip;
+  assert(JSON.stringify(windows(bell)) === JSON.stringify([[bell.start, bell.start + bell.duration]]), "a looping shape animates over its whole span");
+  const bar = groups[1]!.layers[1]!.clip;
+  const barWins = windows(bar);
+  assert(barWins.length === 2 && barWins[0]![0] >= bar.start && barWins[1]![1] <= bar.start + bar.duration + 1e-9, `lower-third bar: intro + exit windows, got ${JSON.stringify(barWins)}`);
+  const timer = groups[2]!.layers[0]!.clip;
+  const tw = windows(timer);
+  assert(tw.length >= 5 && tw.every(([a, b]) => b - a < 0.6), `timer: short windows at each tick + pop in/out, got ${JSON.stringify(tw)}`);
+  assert(counterTickTimes({ start: 0, duration: 6, counter: timer.parts!.find((p) => p.kind === "text")!.counter! } as never).length === 5, "a 5 s timer ticks 5 times");
+
+  // (c) a PLAIN legacy shape stays static (no windows, identical frames).
+  const plain = parseEditDoc({ version: 1, meta: { width: W, height: H }, tracks: [bg, { id: "shapes", kind: "visual", clips: [{ id: "s", kind: "shape", start: 0, duration: 4, w: 200, h: 80, fill: "#2f6690" }] }] });
+  assert(windows(plain.tracks[1]!.clips[0] as Parameters<typeof windows>[0]).length === 0, "a plain shape has no animated windows");
+  assert((await renderBytes(plain, 1)).equals(await renderBytes(plain, 3)), "a plain shape renders identically over time");
+
+  // (d) edits rebuild in place; the frame changes with the words.
+  const edited = editGraphic(doc, groups[1]!.id, { text: "Edited name" });
+  assert(!(await renderBytes(edited, 1.6)).equals(settled), "editing a lower third's name must change the frame");
+  await renderAndAssert(doc, 0.35, "verify-graphics-intro.png");
+  await renderAndAssert(doc, 1.6, "verify-graphics-settled.png");
+
+  // (e) REAL encode — media-less (raw canvas frames) and over footage (overlays).
+  const info = await detectFfmpeg();
+  if (!info.available) {
+    console.log(`  \x1b[32m✔\x1b[0m check 68 (graphics pack): 5 groups animate/settle/loop; windows drive export; plain shapes static — ffmpeg unavailable, encode skipped`);
+    return;
+  }
+  const bin = resolveFfmpegBin();
+  const encDir = resolve(OUT_DIR, "encode");
+  mkdirSync(encDir, { recursive: true });
+  const outA = resolve(encDir, "graphics-canvas.mp4");
+  const resA = await runExport(doc, { resolveMediaPath: () => "", outFile: outA, bin, skipDetect: true });
+  assert(resA.args.includes("rawvideo"), "a media-less graphics piece renders through the canvas raw-frame path");
+  const renderer = createRgbaFrameRenderer(doc);
+  const diffs: number[] = [];
+  for (const frame of [6, 12, 40, 75]) {
+    const t = frame / 30;
+    const d = meanRgbDiff(decodeFrameRgba(bin, outA, t, W, H), renderer.render(t));
+    diffs.push(Math.round(d * 100) / 100);
+    assert(d < 6, `graphics frame ${frame}: export must match the canvas preview (mean |ΔRGB| ${d.toFixed(2)})`);
+  }
+
+  const still = resolve(encDir, "graphics-still.png");
+  spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:duration=1", "-frames:v", "1", still]);
+  const footage = parseEditDoc({
+    ...doc,
+    media: [{ id: "photo-g", kind: "image", src: still, width: W, height: H }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "p1", kind: "image", mediaId: "photo-g", start: 0, duration: 6 }] }, ...doc.tracks.filter((t) => t.id !== "bg")],
+  });
+  const outB = resolve(encDir, "graphics-footage.mp4");
+  const resB = await runExport(footage, { resolveMediaPath: () => still, outFile: outB, bin, skipDetect: true });
+  const seqs = resB.args.filter((a) => a.includes("%05d")).length;
+  assert(seqs > 0, "animated graphics over footage export as PNG frame sequences");
+  assert(statSync(outB).size > 5000, "footage + graphics mp4 must be non-empty");
+  const b1 = decodeFrameRgba(bin, outB, 9 / 30, W, H);
+  const b2 = decodeFrameRgba(bin, outB, 48 / 30, W, H);
+  assert(meanRgbDiff(b1, b2) > 0.5, "graphics must animate in the footage export (not frozen at rest)");
+  console.log(
+    `  \x1b[32m✔\x1b[0m check 68 (graphics pack): 5 groups (CTA, lower third, timer, progress, badge) pop in → settle → loop; timer ticks as ${tw.length} windows; plain shapes stay static; edits rebuild in place; media-less export matches the canvas (mean |ΔRGB| ${diffs.join("/")}); over footage ${seqs} PNG sequences + stills animate on export`,
+  );
+}
+
 async function checkRealEncode(): Promise<void> {
   const info = await detectFfmpeg();
   if (!info.available) {
@@ -3953,6 +4049,7 @@ async function main(): Promise<void> {
   await checkTextAnimEngine();
   await checkTextVideoExportParity();
   await checkSoundMadeEasy();
+  await checkGraphicsPack();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

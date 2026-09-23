@@ -28,12 +28,26 @@ import {
   type TransitionSpec,
 } from "./grade";
 import {
+  LEGACY_SHAPES,
+  arrowHead,
+  counterText,
+  isStrokeShape,
+  pointAlong,
+  polylineLength,
+  shapeAnimState,
+  shapeOutline,
+  shapeProgressLevel,
+  type Polyline,
+  type ShapeMotionState,
+} from "./shape-anim";
+import {
   IDENTITY_UNIT_STATE,
   exitProgress,
   introProgress,
   scrambleText,
   textUnitState,
 } from "./text-anim";
+import { TextClip as TextClipSchema } from "./schema";
 import type {
   BackgroundGradient,
   BackgroundPattern,
@@ -42,6 +56,7 @@ import type {
   CursorClip,
   ImageClip,
   ShapeClip,
+  ShapePart,
   SolidClip,
   TextClip,
   TextFillGradient,
@@ -679,6 +694,8 @@ function paintPanels(
  * shadow, text effects, gradient fill, and karaoke highlighting.
  */
 export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts = {}): void {
+  // A live counter (countdown / timer / count-up) draws its value at this frame.
+  if (clip.counter) clip = { ...clip, text: counterText(clip, t) };
   const px = opts.pxScale ?? 1;
   // Keyframes (if any) override the static transform; opacity keyframes multiply
   // the transition ramp — all resolved by the shared PURE valueAt helper.
@@ -1149,7 +1166,13 @@ function pathRoundRect(ctx: Ctx2D, x: number, y: number, w: number, h: number, r
  * and stroke; line/arrow draw a stroked segment (arrow adds a filled head) using
  * `w` as length and `strokeWidth` as thickness. Faithful: a synthetic overlay only.
  */
-export function drawShape(ctx: Ctx2D, clip: ShapeClip, t: number): void {
+export function drawShape(ctx: Ctx2D, clip: ShapeClip, t: number, opts: DrawOpts = {}): void {
+  // Motion, progress fills, and the graphics-pack geometries draw through the
+  // motion-graphics path; the original four static shapes keep this exact code.
+  if (clip.anim || clip.progress || clip.parts || !LEGACY_SHAPES.has(clip.shape)) {
+    drawShapeAnimated(ctx, clip, t, opts);
+    return;
+  }
   const kfs = keyframeTransformState(clip, t);
   const op = transitionOpacity(clip, t) * kfs.opacityMul;
   if (op <= 0 || clip.w <= 0 || clip.h <= 0) return;
@@ -1261,4 +1284,351 @@ export function drawVfx(ctx: Ctx2D, vfx: Vfx, w: number, h: number): void {
     }
     ctx.restore();
   }
+}
+
+// ---- motion graphics: animated shapes, progress fills, graphics-pack geometry ----
+
+/** Trace every polyline as one path (closed sub-paths are closed). */
+function tracePolylines(ctx: Ctx2D, lines: Polyline[]): void {
+  ctx.beginPath();
+  for (const ln of lines) {
+    const p = ln.pts;
+    if (p.length < 2) continue;
+    ctx.moveTo(p[0]!, p[1]!);
+    for (let i = 2; i < p.length; i += 2) ctx.lineTo(p[i]!, p[i + 1]!);
+    if (ln.closed) ctx.closePath();
+  }
+}
+
+/**
+ * Trace only the [from, to] fraction (by arc length) of a set of polylines, treated
+ * as ONE pen stroke in order — the draw-on / undraw / progress-ring primitive.
+ */
+function tracePartial(ctx: Ctx2D, lines: Polyline[], from: number, to: number): void {
+  const total = polylineLength(lines);
+  const a = Math.max(0, from) * total;
+  const b = Math.min(1, to) * total;
+  let acc = 0;
+  ctx.beginPath();
+  for (const ln of lines) {
+    const p = ln.pts;
+    let penDown = false;
+    for (let i = 2; i < p.length; i += 2) {
+      const x0 = p[i - 2]!;
+      const y0 = p[i - 1]!;
+      const x1 = p[i]!;
+      const y1 = p[i + 1]!;
+      const seg = Math.hypot(x1 - x0, y1 - y0);
+      const s0 = acc;
+      acc += seg;
+      if (seg <= 0 || acc < a || s0 > b) {
+        penDown = false;
+        continue;
+      }
+      const u0 = Math.max(0, (a - s0) / seg);
+      const u1 = Math.min(1, (b - s0) / seg);
+      if (!penDown) {
+        ctx.moveTo(x0 + (x1 - x0) * u0, y0 + (y1 - y0) * u0);
+        penDown = true;
+      }
+      ctx.lineTo(x0 + (x1 - x0) * u1, y0 + (y1 - y0) * u1);
+    }
+  }
+}
+
+/** Clip to the leading `level` fraction of the w×h box along a progress direction. */
+function clipProgressBox(
+  ctx: Ctx2D,
+  dir: "right" | "left" | "up" | "down",
+  level: number,
+  w: number,
+  h: number,
+  pad: number,
+): void {
+  const W = w + pad * 2;
+  const H = h + pad * 2;
+  const x0 = -w / 2 - pad;
+  const y0 = -h / 2 - pad;
+  ctx.beginPath();
+  if (dir === "right") ctx.rect(x0, y0, W * level, H);
+  else if (dir === "left") ctx.rect(x0 + W * (1 - level), y0, W * level, H);
+  else if (dir === "up") ctx.rect(x0, y0 + H * (1 - level), W, H * level);
+  else ctx.rect(x0, y0, W, H * level);
+  ctx.clip();
+}
+
+/**
+ * Draw a shape with MOTION (intro / exit / loop — `shapeAnimState`), an optional
+ * PROGRESS fill (`shapeProgressLevel`: bars wipe, rings draw), and every
+ * graphics-pack geometry (`shapeOutline`: star, heart, burst, bell, scribble, …).
+ * Called by `drawShape` for any clip that has `anim` / `progress` or a new kind;
+ * shares its transform order with the static path (keyframes → motion), so an
+ * animated shape settles exactly onto its static pose.
+ */
+export function drawShapeAnimated(ctx: Ctx2D, clip: ShapeClip, t: number, opts: DrawOpts = {}): void {
+  const px = opts.pxScale ?? 1;
+  const kfs = keyframeTransformState(clip, t);
+  const op = transitionOpacity(clip, t) * kfs.opacityMul;
+  const w = clip.w;
+  const h = clip.h;
+  if (op <= 0 || w <= 0 || h <= 0) return;
+  const m: ShapeMotionState = shapeAnimState(clip, t);
+  if (!m.visible) return;
+
+  const kind = clip.shape;
+  const strokeOnly = isStrokeShape(kind);
+  const thick = strokeOnly ? (clip.strokeWidth > 0 ? clip.strokeWidth : 8) : clip.strokeWidth;
+  const pr = clip.progress;
+  const level = shapeProgressLevel(clip, t);
+  const drawStyle = !!pr && (pr.style === "draw" || strokeOnly);
+  const drawFrom = m.drawFrom;
+  const drawTo = drawStyle ? m.drawTo * level : m.drawTo;
+  const knob = pr && pr.knob !== "" ? pr.knob : "";
+  const knobR = drawStyle || strokeOnly ? Math.max(thick * 1.15, 5) : Math.max(Math.min(w, h) * 0.95, 5);
+
+  ctx.save();
+  ctx.translate(kfs.x + m.dx, kfs.y + m.dy);
+  if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
+  if (kfs.scale !== 1) ctx.scale(kfs.scale, kfs.scale);
+  if (m.swing !== 0) {
+    ctx.translate(0, -h / 2);
+    ctx.rotate(degToRad(m.swing));
+    ctx.translate(0, h / 2);
+  }
+  if (m.rotation !== 0) ctx.rotate(degToRad(m.rotation));
+  if (m.scale !== 1) ctx.scale(m.scale, m.scale);
+  // Wipe reveal (left → right), padded so strokes / heads / knobs aren't shaved.
+  if (m.revealFrom > 0 || m.revealTo < 1) {
+    const pad = thick + knobR + 4;
+    const span = w + pad * 2;
+    const tall = Math.max(w, h) + pad * 2;
+    ctx.beginPath();
+    ctx.rect(-w / 2 - pad + m.revealFrom * span, -tall, Math.max(0, m.revealTo - m.revealFrom) * span, tall * 2);
+    ctx.clip();
+  }
+
+  const baseAlpha = op * m.opacity;
+  const outline = shapeOutline(kind, w, h, clip.radius, thick);
+  const drawing = m.drawFrom > 0 || m.drawTo < 1 || m.fillAlpha < 1;
+  const stretched = m.stretchX !== 1 || m.stretchY !== 1;
+  // The body stretches (grow-x / grow-y / shrink-x); parts are revealed with it.
+  ctx.save();
+  if (stretched) {
+    ctx.translate(m.originX, m.originY);
+    ctx.scale(m.stretchX, m.stretchY);
+    ctx.translate(-m.originX, -m.originY);
+  }
+  ctx.lineJoin = "round";
+
+  if (strokeOnly) {
+    const color = clip.stroke !== "" ? clip.stroke : clip.fill !== "" ? clip.fill : "#ffffff";
+    ctx.globalAlpha = baseAlpha;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = thick;
+    ctx.lineCap = "round";
+    if (drawTo > drawFrom) {
+      if (drawFrom <= 0 && drawTo >= 1) tracePolylines(ctx, outline);
+      else tracePartial(ctx, outline, drawFrom, drawTo);
+      ctx.stroke();
+    }
+    const head = arrowHead(kind, w, h, thick);
+    if (head && drawFrom < 0.98) {
+      const k = Math.max(0, Math.min(1, (drawTo - 0.85) / 0.15));
+      if (k > 0) {
+        ctx.save();
+        ctx.translate(head[0]!, head[1]!);
+        ctx.scale(k, k);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(head[2]! - head[0]!, head[3]! - head[1]!);
+        ctx.lineTo(head[4]! - head[0]!, head[5]! - head[1]!);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  } else {
+    const hasFill = clip.fill !== "";
+    const hasStroke = clip.stroke !== "" && clip.strokeWidth > 0;
+    // Full-shape path: native curves for the original rect/ellipse (crisp), the
+    // sampled outline for everything else. A rect PROGRESS bar resizes (rounded
+    // leading edge) instead of being clipped.
+    const rectBar = kind === "rect" && !!pr && !drawStyle;
+    const trace = (): void => {
+      if (kind === "rect") {
+        if (rectBar) {
+          const dir = pr!.direction;
+          const horiz = dir === "right" || dir === "left";
+          const bw = horiz ? w * level : w;
+          const bh = horiz ? h : h * level;
+          const bx = dir === "left" ? w / 2 - bw : -w / 2;
+          const by = dir === "up" ? h / 2 - bh : -h / 2;
+          pathRoundRect(ctx, bx, by, bw, bh, clip.radius);
+        } else pathRoundRect(ctx, -w / 2, -h / 2, w, h, clip.radius);
+      } else if (kind === "ellipse") {
+        ctx.beginPath();
+        ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
+      } else tracePolylines(ctx, outline);
+    };
+    ctx.save();
+    if (pr && !drawStyle && !rectBar) clipProgressBox(ctx, pr.direction, level, w, h, thick + 2);
+    const showBody = !(rectBar && level <= 0);
+    if (showBody && hasFill && m.fillAlpha > 0) {
+      ctx.globalAlpha = baseAlpha * clip.fillOpacity * m.fillAlpha;
+      ctx.fillStyle = clip.fill;
+      trace();
+      ctx.fill();
+    }
+    if (showBody && m.shimmer >= 0 && m.shimmerAmount > 0 && hasFill) {
+      // A glossy highlight sweeping across the shape (buttons, badges).
+      ctx.save();
+      trace();
+      ctx.clip();
+      const band = Math.max(w, h) * 0.3;
+      const cx = -w / 2 - band + m.shimmer * (w + band * 2);
+      const g = ctx.createLinearGradient(cx - band, -h / 2, cx + band, h / 2);
+      g.addColorStop(0, "rgba(255,255,255,0)");
+      g.addColorStop(0.5, `rgba(255,255,255,${(0.5 * m.shimmerAmount).toFixed(3)})`);
+      g.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.globalAlpha = baseAlpha * m.fillAlpha;
+      ctx.fillStyle = g;
+      ctx.fillRect(-w / 2, -h / 2, w, h);
+      ctx.restore();
+    }
+    // Outline: the full stroke at rest; while drawing on / off (or as a progress
+    // ring) only the visible span — in the fill color when there is no stroke, fading
+    // out as the fill fades in so the hand-off is seamless.
+    const partial = drawing || drawStyle;
+    const strokeColor = hasStroke ? clip.stroke : hasFill ? clip.fill : "#ffffff";
+    const strokeW = hasStroke ? clip.strokeWidth : Math.max(3, Math.min(w, h) * 0.045);
+    const outlineAlpha = hasStroke ? 1 : drawing ? 1 - m.fillAlpha : 0;
+    if (showBody && (hasStroke || partial) && outlineAlpha > 0 && drawTo > drawFrom) {
+      ctx.globalAlpha = baseAlpha * outlineAlpha;
+      ctx.lineWidth = strokeW;
+      ctx.strokeStyle = strokeColor;
+      ctx.lineCap = "round";
+      if (!partial || (drawFrom <= 0 && drawTo >= 1)) trace();
+      else tracePartial(ctx, outline, drawFrom, drawTo);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.restore(); // end of the body stretch
+
+  // Text / icon parts ride the motion; while the body stretches they are revealed
+  // with it, and they fade in with the fill after a draw-on.
+  if (clip.parts && clip.parts.length > 0) {
+    ctx.save();
+    if (stretched) {
+      const x0 = m.originX + (-w / 2 - m.originX) * m.stretchX;
+      const x1 = m.originX + (w / 2 - m.originX) * m.stretchX;
+      const y0 = m.originY + (-h / 2 - m.originY) * m.stretchY;
+      const y1 = m.originY + (h / 2 - m.originY) * m.stretchY;
+      const big = Math.max(w, h) * 4;
+      ctx.beginPath();
+      if (m.stretchY === 1) ctx.rect(x0, -big, Math.max(0, x1 - x0), big * 2);
+      else if (m.stretchX === 1) ctx.rect(-big, y0, big * 2, Math.max(0, y1 - y0));
+      else ctx.rect(x0, y0, Math.max(0, x1 - x0), Math.max(0, y1 - y0));
+      ctx.clip();
+    }
+    drawShapeParts(ctx, clip, t, baseAlpha * m.fillAlpha, px);
+    ctx.restore();
+  }
+
+  // Progress knob at the leading edge (bars) or the pen tip (rings / drawn paths).
+  if (knob && pr) {
+    let kx = 0;
+    let ky = 0;
+    if (drawStyle) [kx, ky] = pointAlong(outline, drawTo);
+    else if (pr.direction === "right") kx = -w / 2 + level * w;
+    else if (pr.direction === "left") kx = w / 2 - level * w;
+    else if (pr.direction === "up") ky = h / 2 - level * h;
+    else ky = -h / 2 + level * h;
+    ctx.globalAlpha = baseAlpha;
+    ctx.shadowColor = "rgba(0,0,0,0.35)";
+    ctx.shadowBlur = knobR * 0.6 * px;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = knobR * 0.15 * px;
+    ctx.fillStyle = knob;
+    ctx.beginPath();
+    ctx.arc(kx, ky, knobR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** Parsed TextClips for shape text parts (cached per part object — parts are immutable doc data). */
+const partTextCache = new WeakMap<object, TextClip>();
+
+/** The text clip a text part draws as: shape-local (dx, dy), timed from the shape clip. */
+export function shapePartTextClip(clip: ShapeClip, part: ShapePart & { kind: "text" }, index = 0): TextClip {
+  let tc = partTextCache.get(part);
+  if (!tc || tc.start !== clip.start || tc.duration !== clip.duration) {
+    tc = TextClipSchema.parse({
+      id: `${clip.id}-part${index}`,
+      kind: "text",
+      start: clip.start,
+      duration: clip.duration,
+      text: part.text,
+      fontFamily: part.fontFamily,
+      fontSize: part.fontSize,
+      fontWeight: part.fontWeight,
+      italic: part.italic,
+      color: part.color,
+      align: part.align,
+      letterSpacing: part.letterSpacing,
+      uppercase: part.uppercase,
+      transform: { x: part.dx, y: part.dy },
+      ...(part.anim ? { anim: part.anim } : {}),
+      ...(part.counter ? { counter: part.counter } : {}),
+      ...(part.shadow ? { shadow: part.shadow } : {}),
+      ...(part.outline ? { outline: part.outline } : {}),
+    });
+    partTextCache.set(part, tc);
+  }
+  return tc;
+}
+
+/** Draw a shape's text / icon parts in shape-local coordinates at `alpha`. */
+function drawShapeParts(ctx: Ctx2D, clip: ShapeClip, t: number, alpha: number, px: number): void {
+  if (alpha <= 0) return;
+  (clip.parts ?? []).forEach((part, i) => {
+    ctx.save();
+    if (part.kind === "icon") {
+      const lines = shapeOutline(part.shape, part.w, part.h, 0, part.strokeWidth || 6);
+      ctx.translate(part.dx, part.dy);
+      ctx.globalAlpha = alpha;
+      if (isStrokeShape(part.shape)) {
+        ctx.strokeStyle = part.color;
+        ctx.fillStyle = part.color;
+        ctx.lineWidth = part.strokeWidth || Math.max(3, Math.min(part.w, part.h) * 0.14);
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        tracePolylines(ctx, lines);
+        ctx.stroke();
+        const head = arrowHead(part.shape, part.w, part.h, ctx.lineWidth);
+        if (head) {
+          ctx.beginPath();
+          ctx.moveTo(head[0]!, head[1]!);
+          ctx.lineTo(head[2]!, head[3]!);
+          ctx.lineTo(head[4]!, head[5]!);
+          ctx.closePath();
+          ctx.fill();
+        }
+      } else {
+        ctx.fillStyle = part.color;
+        if (part.shape === "rect") pathRoundRect(ctx, -part.w / 2, -part.h / 2, part.w, part.h, Math.min(part.w, part.h) * 0.2);
+        else if (part.shape === "ellipse") {
+          ctx.beginPath();
+          ctx.ellipse(0, 0, part.w / 2, part.h / 2, 0, 0, Math.PI * 2);
+        } else tracePolylines(ctx, lines);
+        ctx.fill();
+      }
+    } else {
+      const tc = shapePartTextClip(clip, part, i);
+      drawText(ctx, alpha >= 1 ? tc : { ...tc, transform: { ...tc.transform, opacity: Math.max(0, Math.min(1, alpha)) } }, t, { pxScale: px });
+    }
+    ctx.restore();
+  });
 }

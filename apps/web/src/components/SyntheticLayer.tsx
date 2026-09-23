@@ -23,6 +23,7 @@ import {
   type EditDoc,
   type TextClip,
 } from "@cadence/core";
+import { graphicFonts } from "@/lib/graphics-fonts";
 
 type Layer = "under" | "over";
 
@@ -34,6 +35,8 @@ function useFontsReady(doc: EditDoc): number {
   const fonts = useMemo(() => {
     const set = new Set<string>();
     for (const t of doc.tracks) for (const c of t.clips) if (c.kind === "text") set.add(textFont(c as TextClip).replace(/\d+(\.\d+)?px/, "48px"));
+    // Text parts inside graphics (CTA labels, badges, counters) need their faces too.
+    for (const f of graphicFonts(doc)) set.add(f);
     return [...set];
   }, [doc]);
   useEffect(() => {
@@ -108,7 +111,7 @@ export function SyntheticLayer({
       try {
         if (clip.kind === "solid") drawSolid(ctx, clip, W, H, timeSec);
         else if (clip.kind === "text") drawText(ctx, clip, timeSec, opts);
-        else if (clip.kind === "shape") drawShape(ctx, clip, timeSec);
+        else if (clip.kind === "shape") drawShape(ctx, clip, timeSec, opts);
         else if (clip.kind === "callout") drawCallout(ctx, clip, W, H);
         else if (clip.kind === "cursor") drawCursor(ctx, clip, timeSec);
       } finally {
