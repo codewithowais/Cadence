@@ -76,7 +76,8 @@ import {
   type TrimEdge,
 } from "@/lib/edit-ops";
 import { clearAllTransitions, setAllTransitions } from "@/lib/transition-ops";
-import { detectBeats as detectBeatsLib } from "@/lib/beats";
+import { detectBeats as detectBeatsLib, generatedBeats } from "@/lib/beats";
+import { isGeneratedAudio, materializeSynth } from "@/lib/synth-audio";
 import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
 import { useDocHistory } from "@/lib/history";
@@ -879,6 +880,27 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
 
   // ---- Audio room -----------------------------------------------------------
 
+  // Generated audio (music beds / SFX from generate_music / add_sfx) is stored as
+  // a `synth:` RECIPE in doc.media. Materialize each into a WAV File + object URL —
+  // the exact path an uploaded audio file takes — so it plays in the preview and
+  // uploads on export. Cached per recipe; re-created after a project reload.
+  useEffect(() => {
+    const missing = doc.media.filter((m) => isGeneratedAudio(m) && !filesRef.current[m.id]);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      for (const m of missing) {
+        const file = await materializeSynth(m).catch(() => null);
+        if (!file || cancelled) continue;
+        setFiles((f) => (f[m.id] ? f : { ...f, [m.id]: file }));
+        setUrls((u) => (u[m.id] ? u : { ...u, [m.id]: URL.createObjectURL(file) }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.media]);
+
   /** Register a recorded/added voice-over as an audio clip on the voiceover track. */
   async function addVoiceoverFile(file: File, durationSec: number) {
     const url = URL.createObjectURL(file);
@@ -1343,7 +1365,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setBusyLabel("Detecting beats…");
     setPlaying(false);
     try {
-      const res = await detectBeatsLib(beatSource.mediaId, beatSource.source, durationSec || undefined);
+      // Generated music has an exact tempo grid — use it instead of estimating.
+      const res =
+        generatedBeats(doc, durationSec || undefined) ??
+        (await detectBeatsLib(beatSource.mediaId, beatSource.source, durationSec || undefined));
       if (!res || res.times.length === 0) {
         say("director", "Couldn't find a clear beat in that audio — try a track with a stronger rhythm.", "info");
         return;

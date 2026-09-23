@@ -15,6 +15,7 @@ import {
 } from "@cadence/core";
 import { SyntheticLayer } from "./SyntheticLayer";
 import { computePreview } from "@/lib/preview";
+import { clipGainAt } from "@/lib/audio-mix";
 import { fmtTime } from "@/lib/format";
 import type { PlacementRequest, PlacementResult } from "@/lib/placement";
 
@@ -90,8 +91,11 @@ function AudioClipPlayer(props: {
   timeSec: number;
   playing: boolean;
   muted: boolean;
+  /** The clip's level right now (keyframed duck, fades, track mute/solo) — as exported. */
+  gain?: number;
 }) {
   const { src, clip, timeSec, playing, muted } = props;
+  const gain = props.gain ?? clip.volume;
   const ref = useRef<HTMLAudioElement>(null);
   const active = timeSec >= clip.start && timeSec < clip.start + clip.duration;
   const sourceTime = clip.sourceIn + (timeSec - clip.start);
@@ -100,9 +104,9 @@ function AudioClipPlayer(props: {
   useEffect(() => {
     const a = ref.current;
     if (!a) return;
-    a.volume = Math.max(0, Math.min(1, clip.volume));
+    a.volume = Math.max(0, Math.min(1, gain));
     a.muted = muted;
-  }, [clip.volume, muted]);
+  }, [gain, muted]);
 
   // Start/stop with the transport (and when the playhead enters/leaves the clip).
   // Correct any drift at the boundary so playback stays in step with the clock.
@@ -127,7 +131,7 @@ function AudioClipPlayer(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeSec]);
 
-  return <audio ref={ref} src={src} preload="auto" />;
+  return <audio ref={ref} src={src} preload="auto" data-clip={clip.id} />;
 }
 
 export function Stage(props: StageProps) {
@@ -168,8 +172,8 @@ export function Stage(props: StageProps) {
   // as always-present hidden <audio> elements so the playhead crossing into a
   // clip can start it — each one plays only while it's active.
   const audioClips = useMemo(() => {
-    const out: AudioClip[] = [];
-    for (const track of doc.tracks) for (const c of track.clips) if (c.kind === "audio") out.push(c);
+    const out: { clip: AudioClip; track: EditDoc["tracks"][number] }[] = [];
+    for (const track of doc.tracks) for (const c of track.clips) if (c.kind === "audio") out.push({ clip: c, track });
     return out;
   }, [doc]);
   const activeBroll = activeOnTracks
@@ -346,7 +350,7 @@ export function Stage(props: StageProps) {
           {/* Audio layer — hidden <audio> per music/voice-over clip, synced to the
               transport so they're heard in the preview (not just on export). */}
           {hasMedia &&
-            audioClips.map((clip) => {
+            audioClips.map(({ clip, track }) => {
               const url = urls[clip.mediaId];
               if (!url) return null;
               return (
@@ -357,6 +361,7 @@ export function Stage(props: StageProps) {
                   timeSec={timeSec}
                   playing={playing}
                   muted={muted}
+                  gain={clipGainAt(doc, track, clip, timeSec)}
                 />
               );
             })}

@@ -10,6 +10,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./sound-synth": {
+      "types": "./src/sound-synth.ts",
+      "default": "./src/sound-synth.ts"
     }
   },
   "scripts": {

@@ -19,6 +19,8 @@
  * This is an ESTIMATE — it finds transients, not a perfect musical grid. The UI
  * says so, and the detected beats land as ordinary, editable timeline markers.
  */
+import type { EditDoc } from "@cadence/core";
+import { generatedMusicOf, musicBeatTimes } from "@cadence/director";
 import { decodeAudio } from "./waveform";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
@@ -53,6 +55,19 @@ export async function detectBeats(
   const result = analyze(buffer);
   cache.set(mediaId, result);
   return clampResult(result, limitSec);
+}
+
+/**
+ * EXACT beats for GENERATED music: the bed was composed on a known tempo grid, so
+ * there's nothing to estimate — return that grid (timeline seconds) + the true
+ * BPM. `null` when the doc's music isn't generated (fall back to `detectBeats`).
+ */
+export function generatedBeats(doc: EditDoc, limitSec?: number): BeatResult | null {
+  const g = generatedMusicOf(doc);
+  if (!g) return null;
+  const times = musicBeatTimes(doc);
+  if (times.length === 0) return null;
+  return clampResult({ times, bpm: Math.round(g.arrangement.bpm) }, limitSec);
 }
 
 /** Clear the cached beats for a media id (e.g. when its source is replaced). */

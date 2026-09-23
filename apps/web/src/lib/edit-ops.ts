@@ -29,7 +29,7 @@ export const MIN_CLIP_SEC = 0.05;
  * sequential tracks are re-laid back-to-back (rippled) after every structural
  * edit so there are never gaps.
  */
-const OVERLAY_TRACK_IDS = new Set(["titles", "captions", "broll", "fades", "music", "voiceover"]);
+const OVERLAY_TRACK_IDS = new Set(["titles", "captions", "broll", "fades", "music", "voiceover", "sfx"]);
 
 /** True for a track whose clips are laid out as a gapless back-to-back sequence. */
 export function isMainSequentialTrack(track: Track): boolean {

@@ -37,6 +37,8 @@ import { fillerCut } from "./filler";
 import { buildSlideshowDoc } from "./slideshow";
 import { buildDemo, type BuildDemoOptions } from "./demo";
 import { addTrack, moveClipToTrack, removeTrack, reorderTrack, setTrack } from "./tracks";
+import { addSfx, autoDuck, autoSfx, beatSync, generatedMusicOf, generateMusic, setVoiceEnhance } from "./audio";
+import { MOOD_DEFS, SFX_DEFS, type MusicMood, type SfxKind } from "./sound-synth";
 import { rollEdit, slipEdit, slideEdit } from "./trims";
 import {
   buildTextVideo,
@@ -1772,6 +1774,122 @@ export const setBackgroundTool: DirectorTool<SetBackgroundInput> = {
   },
 };
 
+// ---- Sound made easy: generated music / SFX / ducking / beat sync / voice ----
+
+const MOOD_ENUM = ["lofi", "upbeat", "cinematic", "corporate", "ambient"] as const;
+const SFX_ENUM = ["whoosh", "pop", "click", "ding", "riser", "boom"] as const;
+
+export const generateMusicTool: DirectorTool<{ mood?: MusicMood; bpm?: number; durationSec?: number; seed?: number; volume?: number }> = {
+  name: "generate_music",
+  description:
+    "Compose a royalty-free background-music bed locally (procedural synthesis — no library, no licence, free) and lay it on the music track, fitted to the video: the tempo is nudged so whole bars end exactly with the video, and it resolves to a clean ending. Moods: lofi (chill), upbeat (pop), cinematic, corporate, ambient. Optional bpm, durationSec, seed (variation), volume. Replaces any existing music.",
+  inputSchema: z.object({
+    mood: z.enum(MOOD_ENUM).optional(),
+    bpm: z.number().min(40).max(200).optional(),
+    durationSec: z.number().positive().max(600).optional(),
+    seed: z.number().int().nonnegative().optional(),
+    volume: z.number().min(0).max(1).optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = generateMusic(ctx.project.doc, input);
+    const g = generatedMusicOf(doc);
+    const mood = g?.recipe.mood ?? input.mood ?? "lofi";
+    return commit(
+      ctx.project,
+      doc,
+      `Composed ${/^[aeiou]/i.test(MOOD_DEFS[mood].label) ? "an" : "a"} ${MOOD_DEFS[mood].label.toLowerCase()} bed (${g ? `${Math.round(g.arrangement.bpm)} BPM, ${g.arrangement.bars} bars, ` : ""}${Math.round(g?.recipe.durationSec ?? 0)}s) fitted to your video — royalty-free, made on your machine. You'll hear it in the preview and the export.`,
+    );
+  },
+};
+
+export const addSfxTool: DirectorTool<{ kind: SfxKind; atSec: number; volume?: number }> = {
+  name: "add_sfx",
+  description:
+    "Add one procedurally-generated sound effect (whoosh, pop, click, ding, riser, boom) so its hit lands at `atSec` on the timeline (a whoosh peaks on the moment, a riser builds INTO it). Free and local.",
+  inputSchema: z.object({
+    kind: z.enum(SFX_ENUM),
+    atSec: z.number().nonnegative(),
+    volume: z.number().min(0).max(1).optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = addSfx(ctx.project.doc, input);
+    return commit(ctx.project, doc, `Added a ${SFX_DEFS[input.kind].label.toLowerCase()} at ${Math.round(input.atSec * 100) / 100}s.`);
+  },
+};
+
+export const autoSfxTool: DirectorTool<{ style?: "subtle" | "punchy" }> = {
+  name: "auto_sfx",
+  description:
+    "Sound-design the edit automatically: a whoosh on every transition / scene change and a pop on every text pop-in (never on captions). style=punchy also adds clicks on hard cuts, a boom on the opening title and a riser into the last scene. Replaces previous sound effects.",
+  inputSchema: z.object({ style: z.enum(["subtle", "punchy"]).optional() }),
+  async execute(input, ctx) {
+    const { doc, events } = autoSfx(ctx.project.doc, input);
+    if (events.length === 0) {
+      return commit(ctx.project, doc, "No transitions or text pop-ins to put sound effects on yet.");
+    }
+    const counts = new Map<string, number>();
+    for (const e of events) counts.set(e.kind, (counts.get(e.kind) ?? 0) + 1);
+    const parts = [...counts].map(([k, n]) => `${n} ${k}${n === 1 ? "" : k.endsWith("sh") ? "es" : "s"}`);
+    return commit(ctx.project, doc, `Added ${events.length} sound effect${events.length === 1 ? "" : "s"} (${parts.join(", ")}) timed to your cuts and text.`);
+  },
+};
+
+export const autoDuckTool: DirectorTool<{ depthDb?: number; bedVolume?: number; attackSec?: number; releaseSec?: number }> = {
+  name: "auto_duck",
+  description:
+    "Smart ducking: ride the music DOWN only while someone speaks (voice-over, captions, transcript speech) and bring it back up between sentences, as editable volume keyframes. depthDb (default -12), bedVolume (music level between lines, 0..1), attackSec/releaseSec ramps.",
+  inputSchema: z.object({
+    depthDb: z.number().min(-40).max(-1).optional(),
+    bedVolume: z.number().min(0).max(1).optional(),
+    attackSec: z.number().min(0.02).max(2).optional(),
+    releaseSec: z.number().min(0.02).max(4).optional(),
+  }),
+  async execute(input, ctx) {
+    const transcripts = ctx.project.media
+      .filter((m) => m.kind === "video")
+      .map((m) => ctx.project.getTranscript(m.id))
+      .filter((t): t is Transcript => !!t);
+    const { doc, regions, mode } = autoDuck(ctx.project.doc, { ...input, transcripts });
+    const depth = Math.round(input.depthDb ?? -12);
+    return commit(
+      ctx.project,
+      doc,
+      mode === "flat"
+        ? `Ducked the music ${depth} dB under the speech.`
+        : `Ducked the music ${depth} dB under ${regions.length} spoken passage${regions.length === 1 ? "" : "s"} — it swells back between sentences.`,
+    );
+  },
+};
+
+export const enhanceVoiceTool: DirectorTool<{ on?: boolean }> = {
+  name: "enhance_voice",
+  description:
+    "One-click voice enhance on export: high-pass (rumble out), gentle compression, mud cut + presence boost, de-ess and a safety limiter on the VOICE only (the video's own audio + voice-over, never the music). (Applied at export — the preview plays the untreated voice.)",
+  inputSchema: z.object({ on: z.boolean().optional() }),
+  async execute(input, ctx) {
+    const on = input.on ?? true;
+    const doc = setVoiceEnhance(ctx.project.doc, on);
+    return commit(
+      ctx.project,
+      doc,
+      on
+        ? "Voice enhance on — the export gets a clean, present, broadcast-style voice (HPF · compressor · presence EQ · de-ess · limiter). (Applied at export — the preview is unchanged.)"
+        : "Voice enhance off.",
+    );
+  },
+};
+
+export const beatSyncTool: DirectorTool<{ every?: "beat" | "bar" }> = {
+  name: "beat_sync",
+  description:
+    "Cut to the beat: re-time slideshow photos or text-video scenes so every scene change lands on a beat (every=beat) or a bar line (every=bar). Uses the generated music's exact beat grid, else the timeline's beat markers. Generated music is re-fitted to end on the final bar.",
+  inputSchema: z.object({ every: z.enum(["beat", "bar"]).optional() }),
+  async execute(input, ctx) {
+    const { doc, cuts } = beatSync(ctx.project.doc, input);
+    return commit(ctx.project, doc, `Synced ${cuts} cut${cuts === 1 ? "" : "s"} to the ${input.every ?? "beat"} — every scene change now lands on the music.`);
+  },
+};
+
 export const DIRECTOR_TOOLS = {
   set_timeline: setTimelineTool,
   edit_by_transcript: editByTranscriptTool,
@@ -1843,4 +1961,10 @@ export const DIRECTOR_TOOLS = {
   animate_text: animateTextTool,
   style_text: styleTextTool,
   set_background: setBackgroundTool,
+  generate_music: generateMusicTool,
+  add_sfx: addSfxTool,
+  auto_sfx: autoSfxTool,
+  auto_duck: autoDuckTool,
+  enhance_voice: enhanceVoiceTool,
+  beat_sync: beatSyncTool,
 } as const;
