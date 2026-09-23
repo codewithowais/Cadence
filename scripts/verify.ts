@@ -168,6 +168,8 @@ import {
   xfadeTransition,
   FfmpegNotFoundError,
   FFMPEG_MISSING_MESSAGE,
+  ExportCancelledError,
+  type ExportPhase,
 } from "@cadence/render-ffmpeg";
 import {
   addMembershipQuery,
@@ -3318,6 +3320,139 @@ async function checkTextVideoExportParity(): Promise<void> {
   );
 }
 
+/**
+ * check 67 (export progress + cancel): REAL encodes report progress through
+ * `runExport({ onProgress, onPhase })` — parsed from ffmpeg's `-progress pipe:1`
+ * output — for BOTH the footage filtergraph path and the raw-canvas (stdin frames)
+ * path: several callbacks, strictly increasing, intermediate values in (0,1), a
+ * final exact 1, sane ETAs, phases preparing→encoding. Then an abort mid-encode
+ * must kill ffmpeg promptly and reject with ExportCancelledError. Legacy callers
+ * (no onProgress) keep the exact pure-plan argv.
+ */
+async function checkExportProgress(): Promise<void> {
+  const info = await detectFfmpeg();
+  if (!info.available) {
+    console.log(`  \x1b[32m✔\x1b[0m check 67 (export progress): ffmpeg unavailable — skipped gracefully`);
+    return;
+  }
+  const bin = resolveFfmpegBin();
+  const dir = resolve(OUT_DIR, "encode-progress");
+  mkdirSync(dir, { recursive: true });
+  const src = resolve(dir, "src.mp4");
+  const r = spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=8", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src], { encoding: "utf8" });
+  assert(r.status === 0, `export progress: could not synthesize a source clip (${(r.stderr || "").slice(-200)})`);
+
+  const collect = async (label: string, doc: EditDoc, out: string): Promise<{ fr: number[]; etas: (number | null)[]; phases: ExportPhase[]; args: string[] }> => {
+    const fr: number[] = [];
+    const etas: (number | null)[] = [];
+    const phases: ExportPhase[] = [];
+    const res = await runExport(doc, {
+      resolveMediaPath: () => src,
+      outFile: out,
+      bin,
+      skipDetect: true,
+      onProgress: (f, eta) => { fr.push(f); etas.push(eta); },
+      onPhase: (p) => phases.push(p),
+    });
+    assert(statSync(out).size > 1000, `export progress [${label}]: output mp4 must be non-empty`);
+    return { fr, etas, phases, args: res.args };
+  };
+  const assertCurve = (label: string, c: { fr: number[]; etas: (number | null)[]; phases: ExportPhase[] }): void => {
+    assert(c.fr.length >= 3, `export progress [${label}]: expected ≥3 progress callbacks, got ${c.fr.length}`);
+    for (let i = 1; i < c.fr.length; i++) assert(c.fr[i]! > c.fr[i - 1]!, `export progress [${label}]: progress must strictly increase (${c.fr.join(",")})`);
+    assert(c.fr.some((f) => f > 0 && f < 1), `export progress [${label}]: expected intermediate fractions in (0,1)`);
+    assert(c.fr[c.fr.length - 1] === 1, `export progress [${label}]: final progress must be exactly 1`);
+    assert(c.etas.every((e) => e === null || (Number.isFinite(e) && e >= 0)), `export progress [${label}]: ETAs must be null or ≥ 0`);
+    assert(c.phases[0] === "preparing" && c.phases.includes("encoding"), `export progress [${label}]: phases must go preparing → encoding (${c.phases.join("→")})`);
+  };
+
+  // (A) footage path — a 6s cut of the source at a heavy-ish preset so ffmpeg
+  // emits several 0.5s progress blocks.
+  const footage = parseEditDoc({
+    version: 1,
+    meta: { title: "progress", width: 1280, height: 720, fps: 30 },
+    media: [{ id: "clip", kind: "video", src }],
+    quality: { preset: "ultra", sharpen: 0.5, denoise: 0.3, aiUpscale: false, faithful: true },
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "v1", kind: "video", mediaId: "clip", start: 0, duration: 6, sourceIn: 0.5 }] }],
+  });
+  const a = await collect("footage", footage, resolve(dir, "footage.mp4"));
+  assertCurve("footage", a);
+  assert(a.args[0] === "-progress" && a.args[1] === "pipe:1", "export progress: -progress pipe:1 must be prepended as a global option");
+
+  // (B) raw-canvas path (media-less text video piped on stdin).
+  const canvas = parseEditDoc({
+    version: 1,
+    meta: { title: "progress-canvas", width: 1280, height: 720, fps: 30 },
+    media: [],
+    tracks: [
+      { id: "bg", kind: "visual", clips: [{ id: "s1", kind: "solid", start: 0, duration: 10, color: "#101820", gradient: { stops: ["#1a1446", "#00c2ff"], motion: "aurora" } }] },
+      { id: "text", kind: "visual", clips: [{ id: "t1", kind: "text", start: 0.2, duration: 9.5, text: "Progress", fontSize: 120, transform: { x: 640, y: 360 }, anim: { style: "rise", unit: "letter", durationSec: 0.8 } }] },
+    ],
+  });
+  const b = await collect("canvas", canvas, resolve(dir, "canvas.mp4"));
+  assertCurve("canvas", b);
+  assert(b.args.includes("pipe:0"), "export progress [canvas]: must still read raw frames from stdin");
+
+  // (C) legacy callers (no onProgress) spawn the unchanged pure-plan argv.
+  const legacy = await runExport(footage, { resolveMediaPath: () => src, outFile: resolve(dir, "legacy.mp4"), bin, skipDetect: true });
+  assert(!legacy.args.includes("-progress"), "export progress: callers without onProgress must get the unchanged argv");
+
+  // (D) cancel mid-encode → ffmpeg killed promptly, ExportCancelledError.
+  const long = parseEditDoc({
+    ...footage,
+    meta: { ...footage.meta, width: 1920, height: 1080 },
+    tracks: [{ id: "video", kind: "visual", clips: [
+      { id: "v1", kind: "video", mediaId: "clip", start: 0, duration: 8, sourceIn: 0 },
+      { id: "v2", kind: "video", mediaId: "clip", start: 8, duration: 8, sourceIn: 0 },
+      { id: "v3", kind: "video", mediaId: "clip", start: 16, duration: 8, sourceIn: 0 },
+    ] }],
+  });
+  const ac = new AbortController();
+  let firstAt = 0;
+  let cancelledAfterMs = -1;
+  const t0 = Date.now();
+  try {
+    await runExport(long, {
+      resolveMediaPath: () => src,
+      outFile: resolve(dir, "cancelled.mp4"),
+      bin,
+      skipDetect: true,
+      signal: ac.signal,
+      onProgress: (f) => {
+        if (!firstAt && f > 0 && f < 1) {
+          firstAt = Date.now();
+          ac.abort();
+        }
+      },
+    });
+    fail("export progress: an aborted export must reject");
+  } catch (err) {
+    assert(err instanceof ExportCancelledError, `export progress: abort must reject with ExportCancelledError (got ${err instanceof Error ? err.message.slice(0, 200) : String(err)})`);
+    cancelledAfterMs = Date.now() - (firstAt || t0);
+  }
+  assert(firstAt > 0, "export progress: the long export must report progress before it is cancelled");
+  assert(cancelledAfterMs >= 0 && cancelledAfterMs < 2000, `export progress: cancel must settle within 2s (took ${cancelledAfterMs}ms)`);
+  // …and the ffmpeg process itself must be gone (not left encoding in the
+  // background). `pgrep -f <unique out path>` exits 1 when nothing matches; skip
+  // the probe on hosts without pgrep.
+  await new Promise((r) => setTimeout(r, 400));
+  const probe = spawnSync("pgrep", ["-f", resolve(dir, "cancelled.mp4")], { encoding: "utf8" });
+  const killNote = probe.error ? "pgrep unavailable" : "process gone";
+  if (!probe.error) assert(probe.status === 1, `export progress: ffmpeg must be killed on cancel (still running: pid ${probe.stdout.trim()})`);
+  // A pre-aborted signal never spawns ffmpeg.
+  let preAborted = false;
+  try {
+    await runExport(footage, { resolveMediaPath: () => src, outFile: resolve(dir, "never.mp4"), bin, skipDetect: true, signal: AbortSignal.abort() });
+  } catch (err) {
+    preAborted = err instanceof ExportCancelledError;
+  }
+  assert(preAborted, "export progress: an already-aborted signal must reject with ExportCancelledError before encoding");
+
+  console.log(
+    `  \x1b[32m✔\x1b[0m check 67 (export progress + cancel): footage encode → ${a.fr.length} monotonic progress callbacks ending at 1 (${a.fr.slice(0, 4).map((f) => f.toFixed(2)).join(", ")}…), raw-canvas encode → ${b.fr.length}; phases ${a.phases.join("→")}; legacy argv unchanged; abort settled in ${cancelledAfterMs}ms (ExportCancelledError, ${killNote})`,
+  );
+}
+
 async function checkRealEncode(): Promise<void> {
   const info = await detectFfmpeg();
   if (!info.available) {
@@ -3801,6 +3936,7 @@ async function main(): Promise<void> {
   await checkTransformKeyframes();
   await checkTextAnimEngine();
   await checkTextVideoExportParity();
+  await checkExportProgress();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

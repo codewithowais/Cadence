@@ -81,6 +81,8 @@ import { askDirector, transcribe, uploadMedia, exportVideo } from "@/lib/api";
 import { download, downloadBlob } from "@/lib/format";
 import { useDocHistory } from "@/lib/history";
 import { applyExportSettings, type ExportSettings } from "@/lib/export-presets";
+import { preflightExport, stripUnusedMedia } from "@/lib/export-preflight";
+import type { ExportUiProgress } from "./ExportMenu";
 import type { Message } from "@/lib/types";
 import type { PlacementMode, PlacementRequest, PlacementResult } from "@/lib/placement";
 
@@ -186,6 +188,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // Abort controller for an in-flight export (upload + render), for a Cancel.
   const exportAbort = useRef<AbortController | null>(null);
   const [exporting, setExporting] = useState(false);
+  // Live export progress (upload → queued → preparing → encoding → download).
+  const [exportProgress, setExportProgress] = useState<ExportUiProgress | null>(null);
   const [codeOpen, setCodeOpen] = useState(false);
   // Chat rail collapse (B1): default OPEN so existing flows/e2e are unchanged.
   const [railOpen, setRailOpen] = useState(true);
@@ -222,6 +226,20 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // Mirror `files` in a ref: the `handleFiles(files)` param shadows the state.
   const filesRef = useRef(files);
   filesRef.current = files;
+  // Loaded-media lookups for the export pre-flight (stable per `files`).
+  const exportPreflight = useMemo(
+    () => ({ hasFile: (id: string) => !!files[id], fileBytes: (id: string) => files[id]?.size }),
+    [files],
+  );
+  // Leaving mid-export would silently kill the render — ask first.
+  useEffect(() => {
+    if (!exporting) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [exporting]);
 
   const durationSec = useMemo(() => docDurationSec(doc), [doc]);
   const visualClipCount = useMemo(
@@ -679,7 +697,14 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (durationSec <= 0) return;
     // `overrideDoc` lets the export-options popover render freshly-applied
     // quality settings without waiting for a state re-render.
-    const source = overrideDoc ?? doc;
+    // Pre-flight (pure): block on nothing-to-export / media whose File isn't loaded
+    // with an actionable message, and only upload media some clip actually uses.
+    const check = preflightExport(overrideDoc ?? doc, exportPreflight);
+    if (!check.ok) {
+      say("director", check.issues.filter((i) => i.level === "error").map((i) => i.message).join(" "), "error");
+      return;
+    }
+    const source = stripUnusedMedia(overrideDoc ?? doc);
     const controller = new AbortController();
     exportAbort.current = controller;
     setBusy(true);
@@ -695,15 +720,31 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         const file = files[media.id];
         if (!file) throw new Error(`Missing the uploaded file for ${media.label ?? media.id}.`);
         setBusyLabel(total > 1 ? `Uploading media (${i + 1}/${total})…` : "Uploading media…");
-        const { path } = await uploadMedia(file, controller.signal);
+        const detail = total > 1 ? `${i + 1} of ${total}` : undefined;
+        setExportProgress({ phase: "uploading", fraction: i / total, etaSec: null, detail });
+        const { path } = await uploadMedia(file, controller.signal, (f) =>
+          setExportProgress({ phase: "uploading", fraction: (i + f) / total, etaSec: null, detail }),
+        );
         srcById[media.id] = path;
       }
       const serverDoc: EditDoc = structuredClone(source);
       serverDoc.media = serverDoc.media.map((m) => ({ ...m, src: srcById[m.id] ?? m.src }));
 
       setBusyLabel("Rendering .mp4 with ffmpeg…");
+      setExportProgress({ phase: "preparing", fraction: null, etaSec: null });
       say("director", "Rendering your video with ffmpeg…", "info");
-      const result = await exportVideo(serverDoc, controller.signal);
+      const result = await exportVideo(serverDoc, controller.signal, {
+        onProgress: (u) => {
+          if (u.kind === "phase") {
+            setExportProgress({ phase: u.phase, fraction: u.phase === "encoding" ? 0 : null, etaSec: null });
+          } else if (u.kind === "progress") {
+            setExportProgress({ phase: "encoding", fraction: u.fraction, etaSec: u.etaSec });
+            setBusyLabel(`Rendering .mp4 — ${Math.round(u.fraction * 100)}%…`);
+          } else {
+            setExportProgress({ phase: "downloading", fraction: u.fraction, etaSec: null });
+          }
+        },
+      });
       if (result.ok) {
         downloadBlob(`${source.meta.title || "cadence"}.mp4`, result.blob);
         say("director", "Exported a real .mp4 (free ffmpeg path — faithful, no content changes).", "edit");
@@ -722,6 +763,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     } finally {
       exportAbort.current = null;
       setExporting(false);
+      setExportProgress(null);
       setBusy(false);
       setBusyLabel("");
     }
@@ -1550,6 +1592,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           backHref={backHref}
           onSave={onSave ? handleSave : undefined}
           saveState={saveState}
+          exportProgress={exportProgress}
+          onCancelExport={exporting ? cancelExport : undefined}
+          exportPreflight={exportPreflight}
         />
         <AppliedStatus doc={doc} hasMedia={hasMedia || hasContent} />
         {/* Portrait projects (9:16 / 4:5) dock the room panel BESIDE the preview on

@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import type { EditDoc } from "@cadence/core";
 import { fmtTime } from "@/lib/format";
 import type { ExportSettings } from "@/lib/export-presets";
-import { ExportMenu } from "./ExportMenu";
+import { ExportMenu, type ExportUiProgress } from "./ExportMenu";
+import type { PreflightInput } from "@/lib/export-preflight";
 
 interface TopBarProps {
   title: string;
@@ -35,6 +36,16 @@ interface TopBarProps {
   /** Optional save handler (project-bound editor). Absent = no Save button. */
   onSave?: () => void;
   saveState?: "idle" | "saving" | "saved" | "error";
+  /** Live export progress (turns the Export button into a progress pill). */
+  exportProgress?: ExportUiProgress | null;
+  /** Cancel a running export (kills the server-side encode). */
+  onCancelExport?: () => void;
+  /** Loaded-media lookups for the export pre-flight checks. */
+  exportPreflight?: Omit<PreflightInput, "output">;
+  /** Download the project as a portable .cadence.json file. */
+  onSaveProjectFile?: () => void;
+  /** Open a .cadence.json / edit-doc JSON file. */
+  onOpenProjectFile?: () => void;
 }
 
 /** Click-to-rename project title. Enter/blur commits, Escape cancels. */
@@ -92,6 +103,8 @@ function OverflowMenu(props: {
   onStartOver: () => void;
   onDuplicate: () => void;
   onShowShortcuts: () => void;
+  onSaveProjectFile?: () => void;
+  onOpenProjectFile?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -127,6 +140,18 @@ function OverflowMenu(props: {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12" /></svg>
             Keyboard shortcuts
           </button>
+          {props.onSaveProjectFile && (
+            <button type="button" role="menuitem" className={`${item} text-muted hover:bg-elevated hover:text-text`} onClick={() => { setOpen(false); props.onSaveProjectFile?.(); }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></svg>
+              Save project file
+            </button>
+          )}
+          {props.onOpenProjectFile && (
+            <button type="button" role="menuitem" className={`${item} text-muted hover:bg-elevated hover:text-text`} onClick={() => { setOpen(false); props.onOpenProjectFile?.(); }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
+              Open project file…
+            </button>
+          )}
           <button type="button" role="menuitem" className={`${item} text-muted hover:bg-elevated hover:text-text`} onClick={() => { setOpen(false); props.onDuplicate(); }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
             Duplicate as new
@@ -223,11 +248,21 @@ export function TopBar(props: TopBarProps) {
             {saveLabel}
           </button>
         )}
-        <ExportMenu doc={props.doc} canExport={props.canExport} busy={props.busy} onExport={props.onExport} />
+        <ExportMenu
+          doc={props.doc}
+          canExport={props.canExport}
+          busy={props.busy}
+          onExport={props.onExport}
+          progress={props.exportProgress}
+          onCancel={props.onCancelExport}
+          preflight={props.exportPreflight}
+        />
         <OverflowMenu
           onStartOver={props.onStartOver}
           onDuplicate={props.onDuplicate}
           onShowShortcuts={props.onShowShortcuts}
+          onSaveProjectFile={props.onSaveProjectFile}
+          onOpenProjectFile={props.onOpenProjectFile}
         />
       </div>
     </header>
