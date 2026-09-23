@@ -43,6 +43,7 @@ import {
   type TextClip,
   type VideoClip,
 } from "@cadence/core";
+import { registerBundledFonts } from "./fonts";
 
 const degToRad = (deg: number): number => (deg * Math.PI) / 180;
 
@@ -271,6 +272,7 @@ let clipTimeCache = 0;
 
 export class CanvasRenderEngine implements RenderEngine {
   async renderFrame(doc: EditDoc, timeSec: number): Promise<RenderedFrame> {
+    registerBundledFonts();
     clipTimeCache = timeSec;
     const { width, height, background } = doc.meta;
     const canvas = createCanvas(width, height);
@@ -353,6 +355,7 @@ function textRestTime(clip: TextClip): number {
  * textRestTime); the export overlays this static PNG time-gated to the clip span.
  */
 export function renderTextClipPng(doc: EditDoc, clip: TextClip): Buffer {
+  registerBundledFonts();
   const { width, height } = doc.meta;
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
@@ -401,6 +404,7 @@ export function isKaraokeClip(clip: TextClip): boolean {
  * clip is not karaoke. Server-only (native Skia canvas).
  */
 export function renderKaraokeWordPngs(doc: EditDoc, clip: TextClip): Buffer[] {
+  registerBundledFonts();
   if (!isKaraokeClip(clip)) return [];
   const { width, height } = doc.meta;
   const words = clip.words!;
@@ -420,6 +424,7 @@ export function renderKaraokeWordPngs(doc: EditDoc, clip: TextClip): Buffer[] {
  * font, so it becomes a PNG overlay. Returns null when the callout has no label.
  */
 export function renderCalloutLabelPng(doc: EditDoc, clip: CalloutClip): Buffer | null {
+  registerBundledFonts();
   if (!clip.label) return null;
   const { width, height } = doc.meta;
   const canvas = createCanvas(width, height);

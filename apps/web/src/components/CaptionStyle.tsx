@@ -271,7 +271,7 @@ function placeCaptionsFree(doc: EditDoc, xFrac: number, yFrac: number, clipId?: 
 
 /** A friendly short label for a CSS font stack ("Inter, sans-serif" → "Inter"). */
 function fontLabel(stack: string): string {
-  const first = stack.split(",")[0]!.trim();
+  const first = stack.split(",")[0]!.trim().replace(/^['"]|['"]$/g, "");
   return first === "sans-serif" ? "System sans" : first;
 }
 
@@ -696,7 +696,7 @@ export function CaptionStyleSection({
                 aria-label="Caption font"
                 className="h-8 shrink-0 rounded-md border border-line bg-elevated px-2 text-xs text-text disabled:opacity-40"
               >
-                {CAPTION_FONTS.map((f) => (
+                {(CAPTION_FONTS.includes(s.fontFamily) ? CAPTION_FONTS : [s.fontFamily, ...CAPTION_FONTS]).map((f) => (
                   <option key={f} value={f} style={{ fontFamily: f }}>
                     {fontLabel(f)}
                   </option>

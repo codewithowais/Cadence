@@ -7,6 +7,7 @@
  * browser; MLT/ffmpeg later) without changing the Director or the document.
  */
 import { z } from "zod";
+import { FONT_LIBRARY, fontStack } from "./fonts";
 
 /** A hex color like #RRGGBB or #RRGGBBAA. */
 export const HexColor = z
@@ -916,25 +917,20 @@ export const TextClip = z.object({
 export type TextClip = z.infer<typeof TextClip>;
 
 /**
- * Curated caption/title fonts offered in the UI. Every entry is a stack backed
- * by a CSS GENERIC FAMILY (sans-serif / serif / monospace / cursive) so it
- * always resolves — in the browser preview and on the canvas — even when the
- * named face is not installed. Real TTF bundling for the ffmpeg export is a
- * follow-up; export falls back to the platform's default drawtext font.
+ * Caption/title fonts offered in the UI: the BUNDLED library first (real font files
+ * shipped with the app and registered with the export renderer — see fonts.ts, so
+ * preview == export), then a few system stacks. Every entry ends in a CSS generic
+ * family so it always resolves.
  */
-export const CAPTION_FONTS = [
+export const CAPTION_FONTS: readonly string[] = [
   "sans-serif",
-  "Inter, sans-serif",
+  ...FONT_LIBRARY.map(fontStack),
   "Helvetica, Arial, sans-serif",
-  "Arial, sans-serif",
-  "Roboto, sans-serif",
-  "Montserrat, sans-serif",
   "Georgia, serif",
-  "Times New Roman, serif",
   "Courier New, monospace",
   "Impact, sans-serif",
-] as const;
-export type CaptionFont = (typeof CAPTION_FONTS)[number];
+];
+export type CaptionFont = string;
 
 /** An audio-only clip (has no visual representation). */
 export const AudioClip = z.object({

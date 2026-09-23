@@ -1,0 +1,28 @@
+# Bundled font licenses
+
+Vendored from @fontsource by scripts/sync-fonts.ts.
+
+- **Inter** — OFL-1.1 (@fontsource/inter@5.3.0)
+- **Montserrat** — OFL-1.1 (@fontsource/montserrat@5.3.0)
+- **Poppins** — OFL-1.1 (@fontsource/poppins@5.3.0)
+- **Space Grotesk** — OFL-1.1 (@fontsource/space-grotesk@5.3.0)
+- **Raleway** — OFL-1.1 (@fontsource/raleway@5.3.0)
+- **Oswald** — OFL-1.1 (@fontsource/oswald@5.3.0)
+- **Bebas Neue** — OFL-1.1 (@fontsource/bebas-neue@5.3.0)
+- **Anton** — OFL-1.1 (@fontsource/anton@5.3.0)
+- **Archivo Black** — OFL-1.1 (@fontsource/archivo-black@5.3.0)
+- **Righteous** — OFL-1.1 (@fontsource/righteous@5.3.0)
+- **Bangers** — OFL-1.1 (@fontsource/bangers@5.3.0)
+- **Press Start 2P** — OFL-1.1 (@fontsource/press-start-2p@5.3.0)
+- **Abril Fatface** — OFL-1.1 (@fontsource/abril-fatface@5.3.0)
+- **Playfair Display** — OFL-1.1 (@fontsource/playfair-display@5.3.0)
+- **DM Serif Display** — OFL-1.1 (@fontsource/dm-serif-display@5.3.0)
+- **Fraunces** — OFL-1.1 (@fontsource/fraunces@5.3.0)
+- **Merriweather** — OFL-1.1 (@fontsource/merriweather@5.3.0)
+- **Lora** — OFL-1.1 (@fontsource/lora@5.3.0)
+- **Roboto Slab** — Apache-2.0 (@fontsource/roboto-slab@5.3.0)
+- **Lobster** — OFL-1.1 (@fontsource/lobster@5.3.0)
+- **Pacifico** — OFL-1.1 (@fontsource/pacifico@5.3.0)
+- **Dancing Script** — OFL-1.1 (@fontsource/dancing-script@5.3.0)
+- **Caveat** — OFL-1.1 (@fontsource/caveat@5.3.0)
+- **Permanent Marker** — Apache-2.0 (@fontsource/permanent-marker@5.3.0)

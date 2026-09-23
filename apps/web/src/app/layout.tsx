@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { spaceGrotesk, fraunces } from "@/lib/fonts";
 import "./globals.css";
+import "./fonts.css";
 
 export const metadata: Metadata = {
   title: "Cadence — prompt-native video editor",
