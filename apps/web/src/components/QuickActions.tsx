@@ -1,10 +1,27 @@
 "use client";
 
+import { useMemo } from "react";
+import type { EditDoc } from "@cadence/core";
+import { docFacts, type DocFacts } from "@/lib/suggestions";
+
 interface QuickActionsProps {
   mode: "video" | "images" | "text" | "none";
   busy: boolean;
   onAction: (prompt: string) => void;
+  /** The live doc — chips already applied get a quiet check (name unchanged). */
+  doc?: EditDoc;
+  /** Open the full "What can I say?" prompt library. */
+  onMore?: () => void;
 }
+
+/** Which doc fact shows a chip is already applied. */
+const APPLIED: Record<string, (f: DocFacts) => boolean> = {
+  "9:16": (f) => f.portrait,
+  Captions: (f) => f.captions,
+  Music: (f) => f.music,
+  "Fade in/out": (f) => f.fades,
+  "Make 4K": (f) => f.quality,
+};
 
 interface Action {
   label: string;
@@ -52,26 +69,46 @@ const TEXT_ACTIONS: Action[] = [
   { label: "Make 4K", icon: "M12 3l2.5 5 5.5.8-4 3.9 1 5.4L12 21l-5-2.6 1-5.4-4-3.9 5.5-.8z", prompt: "make it 4K high quality" },
 ];
 
-export function QuickActions({ mode, busy, onAction }: QuickActionsProps) {
+export function QuickActions({ mode, busy, onAction, doc, onMore }: QuickActionsProps) {
+  const facts = useMemo(() => (doc ? docFacts(doc) : null), [doc]);
   if (mode === "none") return null;
   const actions = mode === "images" ? IMAGE_ACTIONS : mode === "text" ? TEXT_ACTIONS : VIDEO_ACTIONS;
   return (
     <div className="flex items-center gap-2 overflow-x-auto border-b border-line-soft bg-panel/30 px-4 py-2">
       <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted">one-tap</span>
-      {actions.map((a) => (
+      {actions.map((a) => {
+        const applied = !!facts && !!APPLIED[a.label]?.(facts);
+        return (
+          <button
+            key={a.label}
+            type="button"
+            disabled={busy}
+            onClick={() => onAction(a.prompt)}
+            title={applied ? `${a.label} — already applied (tap to redo)` : a.prompt}
+            className={[
+              "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition hover:border-amber/40 hover:text-text disabled:opacity-50",
+              applied ? "border-teal/30 bg-teal/5 text-teal" : "border-line bg-elevated text-muted",
+            ].join(" ")}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={applied ? 2.2 : 1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d={applied ? "M5 12l5 5L20 7" : a.icon} />
+            </svg>
+            {a.label}
+          </button>
+        );
+      })}
+      {onMore && (
         <button
-          key={a.label}
           type="button"
-          disabled={busy}
-          onClick={() => onAction(a.prompt)}
-          className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-elevated px-3 py-1.5 text-xs text-muted transition hover:border-amber/40 hover:text-text disabled:opacity-50"
+          onClick={onMore}
+          aria-label="More one-tap ideas"
+          title="Browse everything the Director can do"
+          className="flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-medium text-amber transition hover:bg-amber/10"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-            <path d={a.icon} />
-          </svg>
-          {a.label}
+          More
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
         </button>
-      ))}
+      )}
     </div>
   );
 }
