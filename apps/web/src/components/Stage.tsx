@@ -212,6 +212,20 @@ export function Stage(props: StageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeSec]);
 
+  // Speed + freeze parity (editing craft): play the active clip at its own
+  // constant speed, and hold the picture on a freeze-frame — the export holds
+  // that one source frame too (`computePreview` maps time via `sourceTimeAt`).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.playbackRate = Math.max(0.25, Math.min(4, preview.rate));
+    if (preview.frozen) {
+      v.pause();
+      if (preview.sourceTime != null) v.currentTime = preview.sourceTime;
+    } else if (playing) void v.play().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview.videoClipId, preview.rate, preview.frozen, playing]);
+
   return (
     <div className="flex min-h-[180px] min-w-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1 items-center justify-center p-4 sm:p-6" style={{ containerType: "size" }}>

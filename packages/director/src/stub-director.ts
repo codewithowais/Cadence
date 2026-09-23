@@ -64,6 +64,10 @@ import {
   transitionTool,
   vfxTool,
   zoomTool,
+  splitAllTracksTool,
+  closeGapsTool,
+  cutRangeTool,
+  holdFrameTool,
   type ToolCall,
 } from "./tools";
 import { currentGrade } from "./edits";
@@ -947,6 +951,68 @@ function parseVoiceover(req: string, original: string): { text: string } | null 
   return { text: text || "voice-over" };
 }
 
+/** A time like "2", "2.5s", "3 seconds", "0:05" or "1:02.5" → seconds. */
+const CRAFT_T = String.raw`(\d+:\d{1,2}(?:\.\d+)?|\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)?`;
+const craftSec = (raw: string): number => {
+  const parts = raw.split(":");
+  return parts.length === 2 ? Number(parts[0]) * 60 + Number(parts[1]) : Number(raw);
+};
+
+/**
+ * Plain-language editing-craft requests → Director steps (split_all_tracks,
+ * close_gaps, cut_range, hold_frame), with the matched phrases removed from the
+ * returned `rest` so the other parsers never double-read them.
+ */
+function parseCraftRequest(req: string): { steps: PlannedStep[]; rest: string } {
+  const steps: PlannedStep[] = [];
+  let rest = req;
+  const take = (m: RegExpMatchArray) => {
+    rest = rest.replace(m[0], " ");
+  };
+
+  const hold = rest.match(
+    new RegExp(String.raw`\b(?:freeze|hold)\b(?:\s+(?:the|a|this))?(?:\s+frame)?(?:\s+(?:at|on)\s+${CRAFT_T})?\s+for\s+${CRAFT_T}(?:\s+(?:at|on)\s+${CRAFT_T})?`),
+  );
+  if (hold) {
+    const input = { atSec: craftSec(hold[1] ?? hold[3] ?? "0"), holdSec: craftSec(hold[2]!) };
+    steps.push({ run: (p) => holdFrameTool.execute(input, { project: p }), call: { name: holdFrameTool.name, input } });
+    take(hold);
+  }
+
+  const keep = rest.match(
+    new RegExp(String.raw`\b(?:keep only|keep just|only keep|trim (?:it )?to)\s+(?:from\s+|between\s+)?${CRAFT_T}\s*(?:to|and|-|–|through|until)\s*${CRAFT_T}`),
+  );
+  const cut = keep
+    ? null
+    : rest.match(
+        new RegExp(String.raw`\b(?:remove|delete|cut out|cut|extract|drop)\s+(?:the\s+)?(?:part\s+|section\s+|bit\s+|everything\s+)?(?:from\s+|between\s+)?${CRAFT_T}\s*(?:to|and|-|–|through|until)\s*${CRAFT_T}`),
+      );
+  const range = keep ?? cut;
+  if (range) {
+    const input = { startSec: craftSec(range[1]!), endSec: craftSec(range[2]!), ...(keep ? { keep: true } : {}) };
+    if (Math.abs(input.endSec - input.startSec) >= 0.05) {
+      steps.push({ run: (p) => cutRangeTool.execute(input, { project: p }), call: { name: cutRangeTool.name, input } });
+      take(range);
+    }
+  }
+
+  const splitAll = rest.match(
+    new RegExp(String.raw`\b(?:split|cut|blade)\s+(?:all|every|each)(?:\s+the)?\s+(?:tracks?|layers?)\s+(?:at|on)\s+${CRAFT_T}|\bsplit everything (?:at|on)\s+${CRAFT_T}`),
+  );
+  if (splitAll) {
+    const input = { atSec: craftSec(splitAll[1] ?? splitAll[2]!) };
+    steps.push({ run: (p) => splitAllTracksTool.execute(input, { project: p }), call: { name: splitAllTracksTool.name, input } });
+    take(splitAll);
+  }
+
+  const gaps = rest.match(/\b(?:close|fill|pack)\s+(?:all\s+)?(?:of\s+)?(?:the\s+)?(?:empty\s+)?(?:gaps?|holes?|empty space)\b/);
+  if (gaps) {
+    steps.push({ run: (p) => closeGapsTool.execute({}, { project: p }), call: { name: closeGapsTool.name, input: {} } });
+    take(gaps);
+  }
+  return { steps, rest };
+}
+
 export class StubDirector {
   readonly mode = "stub" as const;
 
@@ -983,6 +1049,16 @@ export class StubDirector {
     const textMode = steps.length > 0;
     const textInstr = req;
     if (textMode) req = "";
+
+    // ---- editing craft: split all tracks · close gaps · cut/keep a range · hold a frame ----
+    // Parsed before the builders; each matched phrase is removed from `req`, so
+    // "cut from 2s to 5s" never also reads as a highlight / transcript cut and
+    // "freeze … for 2s" doesn't also freeze the whole clip.
+    if (!textMode) {
+      const craft = parseCraftRequest(req);
+      steps.push(...craft.steps);
+      req = craft.rest;
+    }
 
     // ---- builders (replace the doc); pick at most one ----
     const hasImages = project.media.some((m) => m.kind === "image");

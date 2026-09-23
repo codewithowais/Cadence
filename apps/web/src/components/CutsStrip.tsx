@@ -21,6 +21,8 @@ import { fmtTime } from "@/lib/format";
 import { computeWaveform } from "@/lib/waveform";
 import { findClip, isMainSequentialTrack, maxTimelineDuration, MIN_CLIP_SEC, type TrimEdge } from "@/lib/edit-ops";
 import { hasAnyTransition, mainCutCount } from "@/lib/transition-ops";
+import type { TimelineCraft } from "@/lib/use-editing-craft";
+import { ATTRIBUTE_GROUPS, SPEED_PRESETS, type AttributeGroup } from "@cadence/director";
 
 /** The media whose audio the waveform should visualize (prefers the base video). */
 export interface WaveformSource {
@@ -141,6 +143,13 @@ export interface TimelineEdit {
   onDropMedia: (mediaId: string, trackId: string, startSec: number) => void;
   /** Open the Text room to edit the selected text clip (words, style, animation). */
   onEditText?: (clipId: string) => void;
+  // ---- Editing speed & timeline craft --------------------------------------
+  /**
+   * Snapping toggle, in/out range, multi-select, gaps, split all, speed presets,
+   * freeze frame, copy/paste attributes (see `useEditingCraft`). Optional: the
+   * timeline renders exactly as before without it.
+   */
+  craft?: TimelineCraft;
 }
 
 /** MIME types the Media grid sets on a tile drag; used to gate lane drops by family. */
@@ -346,6 +355,7 @@ const ICONS = {
   handle: "M9 6h.01 M15 6h.01 M9 12h.01 M15 12h.01 M9 18h.01 M15 18h.01",
   close: "M6 6l12 12 M18 6L6 18",
   plus: "M12 5v14 M5 12h14",
+  magnet: "M6 3v8a6 6 0 0012 0V3 M6 7h4 M14 7h4 M10 3v8a2 2 0 004 0V3",
 };
 
 // ---- drag state ------------------------------------------------------------
@@ -627,8 +637,15 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
     return arr;
   }, [doc, total, timeSec, edit.markers]);
 
+  // Snapping can be switched off (N / the magnet button); `lastSnap` remembers the
+  // target the most recent snap landed on so the drag can draw a guide line there.
+  const snappingOn = edit.craft?.snapping ?? true;
+  const lastSnap = useRef<number | null>(null);
+  const [snapGuide, setSnapGuide] = useState<number | null>(null);
   const snap = useCallback(
     (sec: number, excludeClipId?: string): number => {
+      lastSnap.current = null;
+      if (!snappingOn) return sec;
       const thresh = pxToSec(SNAP_PX);
       let best = sec;
       let bestD = thresh;
@@ -638,15 +655,21 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
         if (d < bestD) {
           bestD = d;
           best = t;
+          lastSnap.current = t;
         }
       }
       return best;
     },
-    [snapTargets, pxToSec],
+    [snapTargets, pxToSec, snappingOn],
   );
 
   const drag = useRef<DragState | null>(null);
   const trackDrag = useRef<TrackDragState | null>(null);
+  // ⇧-drag on an empty lane draws a selection marquee (lanes-content coords).
+  const marquee = useRef<{ x0: number; y0: number; additive: boolean } | null>(null);
+  const [marqueeRect, setMarqueeRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const craft = edit.craft;
+  const groupIds = craft && craft.selectedIds.length > 1 ? craft.selectedIds : null;
   const rafRef = useRef<number | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ trackId: string; x: number } | null>(null);
   // A transition swatch being dragged from the gallery is hovering THIS cut clip.
@@ -699,6 +722,11 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   const onClipPointerDown = (e: React.PointerEvent, clip: Clip, track: Track, edge: DragKind) => {
     if (track.locked) return; // locked lane: clips are click-through for seek only
     e.stopPropagation();
+    // ⇧ / ⌘-click on a clip body adds it to (or removes it from) the selection.
+    if (craft && edge === "move" && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+      craft.onToggleSelect(clip.id);
+      return;
+    }
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     const fadeIn = clip.kind === "video" || clip.kind === "audio" ? clip.fadeInSec : 0;
     const fadeOut = clip.kind === "video" || clip.kind === "audio" ? clip.fadeOutSec : 0;
@@ -752,6 +780,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
       e.dataTransfer.dropEffect = "copy";
       const x = e.clientX - laneRectX() + (scrollRef.current?.scrollLeft ?? 0);
       const start = Math.max(0, snap(pxToSec(x)));
+      setSnapGuide(lastSnap.current);
       setDropIndicator({ trackId: track!.id, x: secToPx(start) });
     },
     [trackAtY, laneRectX, snap, pxToSec, secToPx],
@@ -761,6 +790,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
     (e: React.DragEvent) => {
       const info = readMediaDrag(e.dataTransfer);
       setDropIndicator(null);
+      setSnapGuide(null);
       if (!info) return;
       const track = trackAtY(e.clientY);
       if (!dropFitsLane(info, track)) return;
@@ -775,11 +805,24 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
   );
 
   const handleMediaDragLeave = useCallback((e: React.DragEvent) => {
-    if (e.currentTarget === e.target) setDropIndicator(null);
+    if (e.currentTarget === e.target) {
+      setDropIndicator(null);
+      setSnapGuide(null);
+    }
   }, []);
 
   const handlePointerMove = useCallback(
     (e: PointerEvent) => {
+      // ---- selection marquee ---------------------------------------------------
+      const mq = marquee.current;
+      if (mq) {
+        const r = lanesRef.current?.getBoundingClientRect();
+        if (!r) return;
+        const x1 = e.clientX - r.left;
+        const y1 = e.clientY - r.top;
+        setMarqueeRect({ left: Math.min(mq.x0, x1), top: Math.min(mq.y0, y1), width: Math.abs(x1 - mq.x0), height: Math.abs(y1 - mq.y0) });
+        return;
+      }
       // ---- track-reorder drag (header handle) ------------------------------
       const td = trackDrag.current;
       if (td) {
@@ -815,11 +858,13 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
 
         if (cur.kind === "trim-right") {
           const edgeTime = snap(cur.origEnd + deltaSec, cur.clipId);
+          setSnapGuide(lastSnap.current);
           edit.onTrim(cur.clipId, "right", edgeTime, `trim-${cur.clipId}`);
           return;
         }
         if (cur.kind === "trim-left") {
           const edgeTime = snap(cur.origStart + deltaSec, cur.clipId);
+          setSnapGuide(lastSnap.current);
           edit.onTrim(cur.clipId, "left", edgeTime, `trim-${cur.clipId}`);
           return;
         }
@@ -871,11 +916,13 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           cur.dropIndex = idx;
           cur.dropTrackId = null;
           cur.dropStart = null;
+          setSnapGuide(null);
           const targetClip = seq[idx];
           setDropIndicator({ trackId: target.id, x: targetClip ? secToPx(targetClip.start) : contentWidth });
         } else {
           // Cross-track drop or free reposition on an overlay lane.
           const newStart = Math.max(0, snap(cur.origStart + deltaSec, cur.clipId));
+          setSnapGuide(lastSnap.current);
           cur.dropIndex = null;
           cur.dropTrackId = target.id;
           cur.dropStart = newStart;
@@ -888,6 +935,36 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
 
   const handlePointerUp = useCallback(
     (e: PointerEvent) => {
+      setSnapGuide(null);
+      // ---- finish a selection marquee --------------------------------------
+      const mq = marquee.current;
+      if (mq) {
+        marquee.current = null;
+        setMarqueeRect(null);
+        const r = lanesRef.current?.getBoundingClientRect();
+        if (!r || !craft) return;
+        const x1 = e.clientX - r.left;
+        const y1 = e.clientY - r.top;
+        const left = Math.min(mq.x0, x1);
+        const right = Math.max(mq.x0, x1);
+        const top = Math.min(mq.y0, y1);
+        const bottom = Math.max(mq.y0, y1);
+        if (right - left < 3 && bottom - top < 3) return; // a ⇧-click, not a drag
+        const hits: string[] = [];
+        for (const track of displayTracks) {
+          if (track.locked) continue;
+          const el = laneRefs.current.get(track.id);
+          if (!el) continue;
+          const lr = el.getBoundingClientRect();
+          const lt = lr.top - r.top;
+          if (lt > bottom || lt + lr.height < top) continue;
+          for (const c of track.clips) {
+            if (secToPx(c.start) < right && secToPx(c.start + c.duration) > left) hits.push(c.id);
+          }
+        }
+        craft.onSelectMany(hits, mq.additive);
+        return;
+      }
       // ---- finish a track-reorder drag -------------------------------------
       const td = trackDrag.current;
       if (td) {
@@ -933,7 +1010,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
       }
       void e;
     },
-    [doc, edit, onSeek, trackDrop, findTrackById],
+    [doc, edit, onSeek, trackDrop, findTrackById, craft, displayTracks, secToPx],
   );
 
   useEffect(() => {
@@ -959,6 +1036,17 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
     if (!rect) return;
     const x = e.clientX - rect.left + (scrollRef.current?.scrollLeft ?? 0);
     onSeek(Math.max(0, Math.min(pxToSec(x), total)));
+  };
+
+  /** ⇧-drag on an empty lane: begin a selection marquee. */
+  const startMarquee = (e: React.PointerEvent) => {
+    const r = lanesRef.current?.getBoundingClientRect();
+    if (!r) return;
+    e.preventDefault();
+    const x0 = e.clientX - r.left;
+    const y0 = e.clientY - r.top;
+    marquee.current = { x0, y0, additive: e.metaKey || e.ctrlKey };
+    setMarqueeRect({ left: x0, top: y0, width: 0, height: 0 });
   };
 
   const playheadX = secToPx(timeSec);
@@ -1069,7 +1157,25 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           </button>
         </span>
 
-        <span className="ml-auto flex items-center gap-1.5">
+        <span className="ml-auto flex flex-wrap items-center gap-1.5">
+          {craft && (
+            <>
+              <button
+                type="button"
+                onClick={craft.onToggleSnapping}
+                aria-pressed={craft.snapping}
+                aria-label="Snapping"
+                title={craft.snapping ? "Snapping on — edges stick to cuts, the playhead and markers (N)" : "Snapping off — drag freely (N)"}
+                className={[
+                  "flex items-center gap-1 rounded-md border px-2 py-1 transition",
+                  craft.snapping ? "border-teal/50 bg-teal/10 text-teal" : "border-line bg-elevated text-muted hover:text-text",
+                ].join(" ")}
+              >
+                <Icon path={ICONS.magnet} /> Snap
+              </button>
+              <span className="mx-1 h-5 w-px bg-line" aria-hidden />
+            </>
+          )}
           <button
             type="button"
             onClick={() => selected && edit.onSplitAt(selected.clip.id, timeSec)}
@@ -1079,6 +1185,16 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           >
             Split
           </button>
+          {craft && (
+            <button
+              type="button"
+              onClick={craft.onSplitAll}
+              title="Split every track at the playhead — footage, captions, music (⇧S)"
+              className="rounded-md border border-line bg-elevated px-2 py-1 text-muted transition hover:text-text"
+            >
+              Split all
+            </button>
+          )}
           <button
             type="button"
             onClick={edit.onAddMarker}
@@ -1087,6 +1203,39 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           >
             + Marker
           </button>
+          {craft && (
+            <>
+              <span role="group" aria-label="In and out range" className="inline-flex overflow-hidden rounded-md border border-line bg-elevated">
+                <button
+                  type="button"
+                  onClick={craft.onSetIn}
+                  aria-label="Mark in at the playhead"
+                  title="Mark in at the playhead (I)"
+                  className={["px-2 py-1 transition", craft.inPoint != null ? "text-teal" : "text-muted hover:text-text"].join(" ")}
+                >
+                  [ In
+                </button>
+                <button
+                  type="button"
+                  onClick={craft.onSetOut}
+                  aria-label="Mark out at the playhead"
+                  title="Mark out at the playhead (O)"
+                  className={["border-l border-line px-2 py-1 transition", craft.outPoint != null ? "text-teal" : "text-muted hover:text-text"].join(" ")}
+                >
+                  Out ]
+                </button>
+              </span>
+              <button
+                type="button"
+                onClick={craft.onCloseAllGaps}
+                disabled={craft.gaps.length === 0}
+                title={craft.gaps.length ? "Close every gap so clips play back to back" : "No gaps — clips already play back to back"}
+                className="rounded-md border border-line bg-elevated px-2 py-1 text-muted transition hover:text-text disabled:opacity-40"
+              >
+                Close gaps{craft.gaps.length ? ` (${craft.gaps.length})` : ""}
+              </button>
+            </>
+          )}
           <span className="mx-1 h-5 w-px bg-line" aria-hidden />
           <button
             type="button"
@@ -1130,6 +1279,10 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           <span className="w-9 shrink-0 text-right tabular-nums text-faint">{zoom}×</span>
         </span>
       </div>
+
+      {/* Editing-craft status row: shuttle rate, the in/out range + its actions, and
+          a short confirmation for non-undoable actions (copy, marks, snapping). */}
+      {craft && <CraftStatusRow craft={craft} durationSec={total} />}
 
       {/* Header gutter (sticky-left) + horizontally-scrolling lanes. They share
           the editor's vertical scroll, so headers stay aligned to their lanes. */}
@@ -1200,7 +1353,7 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
             {/* Ruler */}
             <div
               className="relative mb-1 h-5 cursor-text border-b border-line-soft/60"
-              onPointerDown={seekFromPointer}
+              onPointerDown={(e) => (craft && e.shiftKey ? startMarquee(e) : seekFromPointer(e))}
               role="presentation"
             >
               {ticks.map((t) => (
@@ -1239,6 +1392,47 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
               <span className="absolute -top-1 -left-[3px] h-1.5 w-1.5 rounded-full bg-amber" />
             </div>
 
+            {/* In/out range band (I / O) — shaded across the ruler and every lane. */}
+            {craft && (craft.inPoint != null || craft.outPoint != null) && (() => {
+              const a = craft.inPoint ?? 0;
+              const b = craft.outPoint ?? total;
+              if (b <= a) return null;
+              return (
+                <div
+                  aria-hidden
+                  data-testid="inout-range"
+                  className="pointer-events-none absolute inset-y-0 z-[15] border-x-2 border-teal/70 bg-teal/10"
+                  style={{ left: secToPx(a), width: Math.max(2, secToPx(b - a)) }}
+                >
+                  {craft.inPoint != null && (
+                    <span className="absolute left-0 top-0 rounded-br bg-teal px-1 text-[9px] font-semibold leading-3 text-onaccent">IN</span>
+                  )}
+                  {craft.outPoint != null && (
+                    <span className="absolute right-0 top-0 rounded-bl bg-teal px-1 text-[9px] font-semibold leading-3 text-onaccent">OUT</span>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Snap guide: where the dragged edge just snapped. */}
+            {snapGuide != null && (
+              <div
+                aria-hidden
+                data-testid="snap-guide"
+                className="pointer-events-none absolute inset-y-0 z-30 w-px bg-teal shadow-[0_0_6px_1px_var(--color-teal)]"
+                style={{ left: secToPx(snapGuide) }}
+              />
+            )}
+
+            {/* ⇧-drag selection marquee. */}
+            {marqueeRect && (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute z-40 rounded-sm border border-teal bg-teal/10"
+                style={marqueeRect}
+              />
+            )}
+
             <div className="flex flex-col gap-1.5">
               {displayTracks.map((track) => {
                 const laneDimmed = track.hidden || (track.kind === "audio" && anyAudioSolo && !track.solo);
@@ -1264,17 +1458,42 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                     ].join(" ")}
                     style={track.locked ? { backgroundImage: "repeating-linear-gradient(45deg, transparent, transparent 6px, var(--color-line) 6px, var(--color-line) 7px)" } : undefined}
                     onPointerDown={(e) => {
-                      if (e.target === e.currentTarget) seekFromPointer(e);
+                      if (e.target !== e.currentTarget) return;
+                      if (craft && e.shiftKey) startMarquee(e);
+                      else seekFromPointer(e);
                     }}
                   >
                     {isDropTarget && (
                       <span className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-amber" style={{ left: dropIndicator!.x }} />
                     )}
+                    {/* Gaps on a sequence lane: click one to close it (the rest ripples left). */}
+                    {craft?.gaps
+                      .filter((g) => g.trackId === track.id)
+                      .map((g) => {
+                        const w = Math.max(10, secToPx(g.end - g.start) - 2);
+                        const len = `${(g.end - g.start).toFixed(1)}s`;
+                        return (
+                          <button
+                            key={`gap-${g.start}`}
+                            type="button"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={() => craft.onCloseGap(track.id, (g.start + g.end) / 2)}
+                            aria-label={`Close the ${len} gap at ${fmtTime(g.start)}`}
+                            title={`Empty gap (${len}) — click to close it`}
+                            className="group/gap absolute inset-y-1 z-[5] flex items-center justify-center gap-1 overflow-hidden rounded-md border border-dashed border-faint/60 text-[10px] text-faint transition hover:border-amber hover:bg-amber/10 hover:text-amber"
+                            style={{ left: secToPx(g.start) + 1, width: w }}
+                          >
+                            {w > 64 ? <span className="truncate">Gap {len}</span> : null}
+                            <span aria-hidden className="leading-none">×</span>
+                          </button>
+                        );
+                      })}
                     {track.clips.map((clip) => {
                       const left = secToPx(clip.start);
                       const width = Math.max(4, secToPx(clip.duration) - 2);
                       const active = timeSec >= clip.start && timeSec < clip.start + clip.duration;
                       const isSelected = clip.id === selectedClipId;
+                      const inGroup = !!groupIds && groupIds.includes(clip.id) && !isSelected;
                       const color = TRACK_COLORS[clip.kind] ?? TRACK_COLORS.audio;
                       const draggable = !track.locked;
                       // Wave E: does the active trim mode apply to this clip?
@@ -1291,12 +1510,17 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                           key={clip.id}
                           role="button"
                           tabIndex={track.locked ? -1 : 0}
-                          aria-pressed={isSelected}
-                          aria-label={`${clip.kind} clip, ${fmtTime(clip.duration)}${isSelected ? ", selected" : ""}${track.locked ? ", locked" : ""}`}
+                          aria-pressed={isSelected || inGroup}
+                          aria-label={`${clip.kind} clip, ${fmtTime(clip.duration)}${isSelected || inGroup ? ", selected" : ""}${track.locked ? ", locked" : ""}`}
                           onKeyDown={(e) => {
                             if (track.locked) return;
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
+                              // ⇧ / ⌘ + Enter adds the clip to the selection (keyboard multi-select).
+                              if (craft && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+                                craft.onToggleSelect(clip.id);
+                                return;
+                              }
                               edit.onSelectClip(clip.id);
                               onSeek(clip.start + 0.001);
                             }
@@ -1356,7 +1580,9 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
                               ? "z-20 ring-2 ring-amber brightness-110"
                               : isSelected
                                 ? "z-10 ring-2 ring-amber shadow-[0_0_0_1px_var(--color-amber)]"
-                                : active
+                                : inGroup
+                                  ? "z-10 ring-2 ring-teal"
+                                  : active
                                   ? "ring-2 ring-amber/70"
                                   : modeEligible
                                     ? "ring-1 ring-inset ring-teal/50"
@@ -1576,6 +1802,9 @@ export function CutsStrip({ doc, timeSec, durationSec, onSeek, waveform, edit }:
           </div>
         </div>
       </div>
+
+      {/* Multi-select bar: group actions for 2+ selected clips. */}
+      {craft && groupIds && <SelectionBar craft={craft} count={groupIds.length} />}
 
       {/* Inspector for the selected clip + its (tucked) keyframe editor */}
       {selected && (
@@ -2263,6 +2492,47 @@ function ClipInspector({
         </button>
       )}
 
+      {/* Editing craft: one-tap speed presets that keep the same footage, freeze
+          frame here, and copy / paste attributes. */}
+      {edit.craft && clip.kind === "video" && clip.freezeAtSec === undefined && (
+        <span role="group" aria-label="Quick retime (keeps the same footage)" className="flex items-center gap-1">
+          {SPEED_PRESETS.map((s) => {
+            const on = !hasRamp && Math.abs(constSpeed - s) < 1e-6;
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => edit.craft!.onRetime(clip.id, s)}
+                aria-pressed={on}
+                aria-label={`Retime to ${s}×`}
+                title={`${s}× — same footage, ${s > 1 ? "shorter" : s < 1 ? "longer (slow motion)" : "original length"}`}
+                className={[
+                  "rounded-md border px-1.5 py-0.5 tabular-nums transition",
+                  on ? "border-amber/40 bg-amber/10 text-amber" : "border-line bg-panel text-muted hover:text-text",
+                ].join(" ")}
+              >
+                {s}×
+              </button>
+            );
+          })}
+        </span>
+      )}
+      {edit.craft && clip.kind === "video" && isMainSequentialTrack(track) && !track.locked && (
+        clip.freezeAtSec === undefined ? (
+          <button
+            type="button"
+            onClick={() => edit.craft!.onFreezeFrame(clip.id)}
+            title="Freeze frame here (F): hold the frame at the playhead for 2s, then keep playing"
+            className="rounded-md border border-line bg-panel px-2 py-1 text-muted transition hover:text-text"
+          >
+            ❚❚ Freeze frame
+          </button>
+        ) : (
+          <span className="rounded-md bg-panel px-2 py-1 text-[10px] uppercase tracking-wide text-faint">Frozen frame</span>
+        )
+      )}
+      {edit.craft && <AttributeClipboard craft={edit.craft} clipId={clip.id} />}
+
       {/* Advanced trims (Wave E) — discoverable ±0.1s nudges so users don't have
           to find the drag modes. Disabled when the op can't apply to this clip. */}
       {trim.main && (
@@ -2900,5 +3170,253 @@ function KeyframeEditor({
         </div>
       )}
     </div>
+  );
+}
+
+// ---- editing craft: status row · selection bar · attribute clipboard -------
+
+const craftBtn =
+  "rounded-md border border-line bg-panel px-2 py-0.5 text-muted transition hover:text-text disabled:opacity-40";
+
+/**
+ * The shuttle rate badge, the marked in/out range with its two actions, and a
+ * polite live region for short confirmations (copy, marks, snapping). The live
+ * region is always mounted so screen readers hear the first announcement too.
+ */
+function CraftStatusRow({ craft, durationSec }: { craft: TimelineCraft; durationSec: number }) {
+  const rate = craft.shuttleRate;
+  const shuttling = rate !== 0 && rate !== 1;
+  const hasRange = craft.inPoint != null || craft.outPoint != null;
+  const a = craft.inPoint ?? 0;
+  const b = craft.outPoint ?? durationSec;
+  const show = shuttling || hasRange || !!craft.status;
+  return (
+    <div className={show ? "mb-2 flex flex-wrap items-center gap-2 text-[11px]" : "sr-only"}>
+      {shuttling && (
+        <span
+          className="rounded-full bg-amber/15 px-2 py-0.5 font-semibold tabular-nums text-amber"
+          title="J / K / L — shuttle (K stops)"
+        >
+          {rate < 0 ? "◀◀" : "▶▶"} {Math.abs(rate)}×
+        </span>
+      )}
+      {hasRange && (
+        <span role="group" aria-label="Marked range" className="flex flex-wrap items-center gap-1.5 rounded-lg border border-teal/40 bg-teal/5 px-2 py-1">
+          <span className="font-medium text-teal">Range</span>
+          <span className="tabular-nums text-muted">
+            {fmtTime(a)} → {fmtTime(b)} · {Math.max(0, b - a).toFixed(1)}s
+          </span>
+          <button
+            type="button"
+            onClick={craft.onRemoveRange}
+            disabled={b - a < MIN_CLIP_SEC}
+            title="Cut this range out of every track and close it up (Del with nothing selected)"
+            className="rounded-md border border-danger/40 bg-panel px-2 py-0.5 text-danger transition hover:bg-danger/10 disabled:opacity-40"
+          >
+            Remove range
+          </button>
+          <button
+            type="button"
+            onClick={craft.onKeepRange}
+            disabled={b - a < MIN_CLIP_SEC}
+            title="Keep only this range; remove everything before and after it"
+            className={craftBtn}
+          >
+            Keep only range
+          </button>
+          <button
+            type="button"
+            onClick={craft.onClearInOut}
+            aria-label="Clear the in and out marks"
+            title="Clear the marks (⌥X)"
+            className="grid h-5 w-5 place-items-center rounded-md border border-line bg-panel text-muted transition hover:text-text"
+          >
+            <Icon path={ICONS.close} />
+          </button>
+        </span>
+      )}
+      <span aria-live="polite" className="text-muted">
+        {craft.status ?? ""}
+      </span>
+    </div>
+  );
+}
+
+/** Group actions for a multi-clip selection (⇧/⌘-click, marquee or ⌘A). */
+function SelectionBar({ craft, count }: { craft: TimelineCraft; count: number }) {
+  return (
+    <div
+      role="toolbar"
+      aria-label="Selected clips"
+      className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-teal/40 bg-teal/5 px-3 py-2 text-xs"
+    >
+      <span className="font-medium text-teal">{count} clips selected</span>
+      <span className="mx-0.5 h-5 w-px bg-line" aria-hidden />
+      <button
+        type="button"
+        onClick={craft.onDeleteSelected}
+        title="Delete the selected clips and close the gaps (Del)"
+        className="rounded-md border border-danger/40 bg-panel px-2 py-1 text-danger transition hover:bg-danger/10"
+      >
+        Delete {count}
+      </button>
+      <button type="button" onClick={craft.onDuplicateSelected} title="Duplicate the selected clips (⌘/Ctrl D)" className={craftBtn}>
+        Duplicate {count}
+      </button>
+      <span role="group" aria-label="Nudge the selected clips" className="flex items-center gap-1">
+        <span className="text-faint">Nudge</span>
+        <button
+          type="button"
+          onClick={() => craft.onNudgeSelected(-1)}
+          aria-label="Nudge one frame earlier"
+          title="One frame earlier (⌥←, ⇧⌥← = 10 frames)"
+          className={craftBtn}
+        >
+          ← 1f
+        </button>
+        <button
+          type="button"
+          onClick={() => craft.onNudgeSelected(1)}
+          aria-label="Nudge one frame later"
+          title="One frame later (⌥→, ⇧⌥→ = 10 frames)"
+          className={craftBtn}
+        >
+          1f →
+        </button>
+      </span>
+      {craft.attrClipboard && (
+        <button
+          type="button"
+          onClick={() => craft.onPasteAttributes()}
+          title="Paste the copied attributes onto every selected clip (⌘/Ctrl ⇧V)"
+          className="rounded-md border border-amber/40 bg-amber/10 px-2 py-1 font-medium text-amber transition hover:bg-amber/20"
+        >
+          Paste attributes to {count}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={craft.onClearSelection}
+        title="Clear the selection (Esc)"
+        className={["ml-auto", craftBtn].join(" ")}
+      >
+        Clear selection
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Copy this clip's attributes / paste the clipboard onto the selection, with a
+ * picker for WHICH groups to paste (Look · Transform & blend · Motion · Audio ·
+ * Speed). Fixed-positioned so the timeline's scroll box never clips it.
+ */
+function AttributeClipboard({ craft, clipId }: { craft: TimelineCraft; clipId: string }) {
+  const cb = craft.attrClipboard;
+  const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState<AttributeGroup[]>([]);
+  const [pos, setPos] = useState<{ right: number; bottom: number }>({ right: 16, bottom: 16 });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const targets = craft.selectedIds.length || 1;
+
+  useEffect(() => {
+    setPicked(cb?.groups ?? []);
+  }, [cb]);
+  useEffect(() => {
+    if (!open) return;
+    panelRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!panelRef.current?.contains(t) && !btnRef.current?.contains(t)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const toggleOpen = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setPos({ right: Math.max(8, window.innerWidth - r.right), bottom: Math.max(8, window.innerHeight - r.top + 8) });
+    setOpen((o) => !o);
+  };
+
+  return (
+    <span className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => craft.onCopyAttributes(clipId)}
+        title="Copy this clip's look, transform, motion, audio & speed (⌘/Ctrl ⇧C)"
+        className="rounded-md border border-line bg-panel px-2 py-1 text-muted transition hover:text-text"
+      >
+        Copy attributes
+      </button>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={toggleOpen}
+        disabled={!cb}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={cb ? "Choose which attributes to paste (⌘/Ctrl ⇧V pastes all of them)" : "Copy a clip's attributes first"}
+        className="rounded-md border border-line bg-panel px-2 py-1 text-muted transition hover:text-text disabled:opacity-40"
+      >
+        Paste attributes…
+      </button>
+      {open && cb && (
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-label="Paste attributes"
+          onKeyDown={(e) => {
+            e.stopPropagation(); // keep Space / letters inside the picker
+            if (e.key === "Escape") {
+              setOpen(false);
+              btnRef.current?.focus();
+            }
+          }}
+          className="fixed z-50 w-72 rounded-xl border border-line bg-elevated p-3 text-xs shadow-[0_16px_44px_-16px_rgba(24,34,38,0.28)]"
+          style={{ right: pos.right, bottom: pos.bottom }}
+        >
+          <p className="mb-2 text-faint">From a {cb.sourceKind} clip — choose what to paste:</p>
+          <ul className="space-y-2">
+            {ATTRIBUTE_GROUPS.filter((g) => cb.groups.includes(g.group)).map((g) => (
+              <li key={g.group}>
+                <label className="flex cursor-pointer items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(g.group)}
+                    onChange={(e) =>
+                      setPicked((p) => (e.target.checked ? [...p, g.group] : p.filter((x) => x !== g.group)))
+                    }
+                    style={{ accentColor: "var(--color-amber)" }}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="text-text">{g.label}</span>
+                    <span className="block text-[10px] text-faint">{g.hint}</span>
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3 flex justify-end gap-1.5">
+            <button type="button" onClick={() => setOpen(false)} className={craftBtn}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={picked.length === 0}
+              onClick={() => {
+                craft.onPasteAttributes(picked);
+                setOpen(false);
+              }}
+              className="rounded-md bg-amber px-2.5 py-1 font-medium text-onaccent transition hover:bg-amber-bright disabled:opacity-40"
+            >
+              Paste to {targets} clip{targets === 1 ? "" : "s"}
+            </button>
+          </div>
+        </div>
+      )}
+    </span>
   );
 }

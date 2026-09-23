@@ -14,7 +14,7 @@
  * All times are seconds on the project timeline.
  */
 import { parseEditDoc, type Clip, type EditDoc, type Track } from "@cadence/core";
-import { addMarker as addMarkerEngine } from "@cadence/director";
+import { addMarker as addMarkerEngine, splitClipAtTime } from "@cadence/director";
 
 const round = (n: number): number => Math.round(n * 1000) / 1000;
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -354,47 +354,11 @@ export function trimClip(doc: EditDoc, clipId: string, edge: TrimEdge, edgeTime:
  * half would be shorter than `MIN_CLIP_SEC`). Pure.
  */
 export function splitClip(doc: EditDoc, clipId: string, atSec: number): EditDoc {
-  const clone: EditDoc = structuredClone(doc);
-  const found = findClip(clone, clipId);
-  if (!found) return parseEditDoc(clone);
-  const { track, clipIndex, clip } = found;
-
-  const local = atSec - clip.start;
-  const firstDur = round(local);
-  const secondDur = round(clip.duration - local);
-  if (firstDur < MIN_CLIP_SEC || secondDur < MIN_CLIP_SEC) return parseEditDoc(clone);
-
-  const first: Clip = structuredClone(clip);
-  const second: Clip = structuredClone(clip);
-
-  first.duration = firstDur;
-  second.id = newClipId(`${clip.id}-b`);
-  second.start = round(clip.start + local);
-  second.duration = secondDur;
-
-  if (second.kind === "video") {
-    const speed = second.speed ?? 1;
-    second.sourceIn = round(second.sourceIn + local * speed);
-  } else if (second.kind === "audio") {
-    second.sourceIn = round(second.sourceIn + local);
-  }
-
-  // Interior edge = a hard cut: no fades in the middle of the original span.
-  if ("transitionOutSec" in first) first.transitionOutSec = 0;
-  if ("transitionInSec" in second) second.transitionInSec = 0;
-
-  // Keep a punch-in only on the half whose timeline range contains its window.
-  if (first.kind === "video" && first.emphasis) {
-    const at = first.emphasis.atSec;
-    if (!(at >= first.start && at < first.start + first.duration)) first.emphasis = undefined;
-  }
-  if (second.kind === "video" && second.emphasis) {
-    const at = second.emphasis.atSec;
-    if (!(at >= second.start && at < second.start + second.duration)) second.emphasis = undefined;
-  }
-
-  track.clips.splice(clipIndex, 1, first, second);
-  return parseEditDoc(clone);
+  // One implementation for the timeline, ⇧S "split all" and the Director: the
+  // engine op also maps speed ramps / reversed clips through `sourceTimeAt`,
+  // splits keyframes + audio fades per half (instead of replaying them) and
+  // keeps karaoke words with their half.
+  return splitClipAtTime(doc, clipId, atSec);
 }
 
 // ---- Reorder ---------------------------------------------------------------
@@ -597,4 +561,25 @@ export function duplicateClip(doc: EditDoc, clipId: string): EditDoc {
     track.clips.splice(clipIndex + 1, 0, copy);
   }
   return parseEditDoc(clone);
+}
+
+// ---- Group (multi-select) ops ----------------------------------------------
+//
+// Each folds the matching single-clip op over the selection, so a group edit has
+// EXACTLY the semantics of doing it clip by clip (same ripple, same overlay
+// re-anchoring) — and the caller commits the result as ONE undo step.
+
+/** Ripple-delete every clip in `clipIds` (closing each gap). Pure. */
+export function rippleDeleteClips(doc: EditDoc, clipIds: readonly string[]): EditDoc {
+  return clipIds.reduce((d, id) => (findClip(d, id) ? rippleDeleteClip(d, id) : d), doc);
+}
+
+/** Delete every clip in `clipIds`, leaving gaps. Pure. */
+export function deleteClips(doc: EditDoc, clipIds: readonly string[]): EditDoc {
+  return clipIds.reduce((d, id) => (findClip(d, id) ? deleteClip(d, id) : d), doc);
+}
+
+/** Duplicate every clip in `clipIds` (each copy lands right after its original). Pure. */
+export function duplicateClips(doc: EditDoc, clipIds: readonly string[]): EditDoc {
+  return clipIds.reduce((d, id) => (findClip(d, id) ? duplicateClip(d, id) : d), doc);
 }

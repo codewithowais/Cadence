@@ -55,6 +55,7 @@ import {
   insertMediaClipInDoc,
 } from "@/lib/doc";
 import { UndoToast as UndoToastBase } from "./UndoToast";
+import { useEditingCraft } from "@/lib/use-editing-craft";
 import {
   findClip,
   isMainSequentialTrack,
@@ -1606,6 +1607,23 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     if (selectedClipId && !findClip(doc, selectedClipId)) setSelectedClipId(null);
   }, [doc, selectedClipId]);
 
+  // Editing speed & timeline craft (JKL shuttle, in/out, snapping, multi-select,
+  // split all, gaps, speed presets, freeze, copy/paste attributes) — its own
+  // hook; every doc change still goes through `commit`.
+  const editingCraft = useEditingCraft({
+    doc,
+    commit,
+    timeSec,
+    durationSec,
+    playing,
+    setPlaying,
+    setTimeSec,
+    seek,
+    selectedClipId,
+    setSelectedClipId,
+    notify: showUndoToast,
+  });
+
   // ---- First-run ease: palette / next-step chips / checklist / prompt library ----
   // Every action maps onto an EXISTING path: prompts → handleSend (the composer's
   // path), everything else → the handler the button/shortcut already uses.
@@ -1679,6 +1697,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             (target as HTMLInputElement).type,
           )));
     const mod = e.metaKey || e.ctrlKey;
+    if (editingCraft.handleKey(e, typing)) return; // J/K/L · I/O · N · ↑/↓ · ⇧S · F · ⌘A/⌘D · ⌘⇧C/V · ⌥←/→
 
     // Command palette (⌘K / Ctrl+K) — works everywhere, including in the composer.
     if (mod && !e.shiftKey && !e.altKey && (e.key === "k" || e.key === "K")) {
@@ -2030,6 +2049,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
                 }
                 setRoom("text");
               },
+              craft: editingCraft.craft,
             }}
           />
           </ErrorBoundary>
