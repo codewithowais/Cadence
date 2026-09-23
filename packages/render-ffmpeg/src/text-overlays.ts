@@ -16,9 +16,9 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { EditDoc } from "@cadence/core";
-import type { KaraokeOverlayMap, TextOverlayMap } from "./plan";
+import { overlaySegmentSpecs, type AnimatedOverlayMap, type KaraokeOverlayMap, type OverlaySegment, type TextOverlayMap } from "./plan";
 
-export type { KaraokeOverlayMap, TextOverlayMap };
+export type { AnimatedOverlayMap, KaraokeOverlayMap, TextOverlayMap };
 
 /** True when a text clip is a karaoke caption (highlight on + per-word timings). */
 function isKaraoke(clip: { kind: string; karaoke?: { enabled: boolean }; words?: unknown[] }): boolean {
@@ -131,4 +131,54 @@ export async function renderShapeOverlays(doc: EditDoc, dir: string): Promise<Te
     }
   }
   return map;
+}
+
+/**
+ * Rasterize every ANIMATED text / shape clip (intro/exit/loop animations,
+ * transition ramps, keyframes) into overlay SEGMENTS — one still PNG per static
+ * span and a PNG frame sequence per animated window, each frame drawn at its exact
+ * output-frame time by the SAME shared drawing code as the preview — so the export
+ * animates exactly like the preview instead of freezing text at rest. Static and
+ * karaoke clips are skipped (they keep their existing single-PNG / per-word paths).
+ */
+export async function renderAnimatedOverlays(doc: EditDoc, dir: string): Promise<AnimatedOverlayMap> {
+  const map: AnimatedOverlayMap = new Map();
+  const { renderClipPngAt } = await import("@cadence/render-node");
+  const fps = doc.meta.fps;
+  for (const track of doc.tracks) {
+    for (const clip of track.clips) {
+      if (clip.kind !== "text" && clip.kind !== "shape") continue;
+      if (clip.kind === "shape" && track.hidden) continue;
+      if (isKaraoke(clip)) continue;
+      const specs = overlaySegmentSpecs(clip, fps);
+      if (specs.length === 0) continue;
+      const segs: OverlaySegment[] = [];
+      for (let k = 0; k < specs.length; k++) {
+        const sp = specs[k]!;
+        const base = `anim-${safe(clip.id)}-${k}`;
+        if (sp.kind === "still") {
+          const p = join(dir, `${base}.png`);
+          await writeFile(p, renderClipPngAt(doc, clip, sp.at));
+          segs.push({ kind: "still", start: sp.start, end: sp.end, path: p });
+        } else {
+          for (let f = 0; f < sp.frames; f++) {
+            const png = renderClipPngAt(doc, clip, (sp.at + f) / fps);
+            await writeFile(join(dir, `${base}-${String(f).padStart(5, "0")}.png`), png);
+          }
+          segs.push({ kind: "seq", start: sp.start, end: sp.end, pattern: join(dir, `${base}-%05d.png`), frames: sp.frames, fps });
+        }
+      }
+      map.set(clip.id, segs);
+    }
+  }
+  return map;
+}
+
+/** True when a doc has any animated text/shape needing overlay segments. */
+export function docNeedsAnimatedOverlays(doc: EditDoc): boolean {
+  return doc.tracks.some((t) =>
+    t.clips.some(
+      (c) => (c.kind === "text" || c.kind === "shape") && !isKaraoke(c) && overlaySegmentSpecs(c, doc.meta.fps).length > 0,
+    ),
+  );
 }

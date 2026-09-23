@@ -24,6 +24,7 @@
  */
 import {
   calloutScreenRect,
+  clipAnimatedWindows,
   cursorPositionAt,
   docDurationSec,
   sourceSpanSec,
@@ -61,6 +62,94 @@ export interface ExportPlan {
   filterComplex: string;
   /** Output file path. */
   outFile: string;
+  /**
+   * Set when the plan reads its video from STDIN as raw RGBA frames (the
+   * `canvasBase` path for media-less docs): the driver must pipe exactly `count`
+   * frames of width×height×4 bytes, frame i rendered at t = i / fps.
+   */
+  stdinFrames?: { count: number; width: number; height: number; fps: number };
+}
+
+/**
+ * One time-gated piece of an animated synthetic clip's export overlay: a single
+ * still PNG over a static span, or a PNG SEQUENCE (`pattern` with %05d, `frames`
+ * files at `fps`, frame k shown from start + k/fps) over an animated window.
+ */
+export type OverlaySegment =
+  | { kind: "still"; start: number; end: number; path: string }
+  | { kind: "seq"; start: number; end: number; pattern: string; frames: number; fps: number };
+
+/** clipId → the overlay segments for an ANIMATED text/shape clip (see overlaySegmentSpecs). */
+export type AnimatedOverlayMap = Map<string, OverlaySegment[]>;
+
+/**
+ * What to rasterize for one segment: a still rendered at time `at`, or a sequence
+ * of `frames` frames whose first frame is timeline frame number `at` (so frame k is
+ * rendered at (at + k) / fps). Times are snapped to the output frame grid.
+ */
+export interface OverlaySegmentSpec {
+  kind: "still" | "seq";
+  start: number;
+  end: number;
+  at: number;
+  frames: number;
+}
+
+/**
+ * PURE: plan a synthetic clip's overlay as static stills + frame sequences, so an
+ * animated title/shape exports frame-accurately (every animation, exactly as the
+ * preview draws it) while static spans cost a single PNG. [] ⇒ the clip is fully
+ * static (use the single-PNG path).
+ */
+export function overlaySegmentSpecs(clip: TextClip | ShapeClip | SolidClip, fps: number): OverlaySegmentSpec[] {
+  const windows = clipAnimatedWindows(clip);
+  if (windows.length === 0) return [];
+  const clipEnd = clip.start + clip.duration;
+  // Snap each animated window outward to the frame grid, then merge touching ones.
+  const snapped: [number, number][] = [];
+  for (const [a, b] of windows) {
+    const fs = Math.floor(a * fps + 1e-6);
+    const fe = Math.max(fs + 1, Math.ceil(b * fps - 1e-6));
+    const last = snapped[snapped.length - 1];
+    if (last && fs <= last[1]) last[1] = Math.max(last[1], fe);
+    else snapped.push([fs, fe]);
+  }
+  const out: OverlaySegmentSpec[] = [];
+  let cur = clip.start;
+  for (const [fs, fe] of snapped) {
+    const ws = fs / fps;
+    const we = fe / fps;
+    if (ws > cur + 1e-6) out.push({ kind: "still", start: cur, end: ws, at: (cur + ws) / 2, frames: 1 });
+    out.push({ kind: "seq", start: ws, end: we, at: fs, frames: fe - fs });
+    cur = Math.max(cur, we);
+  }
+  if (clipEnd > cur + 1e-6) out.push({ kind: "still", start: cur, end: clipEnd, at: (cur + clipEnd) / 2, frames: 1 });
+  return out;
+}
+
+/**
+ * True when a doc has NO visible video/image clips — a text video, a title card,
+ * a motion-graphics piece. Such a doc is rendered frame-by-frame through the shared
+ * canvas (every animation, gradient, effect, and transition exact) and piped to
+ * ffmpeg as raw frames, with only audio mixed in the filtergraph.
+ */
+export function docIsCanvasRenderable(doc: EditDoc): boolean {
+  return !doc.tracks.some(
+    (t) => t.kind === "visual" && !t.hidden && t.clips.some((c) => c.kind === "video" || c.kind === "image"),
+  );
+}
+
+/** Extra, optional inputs to buildExportPlan (kept off the long positional list). */
+export interface ExportPlanOptions {
+  /** clipId → overlay segments for animated text/shape clips (frame-accurate export). */
+  animatedOverlays?: AnimatedOverlayMap;
+  /**
+   * Read the whole picture from STDIN as raw RGBA frames rendered by the shared
+   * canvas (media-less docs only — see docIsCanvasRenderable). The graph then only
+   * encodes + mixes audio; text/shapes/solids/callouts/cursors/adjustments/VFX are
+   * already in the frames.
+   */
+  canvasBase?: boolean;
 }
 
 /** Resolves a media id to a concrete file path (server path / URL). */
@@ -1049,7 +1138,10 @@ export function buildExportPlan(
    * Omitted ⇒ no stabilization (byte-identical to before).
    */
   stabilizeTransforms?: Map<string, string>,
+  options: ExportPlanOptions = {},
 ): ExportPlan {
+  const canvasBase = !!options.canvasBase && docIsCanvasRenderable(doc);
+  const animatedOverlays = options.animatedOverlays;
   const { width: W, height: H, fps } = doc.meta;
   const total = r3(docDurationSec(doc));
 
@@ -1384,6 +1476,16 @@ export function buildExportPlan(
       filters.push(`${segLabels.join("")}concat=n=${base.length}:v=1:a=0[vcat]`);
       videoLabel = "vcat";
     }
+  } else if (canvasBase) {
+    // ---- No media, canvas base: every frame rendered by the shared canvas ----
+    // (text, gradients, shapes, transitions — exactly the preview) piped in raw.
+    const idx = addInput(
+      ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${W}x${H}`, "-framerate", String(fps)],
+      "pipe:0",
+      false,
+    );
+    filters.push(`[${idx}:v]format=yuv420p[vbg]`);
+    videoLabel = "vbg";
   } else {
     // ---- No media: solid/text-only doc → lavfi color base -----------------
     const bg = hexToFfColor(doc.meta.background);
@@ -1522,6 +1624,27 @@ export function buildExportPlan(
     videoLabel = tag;
   };
 
+  // Overlay one animated clip's SEGMENTS: stills over static spans, PNG sequences
+  // (image2, `-framerate fps`) over animated windows — each gated to the segment
+  // ∩ the clip span, so the overlay never shows outside the clip.
+  const overlaySegments = (segs: OverlaySegment[], clipStart: number, clipEnd: number, tag: string): void => {
+    segs.forEach((seg, k) => {
+      const gs = Math.max(clipStart, seg.start);
+      const ge = Math.min(clipEnd, seg.end);
+      if (ge - gs <= 1e-6) return;
+      if (seg.kind === "still") {
+        overlayPng(seg.path, gs, ge, `${tag}_${k}`);
+        return;
+      }
+      const idx = addInput(["-framerate", String(seg.fps), "-start_number", "0"], seg.pattern);
+      filters.push(`[${idx}:v]format=rgba,setpts=PTS-STARTPTS+${r3(seg.start)}/TB[${tag}_${k}s]`);
+      filters.push(
+        `[${videoLabel}][${tag}_${k}s]overlay=0:0:eof_action=pass:enable='between(t\\,${r3(gs)}\\,${r3(ge)})'[${tag}_${k}]`,
+      );
+      videoLabel = `${tag}_${k}`;
+    });
+  };
+
   // ---- Burn-in captions / titles / kinetic titles (PNG overlays) ----------
   // Each text clip is rasterized to a transparent PNG (font/size/color/align, pill
   // background, outline — all from the canvas engine, so preview == export) and
@@ -1530,7 +1653,7 @@ export function buildExportPlan(
   // clip span; the preview still animates (documented limitation). Static captions
   // and titles are pixel-perfect. Clips with no rendered PNG in `textOverlays` are
   // skipped.
-  const texts = collectTextClips(doc);
+  const texts = canvasBase ? [] : collectTextClips(doc);
   texts.forEach((clip, i) => {
     // KARAOKE: one PNG per word, each overlaid gated to that word's [start,end], so
     // the highlight steps word-by-word on export (matching the per-frame preview).
@@ -1546,6 +1669,13 @@ export function buildExportPlan(
       });
       return;
     }
+    // ANIMATED text: frame-accurate stills + PNG sequences (every intro/exit/loop
+    // style exactly as previewed). Static text keeps the single-PNG fast path.
+    const segs = animatedOverlays?.get(clip.id);
+    if (segs && segs.length > 0) {
+      overlaySegments(segs, clip.start, clip.start + clip.duration, `vtxa${i}`);
+      return;
+    }
     const png = textOverlays?.get(clip.id);
     if (!png) return;
     overlayPng(png, clip.start, clip.start + clip.duration, `vtext${i}`);
@@ -1555,8 +1685,13 @@ export function buildExportPlan(
   // Each shape clip is rasterized to a transparent composition-sized PNG (canvas
   // engine, so preview == export) and overlaid time-gated to its span — the SAME
   // path as text/callout labels. No shapes ⇒ this loop is empty (byte-identical).
-  const shapes = collectShapes(doc);
+  const shapes = canvasBase ? [] : collectShapes(doc);
   shapes.forEach((clip, i) => {
+    const segs = animatedOverlays?.get(clip.id);
+    if (segs && segs.length > 0) {
+      overlaySegments(segs, clip.start, clip.start + clip.duration, `vsha${i}`);
+      return;
+    }
     const png = shapeOverlays?.get(clip.id);
     if (!png) return;
     overlayPng(png, clip.start, clip.start + clip.duration, `vshape${i}`);
@@ -1567,7 +1702,7 @@ export function buildExportPlan(
   // area OUTSIDE it (four filled drawboxes), and an optional label. All
   // time-gated via drawbox/drawtext `enable`. (The optional `zoom` magnifies in
   // the canvas/Stage preview; the export keeps the faithful highlight box.)
-  const callouts = collectCallouts(doc);
+  const callouts = canvasBase ? [] : collectCallouts(doc);
   callouts.forEach((clip, i) => {
     const parts = calloutFilters(clip, W, H);
     if (parts.length > 0) {
@@ -1585,7 +1720,7 @@ export function buildExportPlan(
   // glyph along the waypoints (piecewise-linear). Each click fires concentric
   // drawbox rings gated in sequence (an expanding ripple; drawbox geometry can't
   // read `t`, so the ripple is built from time-gated static rings).
-  const cursors = collectCursors(doc);
+  const cursors = canvasBase ? [] : collectCursors(doc);
   cursors.forEach((clip, i) => {
     const parts = cursorFilters(clip);
     if (parts.length === 0) return;
@@ -1601,7 +1736,7 @@ export function buildExportPlan(
   // its span. Applied here (after the visual composite + overlays) as a
   // post-composite pass, ordered by start. When there are no adjustment clips this
   // is a no-op and the graph is byte-for-byte unchanged (the fast path).
-  const adjustments = collectAdjustments(doc);
+  const adjustments = canvasBase ? [] : collectAdjustments(doc);
   adjustments.forEach((clip, i) => {
     const parts = adjustmentFilters(clip, resolveMediaPath);
     if (parts.length === 0) return;
@@ -1611,7 +1746,7 @@ export function buildExportPlan(
   });
 
   // ---- Fade from / to black -----------------------------------------------
-  const fades = detectFades(doc, total);
+  const fades = canvasBase ? { in: 0, out: null } : detectFades(doc, total);
   const fadeParts: string[] = [];
   if (fades.in > 0) fadeParts.push(`fade=t=in:st=0:d=${fades.in}`);
   if (fades.out) fadeParts.push(`fade=t=out:st=${fades.out.st}:d=${fades.out.d}`);
@@ -1643,7 +1778,8 @@ export function buildExportPlan(
   // `noise=alls=N:allf=t+u` (temporal+uniform grain), and a warm color source
   // `blend=all_mode=screen:all_opacity=…` (the light leak). Faithful: tone/texture
   // only, mirroring the canvas finishing pass.
-  const vfx = doc.vfx;
+  // canvasBase frames already carry the finishing pass (drawVfx).
+  const vfx = canvasBase ? { vignette: 0, grain: 0, lightLeak: false } : doc.vfx;
   const vfxParts: string[] = [];
   if (vfx.grain > 0) {
     // strength 0..1 → noise 0..100 (kept modest so grain stays filmic, not harsh).
@@ -1780,5 +1916,8 @@ export function buildExportPlan(
   args.push("-movflags", "+faststart");
   args.push(outFile);
 
-  return { args, inputs, filterComplex, outFile };
+  const stdinFrames = canvasBase
+    ? { count: Math.max(1, Math.ceil((total > 0 ? total : 1) * fps - 1e-6)), width: W, height: H, fps }
+    : undefined;
+  return { args, inputs, filterComplex, outFile, ...(stdinFrames ? { stdinFrames } : {}) };
 }

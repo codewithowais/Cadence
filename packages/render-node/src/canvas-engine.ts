@@ -270,57 +270,105 @@ function applyAdjustment(
 // through every call. Set at the top of renderFrame (single-threaded).
 let clipTimeCache = 0;
 
+/**
+ * Paint the full composited frame of `doc` at `timeSec` onto `canvas` (which must
+ * be doc-sized). Shared by the PNG `renderFrame` and the raw-RGBA frame streamer
+ * the export uses for media-less (text-video) docs.
+ */
+function paintFrame(canvas: Canvas, doc: EditDoc, timeSec: number): void {
+  registerBundledFonts();
+  clipTimeCache = timeSec;
+  const { width, height, background } = doc.meta;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.filter = "none";
+
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, width, height);
+
+  const active = activeClipsAt(doc, timeSec).map(({ clip }) => clip);
+  const callouts = active.filter((c): c is CalloutClip => c.kind === "callout");
+  const cursors = active.filter((c): c is CursorClip => c.kind === "cursor");
+  // Adjustment layers grade the composite AFTER everything is drawn (post-pass);
+  // they are not "content", so keep them out of the content draw.
+  const adjustments = active.filter((c): c is AdjustmentClip => c.kind === "adjustment");
+  const content = active.filter(
+    (c) => c.kind !== "callout" && c.kind !== "cursor" && c.kind !== "adjustment",
+  );
+
+  // A callout with zoom magnifies the composited CONTENT toward its rect. Apply
+  // that transform (scale about the rect center, shared core helper) around the
+  // content draw only; the callout border/dim/label and the cursor stay in
+  // screen space so they frame/point at the final pixels.
+  const zoomCallout = callouts.find((c) => c.zoom > 1);
+  if (zoomCallout) {
+    const t = calloutTransform(zoomCallout);
+    ctx.save();
+    ctx.translate(t.tx, t.ty);
+    ctx.scale(t.scale, t.scale);
+  }
+  for (const clip of content) drawContentClip(ctx, clip as Clip, doc, width, height);
+  if (zoomCallout) ctx.restore();
+
+  // Callouts (dim + border + label), then cursors, over the content.
+  for (const c of callouts) drawCallout(ctx, c, width, height);
+  for (const c of cursors) drawCursor(ctx, c, timeSec);
+
+  // Adjustment layers: grade the whole composite, gated to each active clip's
+  // window (only active ones reach here). Applied in start order, after all
+  // content + overlays and before the whole-doc finishing pass. No-op when none.
+  adjustments.sort((a, b) => a.start - b.start);
+  for (const adj of adjustments) applyAdjustment(ctx, canvas, adj, width, height);
+
+  // Whole-frame finishing overlays (vignette / grain / light-leak), over everything.
+  drawVfx(ctx, doc.vfx, width, height);
+}
+
 export class CanvasRenderEngine implements RenderEngine {
   async renderFrame(doc: EditDoc, timeSec: number): Promise<RenderedFrame> {
-    registerBundledFonts();
-    clipTimeCache = timeSec;
-    const { width, height, background } = doc.meta;
+    const { width, height } = doc.meta;
     const canvas = createCanvas(width, height);
-    const ctx = canvas.getContext("2d");
-
-    ctx.fillStyle = background;
-    ctx.fillRect(0, 0, width, height);
-
-    const active = activeClipsAt(doc, timeSec).map(({ clip }) => clip);
-    const callouts = active.filter((c): c is CalloutClip => c.kind === "callout");
-    const cursors = active.filter((c): c is CursorClip => c.kind === "cursor");
-    // Adjustment layers grade the composite AFTER everything is drawn (post-pass);
-    // they are not "content", so keep them out of the content draw.
-    const adjustments = active.filter((c): c is AdjustmentClip => c.kind === "adjustment");
-    const content = active.filter(
-      (c) => c.kind !== "callout" && c.kind !== "cursor" && c.kind !== "adjustment",
-    );
-
-    // A callout with zoom magnifies the composited CONTENT toward its rect. Apply
-    // that transform (scale about the rect center, shared core helper) around the
-    // content draw only; the callout border/dim/label and the cursor stay in
-    // screen space so they frame/point at the final pixels.
-    const zoomCallout = callouts.find((c) => c.zoom > 1);
-    if (zoomCallout) {
-      const t = calloutTransform(zoomCallout);
-      ctx.save();
-      ctx.translate(t.tx, t.ty);
-      ctx.scale(t.scale, t.scale);
-    }
-    for (const clip of content) drawContentClip(ctx, clip as Clip, doc, width, height);
-    if (zoomCallout) ctx.restore();
-
-    // Callouts (dim + border + label), then cursors, over the content.
-    for (const c of callouts) drawCallout(ctx, c, width, height);
-    for (const c of cursors) drawCursor(ctx, c, timeSec);
-
-    // Adjustment layers: grade the whole composite, gated to each active clip's
-    // window (only active ones reach here). Applied in start order, after all
-    // content + overlays and before the whole-doc finishing pass. No-op when none.
-    adjustments.sort((a, b) => a.start - b.start);
-    for (const adj of adjustments) applyAdjustment(ctx, canvas, adj, width, height);
-
-    // Whole-frame finishing overlays (vignette / grain / light-leak), over everything.
-    drawVfx(ctx, doc.vfx, width, height);
-
+    paintFrame(canvas, doc, timeSec);
     const data = canvas.toBuffer("image/png");
     return { width, height, format: "png", data };
   }
+}
+
+/**
+ * A reusable full-frame renderer for streaming export: one doc-sized canvas,
+ * repainted per frame, returning RAW RGBA bytes (width*height*4, opaque — the
+ * background is always painted first). ~40× cheaper than a PNG encode per frame,
+ * which is what makes whole-timeline rendering of text videos fast.
+ */
+export function createRgbaFrameRenderer(doc: EditDoc): { width: number; height: number; render: (t: number) => Buffer } {
+  const { width, height } = doc.meta;
+  const canvas = createCanvas(width, height);
+  return {
+    width,
+    height,
+    render(t: number): Buffer {
+      paintFrame(canvas, doc, t);
+      return canvas.data();
+    },
+  };
+}
+
+/**
+ * Rasterize ONE synthetic clip (text or shape) to a transparent composition-sized
+ * PNG at an exact time `t` — the building block for the export's animated-overlay
+ * frame sequences (same shared drawing code as the preview). Karaoke text should
+ * use renderKaraokeWordPngs instead.
+ */
+export function renderClipPngAt(doc: EditDoc, clip: TextClip | ShapeClip, t: number): Buffer {
+  registerBundledFonts();
+  const { width, height } = doc.meta;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  if (clip.kind === "text") drawText(ctx, clip, t);
+  else drawShape(ctx, clip, t);
+  return canvas.toBuffer("image/png");
 }
 
 // --- text overlay rasterizers (for the ffmpeg export) -----------------------

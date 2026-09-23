@@ -70,7 +70,7 @@ import {
   type TextClip,
   type VideoClip,
 } from "@cadence/core";
-import { CanvasRenderEngine, renderTextClipPng, renderShapeClipPng } from "@cadence/render-node";
+import { CanvasRenderEngine, createRgbaFrameRenderer, renderTextClipPng, renderShapeClipPng } from "@cadence/render-node";
 import {
   StubTranscriber,
   WhisperTranscriber,
@@ -3222,6 +3222,102 @@ async function checkTextAnimEngine(): Promise<void> {
   );
 }
 
+/** Decode ONE exported frame (at `t`, on the frame grid) to raw RGBA via ffmpeg. */
+function decodeFrameRgba(bin: string, file: string, t: number, w: number, h: number): Buffer {
+  const r = spawnSync(bin, ["-hide_banner", "-loglevel", "error", "-ss", String(t), "-i", file, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${w}x${h}`, "pipe:1"], { maxBuffer: 64 * 1024 * 1024 });
+  assert(r.status === 0 && r.stdout.length === w * h * 4, `decode frame @${t} of ${file} failed (${String(r.stderr).slice(-200)})`);
+  return r.stdout as Buffer;
+}
+
+/** Mean absolute RGB difference (0..255) between two RGBA buffers. */
+function meanRgbDiff(a: Buffer, b: Buffer): number {
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    sum += Math.abs(a[i]! - b[i]!) + Math.abs(a[i + 1]! - b[i + 1]!) + Math.abs(a[i + 2]! - b[i + 2]!);
+    n += 3;
+  }
+  return sum / n;
+}
+
+async function checkTextVideoExportParity(): Promise<void> {
+  const info = await detectFfmpeg();
+  if (!info.available) {
+    console.log(`  \x1b[32m✔\x1b[0m check 66 (text video export parity): ffmpeg unavailable — skipped gracefully`);
+    return;
+  }
+  const bin = resolveFfmpegBin();
+  const encDir = resolve(OUT_DIR, "encode");
+  mkdirSync(encDir, { recursive: true });
+  const tone = resolve(encDir, "tone.m4a");
+  const still = resolve(encDir, "still.png");
+  spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", "sine=frequency=330:duration=4", "-c:a", "aac", tone]);
+  spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:duration=1", "-frames:v", "1", still]);
+  const W = 640;
+  const H = 360;
+
+  // (A) A media-less TEXT VIDEO: animated aurora bg → gradient scene, per-letter
+  // rise title with exit, neon word, background music. Rendered frame-by-frame by
+  // the shared canvas and piped raw into ffmpeg.
+  const textVideo = parseEditDoc({
+    version: 1,
+    meta: { title: "tv", width: W, height: H, fps: 30, background: "#000000" },
+    media: [{ id: "music-1", kind: "audio", src: tone, durationSec: 4 }],
+    tracks: [
+      { id: "bg", kind: "visual", clips: [
+        { id: "s1", kind: "solid", start: 0, duration: 1.8, color: "#070b1d", gradient: { stops: ["#1a1446", "#7b2ff7", "#00c2ff"], motion: "aurora" } },
+        { id: "s2", kind: "solid", start: 1.5, duration: 1.5, color: "#111111", gradient: { stops: ["#ff9a9e", "#a18cd1"] }, transitionInSec: 0.3, transitionType: "wipe" },
+      ] },
+      { id: "text", kind: "visual", clips: [
+        { id: "t1", kind: "text", start: 0.1, duration: 1.6, text: "Rise up", fontFamily: "'Bebas Neue', sans-serif", fontSize: 90, transform: { x: 320, y: 180 }, anim: { style: "rise", unit: "letter", durationSec: 0.8, exit: { style: "fade", durationSec: 0.3 } } },
+        { id: "t2", kind: "text", start: 1.8, duration: 1.2, text: "Glow", fontFamily: "'Pacifico', cursive", fontSize: 80, color: "#ff3df2", transform: { x: 320, y: 180 }, effect: { style: "neon" }, anim: { style: "zoom-in", durationSec: 0.4, loop: { style: "breathe", amount: 0.6 } } },
+      ] },
+      { id: "music", kind: "audio", clips: [{ id: "m1", kind: "audio", mediaId: "music-1", start: 0, duration: 3, volume: 0.5 }] },
+    ],
+  });
+  const outA = resolve(encDir, "text-video.mp4");
+  const resA = await runExport(textVideo, { resolveMediaPath: () => tone, outFile: outA, bin, skipDetect: true });
+  assert(resA.args.includes("pipe:0") && resA.args.includes("rawvideo"), "text video must use the canvas raw-frame base");
+  assert(statSync(outA).size > 5000, "text video mp4 must be non-empty");
+  const renderer = createRgbaFrameRenderer(textVideo);
+  const diffs: number[] = [];
+  for (const frame of [9, 20, 50, 70]) {
+    const t = frame / 30;
+    const d = meanRgbDiff(decodeFrameRgba(bin, outA, t, W, H), renderer.render(t));
+    diffs.push(Math.round(d * 100) / 100);
+    assert(d < 6, `text video frame ${frame}: export must match the canvas preview (mean |ΔRGB| ${d.toFixed(2)} ≥ 6)`);
+  }
+  const a1 = decodeFrameRgba(bin, outA, 9 / 30, W, H);
+  const a2 = decodeFrameRgba(bin, outA, 20 / 30, W, H);
+  assert(meanRgbDiff(a1, a2) > 2, "text video: animation must actually play in the export (frames 9 vs 20 differ)");
+
+  // (B) FOOTAGE (a still photo base) + an ANIMATED title: the title must export as
+  // a frame sequence over its intro window, then a static still.
+  const withMedia = parseEditDoc({
+    version: 1,
+    meta: { title: "media+anim", width: W, height: H, fps: 30 },
+    media: [{ id: "photo-s", kind: "image", src: still, width: W, height: H }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "p1", kind: "image", mediaId: "photo-s", start: 0, duration: 2.5 }] },
+      { id: "titles", kind: "visual", clips: [
+        { id: "tt", kind: "text", start: 0.2, duration: 2.2, text: "Animated title", fontFamily: "'Montserrat', sans-serif", fontWeight: "bold", fontSize: 54, transform: { x: 320, y: 180 }, box: { style: "pill", color: "#000000aa" }, anim: { style: "tumble", unit: "word", durationSec: 0.9 } },
+      ] },
+    ],
+  });
+  const outB = resolve(encDir, "media-anim-title.mp4");
+  const resB = await runExport(withMedia, { resolveMediaPath: () => still, outFile: outB, bin, skipDetect: true });
+  assert(resB.args.some((a) => a.includes("%05d")), "animated title over footage must export as a PNG frame sequence");
+  const b1 = decodeFrameRgba(bin, outB, 12 / 30, W, H);
+  const b2 = decodeFrameRgba(bin, outB, 45 / 30, W, H);
+  const b3 = decodeFrameRgba(bin, outB, 60 / 30, W, H);
+  assert(meanRgbDiff(b1, b2) > 0.5, "animated title must move during its intro on export (not frozen)");
+  assert(meanRgbDiff(b2, b3) < 0.6, "settled title must be static after its intro on export");
+
+  console.log(
+    `  \x1b[32m✔\x1b[0m check 66 (text video export parity): media-less doc piped as raw canvas frames — exported frames match the preview (mean |ΔRGB| ${diffs.join("/")}) + music mixed; animated title over footage exports as a PNG sequence (moves in intro, static after)`,
+  );
+}
+
 async function checkRealEncode(): Promise<void> {
   const info = await detectFfmpeg();
   if (!info.available) {
@@ -3704,6 +3800,7 @@ async function main(): Promise<void> {
   await checkAdjustmentLayer();
   await checkTransformKeyframes();
   await checkTextAnimEngine();
+  await checkTextVideoExportParity();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

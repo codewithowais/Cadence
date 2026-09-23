@@ -16,8 +16,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configFromEnv, selectProvider, type EnhanceResult } from "@cadence/enhance";
 import { sourceSpanSec, type EditDoc } from "@cadence/core";
-import { buildExportPlan, type KaraokeOverlayMap, type ResolveMediaPath, type TextOverlayMap } from "./plan";
 import {
+  buildExportPlan,
+  docIsCanvasRenderable,
+  type AnimatedOverlayMap,
+  type KaraokeOverlayMap,
+  type ResolveMediaPath,
+  type TextOverlayMap,
+} from "./plan";
+import {
+  renderAnimatedOverlays,
+  docNeedsAnimatedOverlays,
   renderTextOverlays,
   renderKaraokeOverlays,
   renderShapeOverlays,
@@ -76,14 +85,20 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
     let karaokeOverlays: KaraokeOverlayMap | undefined;
     let shapeOverlays: TextOverlayMap | undefined;
     let stabilizeTransforms: Map<string, string> | undefined;
-    const needsKaraoke = docNeedsKaraokeOverlays(doc);
-    const needsShapes = docNeedsShapeOverlays(doc);
+    let animatedOverlays: AnimatedOverlayMap | undefined;
+    // Media-less docs (text videos, title cards) render EVERY frame through the
+    // shared canvas and pipe raw RGBA into ffmpeg — no per-clip overlays needed.
+    const canvasBase = docIsCanvasRenderable(doc);
+    const needsKaraoke = !canvasBase && docNeedsKaraokeOverlays(doc);
+    const needsShapes = !canvasBase && docNeedsShapeOverlays(doc);
     const needsStabilize = docNeedsStabilize(doc);
-    if (docNeedsTextOverlays(doc) || needsKaraoke || needsShapes || needsStabilize) {
+    const needsAnimated = !canvasBase && docNeedsAnimatedOverlays(doc);
+    if ((!canvasBase && docNeedsTextOverlays(doc)) || needsKaraoke || needsShapes || needsStabilize || needsAnimated) {
       overlayDir = await mkdtemp(join(tmpdir(), "cadence-text-"));
       overlays = await renderTextOverlays(doc, overlayDir);
       if (needsKaraoke) karaokeOverlays = await renderKaraokeOverlays(doc, overlayDir);
       if (needsShapes) shapeOverlays = await renderShapeOverlays(doc, overlayDir);
+      if (needsAnimated) animatedOverlays = await renderAnimatedOverlays(doc, overlayDir);
       // vidstab PRE-PASS: detect a smoothing sidecar for each stabilized clip on the
       // SAME source window the main pass reads, so the transforms align frame-for-frame.
       if (needsStabilize) stabilizeTransforms = await detectStabilize(bin, doc, opts.resolveMediaPath, overlayDir, opts.onLog);
@@ -92,8 +107,24 @@ export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<E
     // ffmpeg-static) so the pure plan substitutes silence for audioless inputs
     // instead of referencing a non-existent [idx:a] pad — the audioless-export fix.
     const mediaHasAudio = await detectMediaAudio(bin, doc, opts.resolveMediaPath);
-    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays, mediaHasAudio, karaokeOverlays, shapeOverlays, stabilizeTransforms);
-    await spawnFfmpeg(bin, plan.args, opts.onLog);
+    const plan = buildExportPlan(doc, opts.resolveMediaPath, opts.outFile, overlays, mediaHasAudio, karaokeOverlays, shapeOverlays, stabilizeTransforms, {
+      animatedOverlays,
+      canvasBase,
+    });
+    let feed: ((stdin: NodeJS.WritableStream) => Promise<void>) | undefined;
+    if (plan.stdinFrames) {
+      const { count, fps } = plan.stdinFrames;
+      const { createRgbaFrameRenderer } = await import("@cadence/render-node");
+      const renderer = createRgbaFrameRenderer(doc);
+      feed = async (stdin) => {
+        for (let i = 0; i < count; i++) {
+          const ok = stdin.write(renderer.render(i / fps));
+          if (!ok) await new Promise<void>((r) => stdin.once("drain", () => r()));
+        }
+        stdin.end();
+      };
+    }
+    await spawnFfmpeg(bin, plan.args, opts.onLog, feed);
 
     // Optional faithful AI enhancement pass (off by default; money/setup gated).
     let enhance: EnhanceResult | undefined;
@@ -256,9 +287,22 @@ export async function detectStabilize(
   return map;
 }
 
-function spawnFfmpeg(bin: string, args: string[], onLog?: (line: string) => void): Promise<void> {
+function spawnFfmpeg(
+  bin: string,
+  args: string[],
+  onLog?: (line: string) => void,
+  feed?: (stdin: NodeJS.WritableStream) => Promise<void>,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(bin, args, { stdio: [feed ? "pipe" : "ignore", "ignore", "pipe"] });
+    if (feed && child.stdin) {
+      // A broken pipe (ffmpeg died early) surfaces via the close code below.
+      child.stdin.on("error", () => {});
+      feed(child.stdin).catch((err) => {
+        child.kill("SIGKILL");
+        reject(err);
+      });
+    }
     let stderr = "";
     child.stderr?.on("data", (d: Buffer) => {
       const s = d.toString();
