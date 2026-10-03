@@ -24,6 +24,7 @@ import {
   type TextClip,
 } from "@cadence/core";
 import { graphicFonts } from "@/lib/graphics-fonts";
+import { useEmojiTick } from "@/lib/use-emoji-tick";
 
 type Layer = "under" | "over";
 
@@ -68,7 +69,7 @@ export function SyntheticLayer({
   height: number;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
-  const fontTick = useFontsReady(doc);
+  const fontTick = useFontsReady(doc) + useEmojiTick();
 
   useEffect(() => {
     const cv = ref.current;

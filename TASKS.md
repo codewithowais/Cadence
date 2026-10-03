@@ -10,11 +10,16 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
   - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
 
+## Cycle J — emoji (Motion Designer) — ✅ COMPLETE
+
+- ✅ Full emoji catalog (1,870 base / 3,395 w/ skin tones), virtualized picker, search, skin tones, recents/favorites, drag onto the Stage; ✅ color emoji drawn as Twemoji sprites identically in preview / node / export (carried-forward limitation resolved); ✅ sticker + 7 reaction packs; ✅ `add_emoji` / `add_reaction` (transcript-timed) / `edit_emoji`; ✅ 9 emoji text styles. Details: `docs/agents/emoji-cycle-j.md`.
+- ⬜ Open: timeline-lane drop of emoji (contract documented; CutsStrip owned elsewhere); emoji newer than Unicode 15.0 have no art; native-font emoji remain in DOM labels.
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*
 
-- ⬜ **Known limitations carried forward:** shuttle ≠1× is silent; group drag with the mouse; graphics words edited in the Graphics panel (not the Text room); no color-emoji stickers in export; stereo pan not heard in preview; exporting before generated music finishes composing; autosave is scratch-editor only; progress stream untested behind Render's proxy; export z-order draws all text before shapes over footage (general fix belongs in render-ffmpeg/plan.ts).
+- ⬜ **Known limitations carried forward:** shuttle ≠1× is silent; group drag with the mouse; graphics words edited in the Graphics panel (not the Text room); stereo pan not heard in preview; exporting before generated music finishes composing; autosave is scratch-editor only; progress stream untested behind Render's proxy; export z-order draws all text before shapes over footage (general fix belongs in render-ffmpeg/plan.ts).
 
 ## Cycle H — Text video (Canva parity) + mature text — ✅ COMPLETE
 

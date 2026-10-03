@@ -44,6 +44,7 @@ import {
   type VideoClip,
 } from "@cadence/core";
 import { registerBundledFonts } from "./fonts";
+import "./emoji"; // registers the color-emoji sprite provider (side effect)
 
 const degToRad = (deg: number): number => (deg * Math.PI) / 180;
 

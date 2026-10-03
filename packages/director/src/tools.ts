@@ -79,6 +79,7 @@ import {
   animateShapeTool,
   editGraphicTool,
 } from "./graphics-tools";
+import { addEmojiTool, addReactionTool, editEmojiTool } from "./emoji-tools";
 import {
   addAdjustment,
   addBroll,
@@ -2092,4 +2093,7 @@ export const DIRECTOR_TOOLS = {
   add_countdown: addCountdownTool,
   edit_graphic: editGraphicTool,
   animate_shape: animateShapeTool,
+  add_emoji: addEmojiTool,
+  add_reaction: addReactionTool,
+  edit_emoji: editEmojiTool,
 } as const;

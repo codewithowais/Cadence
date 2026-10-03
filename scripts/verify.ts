@@ -3652,6 +3652,88 @@ async function checkGraphicsPack(): Promise<void> {
   );
 }
 
+
+/**
+ * check 71 — EMOJI (motion designer): the catalog is complete (1,800+ base / 3,000+
+ * with skin tones), and COLOR emoji render as bundled Twemoji sprites — identically in
+ * the canvas render (preview path) and the real ffmpeg export (stills + animated PNG
+ * sequences over footage, and the media-less raw-canvas path). Asserts non-trivial
+ * flame-colored pixels in the canvas frame AND in decoded export frames.
+ */
+async function checkEmoji(): Promise<void> {
+  const { EMOJI_CATALOG, emojiTotal } = await import("@cadence/core");
+  const { addEmoji, addReaction } = await import("@cadence/director");
+  assert(EMOJI_CATALOG.length >= 1800 && emojiTotal() >= 3000, `emoji catalog too small (${EMOJI_CATALOG.length} base / ${emojiTotal()} total)`);
+  const W = 1280;
+  const H = 720;
+  const countFlame = (rgba: Buffer, x0 = 0, y0 = 0, x1 = W, y1 = H): number => {
+    let n = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = (y * W + x) * 4;
+        const r = rgba[i]!;
+        const g = rgba[i + 1]!;
+        const b = rgba[i + 2]!;
+        // Twemoji fire: #F4900C (orange) and #FFCC4D (yellow), tolerant of compression.
+        if ((Math.abs(r - 244) < 28 && Math.abs(g - 144) < 28 && b < 60) || (Math.abs(r - 255) < 22 && Math.abs(g - 204) < 26 && Math.abs(b - 77) < 40)) n++;
+      }
+    }
+    return n;
+  };
+  const bg = { id: "bg", kind: "visual", clips: [{ id: "bg1", kind: "solid", start: 0, duration: 4, color: "#20283a" }] };
+  let doc = parseEditDoc({ version: 1, meta: { title: "emoji", width: W, height: H, fps: 30 }, tracks: [bg] });
+  doc = addEmoji(doc, { emoji: "🔥", position: "center", atSec: 0.2, durationSec: 3, intro: "pop", loop: "float" }).doc;
+  doc = addReaction(doc, { pack: "party", atSec: 0.5 }).doc;
+
+  // (a) the canvas frame (== the preview path) shows real color emoji, and the intro animates.
+  const renderer = createRgbaFrameRenderer(doc);
+  const settled = renderer.render(1.6);
+  const flame = countFlame(settled, W / 2 - 200, H / 2 - 220, W / 2 + 200, H / 2 + 220);
+  assert(flame > 2500, `canvas frame must show the color fire emoji (flame px ${flame})`);
+  assert(!renderer.render(0.25).equals(settled), "the emoji pops in (intro frame differs from settled)");
+  await renderAndAssert(doc, 1.6, "verify-emoji.png");
+
+  const info = await detectFfmpeg();
+  if (!info.available) {
+    console.log(`  \x1b[32m✔\x1b[0m check 71 (emoji): ${EMOJI_CATALOG.length} base / ${emojiTotal()} total emoji; color sprites in the canvas frame (${flame} flame px); ffmpeg unavailable — export skipped`);
+    return;
+  }
+  const bin = resolveFfmpegBin();
+  const encDir = resolve(OUT_DIR, "encode");
+  mkdirSync(encDir, { recursive: true });
+
+  // (b) media-less export (raw canvas frames) == the canvas.
+  const outA = resolve(encDir, "emoji-canvas.mp4");
+  const resA = await runExport(doc, { resolveMediaPath: () => "", outFile: outA, bin, skipDetect: true });
+  assert(resA.args.includes("rawvideo"), "a media-less emoji piece renders through the canvas raw-frame path");
+  const diffs: number[] = [];
+  for (const t of [0.4, 1.6, 2.4]) {
+    const d = meanRgbDiff(decodeFrameRgba(bin, outA, t, W, H), renderer.render(t));
+    diffs.push(Math.round(d * 100) / 100);
+    assert(d < 6, `emoji frame @${t}: export must match the canvas (mean |ΔRGB| ${d.toFixed(2)})`);
+  }
+
+  // (c) over footage: animated emoji export as PNG sequences + stills — the sprites survive the ffmpeg overlay.
+  const still = resolve(encDir, "emoji-still.png");
+  spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", `color=c=0x1d3557:size=${W}x${H}:duration=1`, "-frames:v", "1", still]);
+  const footage = parseEditDoc({
+    ...doc,
+    media: [{ id: "photo-e", kind: "image", src: still, width: W, height: H }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "p1", kind: "image", mediaId: "photo-e", start: 0, duration: 4 }] }, ...doc.tracks.filter((t) => t.id !== "bg")],
+  });
+  const outB = resolve(encDir, "emoji-footage.mp4");
+  const resB = await runExport(footage, { resolveMediaPath: () => still, outFile: outB, bin, skipDetect: true });
+  assert(resB.args.filter((a) => a.includes("%05d")).length > 0, "animated emoji over footage export as PNG frame sequences");
+  assert(statSync(outB).size > 5000, "footage + emoji mp4 must be non-empty");
+  const f1 = decodeFrameRgba(bin, outB, 1.6, W, H);
+  const exported = countFlame(f1, W / 2 - 200, H / 2 - 220, W / 2 + 200, H / 2 + 220);
+  assert(exported > 2000, `the exported mp4 must show the color fire emoji over footage (flame px ${exported})`);
+  assert(meanRgbDiff(decodeFrameRgba(bin, outB, 0.3, W, H), f1) > 0.5, "emoji animate in the footage export (not frozen at rest)");
+  console.log(
+    `  \x1b[32m✔\x1b[0m check 71 (emoji): ${EMOJI_CATALOG.length} base / ${emojiTotal()} total emoji (skin tones included); Twemoji sprites in the canvas frame (${flame} flame px) and in the real export — media-less mean |ΔRGB| ${diffs.join("/")} vs the canvas, over footage ${exported} flame px decoded from the mp4 (animated: PNG sequences), reaction pack rides along`,
+  );
+}
+
 /**
  * check 69 (export progress + cancel): REAL encodes report progress through
  * `runExport({ onProgress, onPhase })` — parsed from ffmpeg's `-progress pipe:1`
@@ -4270,6 +4352,7 @@ async function main(): Promise<void> {
   await checkTextVideoExportParity();
   await checkSoundMadeEasy();
   await checkGraphicsPack();
+  await checkEmoji();
   await checkExportProgress();
   await checkEditingCraft();
   await checkRealEncode();

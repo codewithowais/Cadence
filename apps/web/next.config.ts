@@ -30,8 +30,9 @@ const config: NextConfig = {
   // node renderer registers — otherwise exported text would fall back to system
   // fonts (no-op on the Docker/Render deploy, where the whole app is on disk).
   outputFileTracingIncludes: {
-    "/api/export": ["./public/fonts/**/*-latin-*.woff2"],
-    "/api/render": ["./public/fonts/**/*-latin-*.woff2"],
+    // + the color-emoji sprites (public/emoji, Twemoji CC-BY 4.0) the node renderer rasterizes.
+    "/api/export": ["./public/fonts/**/*-latin-*.woff2", "./public/emoji/*"],
+    "/api/render": ["./public/fonts/**/*-latin-*.woff2", "./public/emoji/*"],
   },
 };
 

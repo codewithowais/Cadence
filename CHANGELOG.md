@@ -4,6 +4,14 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S7.1 — Cycle J: emoji — full catalog, color-emoji sprites in preview AND export, reactions (Motion Designer)
+- **Catalog:** every standard emoji with Twemoji art — **1,870 base / 3,395 with skin-tone variants**, 9 Unicode groups + subgroups, keywords, ranked search (`@cadence/core` `emoji.ts`, generated `emoji-catalog.ts` from pinned `emojibase-data@17.0.0`, MIT). Recents + favorites + skin tone persist (try/catch localStorage).
+- **Color emoji everywhere (fixes "no color-emoji stickers in export"):** `drawText` draws emoji graphemes as bundled **Twemoji 15.0** sprites (CC-BY 4.0; `apps/web/public/emoji`, `ATTRIBUTION.md`, README credit) through a pluggable provider — lazy in the browser, sync from disk in render-node — so preview, node canvas and the ffmpeg export draw the same artwork with no system emoji font. Plain text keeps the untouched native path (legacy frames byte-identical). Chosen over Noto Color Emoji (10 MB font, two rasterizers) and OpenMoji (CC-BY-SA).
+- **Picker:** NEW `EmojiPicker` (Design → Emoji; compact in Text styles) — virtualized grid (~100 of 3,395 cells mounted), category tabs, search, skin tones, favorites/recents, keyboard arrows, click-to-add at the playhead, **drag** onto the Stage (`application/x-cadence-emoji`, documented in `docs/agents/emoji-cycle-j.md`), reaction-pack mode, and a "selected emoji" inspector (size, position, start, intro/loop/exit, remove).
+- **Stickers + reactions:** emoji = animated text clip (pop/bounce/spin/… intros, float/wiggle/breathe/shake loops, exits). 7 reaction packs: burst (🔥), float-up (❤️), clap spam, laugh shake, confetti/party, sparkle, hearts pop. Emoji inside any text clip; 9 emoji-forward text styles.
+- **Director:** `add_emoji`, `add_reaction` (incl. `whenSaid` — transcript-timed), `edit_emoji`; StubDirector phrases ("add a fire emoji at the top right", "pop hearts when I say love", "add confetti") with the graphics router fenced off from them.
+- *verified:* root + web typecheck green; `test:unit` 173/173 (+11 emoji tests); `npm run verify` incl. NEW **check 71** (real `.mp4` frames decoded: 15,650 flame px over footage, media-less export mean |ΔRGB| 0.07/0.74/0.73 vs the canvas); `npm run evals` 9/9 (+3 emoji prompts); `next build` clean; Playwright 43/43 (+2 emoji specs).
+
 ### S6.1 — Cycle I: five specialist agents (parallel worktrees, merged + integrated)
 - **Senior Video Editor** — JKL/frame-step/in-out range, snapping, gaps, multi-select, paste attributes, split all, speed presets, freeze; 5 tools.
 - **Motion Designer** — 34 animated graphics presets (CTAs, countdowns, progress, lower thirds, stickers) + shape motion engine; 6 tools.

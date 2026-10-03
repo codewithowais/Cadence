@@ -48,6 +48,7 @@ import {
   textUnitState,
 } from "./text-anim";
 import { TextClip as TextClipSchema } from "./schema";
+import { getEmojiImageProvider, hasEmoji, splitGraphemes, wrapEmojiCtx } from "./emoji-draw";
 import type {
   BackgroundGradient,
   BackgroundPattern,
@@ -189,7 +190,7 @@ export function wrapText(ctx: Ctx2D, text: string, maxWidth: number): string[] {
 /** Width of one line accounting for extra letter spacing (0 = native measure). */
 export function lineWidth(ctx: Ctx2D, line: string, letterSpacing: number): number {
   if (letterSpacing === 0) return ctx.measureText(line).width;
-  const chars = [...line];
+  const chars = splitGraphemes(line);
   let w = 0;
   for (const ch of chars) w += ctx.measureText(ch).width;
   return w + letterSpacing * Math.max(0, chars.length - 1);
@@ -219,7 +220,7 @@ function drawTextLines(
       else ctx.strokeText(line, 0, y);
       continue;
     }
-    const chars = [...line];
+    const chars = splitGraphemes(line);
     const widths = chars.map((c) => ctx.measureText(c).width);
     const total = widths.reduce((a, b) => a + b, 0) + letterSpacing * Math.max(0, chars.length - 1);
     let x = align === "center" ? -total / 2 : align === "right" ? -total : 0;
@@ -421,7 +422,7 @@ function drawRun(ctx: Ctx2D, run: TextRun, ls: number, mode: "fill" | "stroke"):
     else ctx.strokeText(run.text, run.x, run.y);
     return;
   }
-  const chars = [...run.text];
+  const chars = splitGraphemes(run.text);
   const widths = chars.map((c) => ctx.measureText(c).width);
   const total = widths.reduce((a, b) => a + b, 0) + ls * Math.max(0, chars.length - 1);
   let x = run.align === "center" ? run.x - total / 2 : run.align === "right" ? run.x - total : run.x;
@@ -615,7 +616,7 @@ function layoutUnits(
       });
       return;
     }
-    const chars = [...line];
+    const chars = splitGraphemes(line);
     const adv = chars.map((c) => ctx.measureText(c).width);
     const total = adv.reduce((a, b) => a + b, 0) + ls * Math.max(0, chars.length - 1);
     let x = alignLeft(align, total);
@@ -697,6 +698,10 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts =
   // A live counter (countdown / timer / count-up) draws its value at this frame.
   if (clip.counter) clip = { ...clip, text: counterText(clip, t) };
   const px = opts.pxScale ?? 1;
+  // Color emoji draw as bundled sprites (same pixels in preview / node / export).
+  if (getEmojiImageProvider() && (hasEmoji(clip.text) || clip.words?.some((w) => hasEmoji(w.text)))) {
+    ctx = wrapEmojiCtx(ctx, clip.fontSize, px);
+  }
   // Keyframes (if any) override the static transform; opacity keyframes multiply
   // the transition ramp — all resolved by the shared PURE valueAt helper.
   const kfs = keyframeTransformState(clip, t);

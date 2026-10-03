@@ -69,3 +69,8 @@ Neon Postgres is wired and Vercel deploy is ready. See **[TASKS.md](TASKS.md)** 
 **[CHANGELOG.md](CHANGELOG.md)** for the slice-by-slice history.
 The stub Director (free) is the default; the real Claude Director (Anthropic API,
 metered) is behind a money gate and off by default — as are AI upscale and TTS.
+
+## Credits
+
+- Emoji artwork: [Twemoji](https://github.com/jdecked/twemoji) (c) Twitter, Inc and other contributors, licensed [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/); vendored in `apps/web/public/emoji` (see `ATTRIBUTION.md` there). Emoji names/keywords: `emojibase-data` (MIT).
+- Fonts: see `apps/web/public/fonts/LICENSES.md`.

@@ -9,3 +9,4 @@ export {
   renderClipPngAt,
 } from "./canvas-engine";
 export { registerBundledFonts, bundledFontsDir } from "./fonts";
+export { bundledEmojiDir, registerNodeEmoji } from "./emoji";

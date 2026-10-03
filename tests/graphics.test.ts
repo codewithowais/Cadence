@@ -286,7 +286,8 @@ test("the Director routes plain-language graphics requests to the graphics tools
 
 test("graphics tools are registered at the end of DIRECTOR_TOOLS and edit via edit_graphic", async () => {
   const names = Object.keys(DIRECTOR_TOOLS);
-  assert.deepEqual(names.slice(-6), ["add_graphic", "add_lower_third", "add_progress_bar", "add_countdown", "edit_graphic", "animate_shape"]);
+  const gi = names.indexOf("add_graphic");
+  assert.deepEqual(names.slice(gi, gi + 6), ["add_graphic", "add_lower_third", "add_progress_bar", "add_countdown", "edit_graphic", "animate_shape"]);
   const project = new ProjectState({ media: [] });
   await DIRECTOR_TOOLS.add_lower_third.execute({ name: "Ayesha Khan", title: "Host", style: "split" }, { project });
   const g = graphicGroups(project.doc)[0]!;
