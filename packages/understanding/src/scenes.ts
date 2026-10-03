@@ -419,7 +419,7 @@ export function planSourceSplit(input: SplitPlanInput): SplitPlan {
 export function samplePlan(durationSec: number, opts: { fps?: number; maxSamples?: number } = {}): number[] {
   const fps = opts.fps ?? 4;
   const max = opts.maxSamples ?? 900;
-  if (!(durationSec > 0)) return [];
+  if (!(durationSec > 0) || !Number.isFinite(durationSec)) return [];
   const count = Math.max(2, Math.min(max, Math.ceil(durationSec * fps)));
   const step = durationSec / count;
   return Array.from({ length: count }, (_, i) => round(Math.min(durationSec - 0.001, i * step + step / 2)));

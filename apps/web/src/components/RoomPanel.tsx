@@ -70,6 +70,7 @@ import { SoundPanel } from "./SoundPanel";
 import { TranscriptRoom } from "./TranscriptRoom";
 import { DemoRoom } from "./DemoRoom";
 import type { Transcript } from "@cadence/understanding";
+import { SceneSplit, type SceneSplitBridge } from "./SceneSplit";
 import type { RoomKey } from "./RoomsRail";
 import { MEDIA_DND_ID, MEDIA_DND_AUDIO, MEDIA_DND_VISUAL } from "./CutsStrip";
 import type { BeginPlacement } from "@/lib/placement";
@@ -107,6 +108,8 @@ interface RoomPanelProps {
   onRemoveMedia: (mediaId: string) => void;
   /** Media room: append a media to the timeline (the keyboard/click parity for DnD). */
   onAddMediaToTimeline?: (mediaId: string) => void;
+  /** Media room: "Divide into scenes" wiring (see SceneSplit). Absent ⇒ the section is hidden. */
+  scene?: SceneSplitBridge;
   /** Audio room: register a recorded voice-over (blob + measured duration). */
   onRecordVoiceover: (file: File, durationSec: number) => void;
   /** Audio room: set the volume of every audio clip on a track (music/voiceover). */
@@ -230,6 +233,7 @@ export function RoomPanel(props: RoomPanelProps) {
     onReorderMedia,
     onRemoveMedia,
     onAddMediaToTimeline,
+    scene,
     onRecordVoiceover,
     onSetTrackVolume,
     transcripts,
@@ -296,6 +300,18 @@ export function RoomPanel(props: RoomPanelProps) {
           onAddToTimeline={onAddMediaToTimeline}
         />
         {hiddenInput}
+        {scene && (
+          <SceneSplit
+            doc={doc}
+            mediaList={mediaList}
+            urls={urls}
+            transcripts={transcripts}
+            busy={busy}
+            timeSec={timeSec}
+            onSeek={onSeek ?? (() => undefined)}
+            bridge={scene}
+          />
+        )}
         <TrackPanel doc={doc} busy={busy} onSetTrackVolume={onSetTrackVolume} />
       </>
     );

@@ -19,6 +19,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   docDurationSec,
+  parseEditDoc,
   type EditDoc,
   type MediaAsset,
 } from "@cadence/core";
@@ -51,6 +52,33 @@ async function videoProject(durationSec = 180): Promise<ProjectState> {
   project.setTranscript(await new StubTranscriber().transcribe(media));
   return project;
 }
+
+/**
+ * An ALREADY-BUILT video: one long clip on the timeline (the "finished render
+ * uploaded as a single file" case), optionally with browser-detected scene cuts.
+ */
+async function builtVideoProject(sceneCuts?: number[]): Promise<ProjectState> {
+  const project = await videoProject(120);
+  const media = project.media[0]!;
+  project.setDoc(
+    parseEditDoc({
+      version: 1,
+      meta: { title: "built", width: 1920, height: 1080, fps: 30 },
+      media: [media],
+      tracks: [
+        {
+          id: "video",
+          kind: "visual",
+          clips: [{ id: "src", kind: "video", start: 0, duration: 120, mediaId: media.id, sourceIn: 0, transform: { x: 960, y: 540 } }],
+        },
+      ],
+    }),
+  );
+  if (sceneCuts) project.setSceneCuts(media.id, sceneCuts);
+  return project;
+}
+
+const videoClipsOf = (doc: EditDoc) => doc.tracks.flatMap((t) => t.clips).filter((c) => c.kind === "video");
 
 /** A project of `n` photos (for the slideshow eval). */
 function photoProject(n = 6): ProjectState {
@@ -199,6 +227,55 @@ const EVALS: Eval[] = [
       assert(doc.media.length === 0, "a text video needs no media");
     },
     proof: "eval-f-text-video.png",
+  },
+
+  // (g) ALREADY-BUILT VIDEO — divide a finished render into its scenes.
+  {
+    id: "g",
+    capability: "built video · divide into scenes (browser-detected cuts)",
+    prompt: "split this video into scenes",
+    setup: () => builtVideoProject([14.2, 33.5, 61, 88.4]),
+    expectTools: ["split_into_scenes"],
+    extra: (doc) => {
+      const clips = videoClipsOf(doc).sort((a, b) => a.start - b.start);
+      assert(clips.length === 5, `expected 5 scene clips, got ${clips.length}`);
+      assert(clips.every((c, i) => c.label === `Scene ${i + 1}`), "scene clips should be labelled Scene 1…5");
+      assert(Math.abs(docDurationSec(doc) - 120) < 0.01, "dividing must not change the total length");
+      assert(clips[2]!.kind === "video" && Math.abs(clips[2]!.sourceIn - 33.5) < 0.01, "third clip should start at source 33.5s");
+    },
+    proof: "eval-g-scenes.png",
+  },
+
+  // (h) ALREADY-BUILT VIDEO — a fixed cadence, no analysis needed.
+  {
+    id: "h",
+    capability: "built video · chop every N seconds",
+    prompt: "chop every 30 seconds",
+    setup: () => builtVideoProject(),
+    expectTools: ["split_into_scenes"],
+    extra: (doc) => {
+      const clips = videoClipsOf(doc);
+      assert(clips.length === 4, `expected 4 clips of 30s, got ${clips.length}`);
+      assert(clips.every((c) => Math.abs(c.duration - 30) < 0.01), "every clip should be 30s");
+      assert(!doc.tracks.some((t) => t.id === "titles"), "the interval phrase must not also build a highlight");
+    },
+    proof: "eval-h-interval.png",
+  },
+
+  // (i) ALREADY-BUILT VIDEO — one clip per spoken sentence (transcript-driven).
+  {
+    id: "i",
+    capability: "built video · split by sentence (transcript)",
+    prompt: "split by sentence",
+    setup: () => builtVideoProject(),
+    expectTools: ["split_into_scenes"],
+    extra: (doc) => {
+      const clips = videoClipsOf(doc);
+      assert(clips.length > 3, `expected several sentence clips, got ${clips.length}`);
+      assert(clips.every((c) => !!c.label), "sentence clips should be labelled with their opening words");
+      assert(Math.abs(docDurationSec(doc) - 120) < 0.01, "dividing must not change the total length");
+    },
+    proof: "eval-i-sentences.png",
   },
 ];
 

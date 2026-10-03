@@ -18,11 +18,11 @@ const round = (n: number): number => Math.round(n * 1000) / 1000;
 
 /**
  * Sensitivity (0..1, higher = more cuts) → ffmpeg scene-score threshold. ffmpeg's
- * `scene` score is 0..1; ~0.3 is the usual "clear cut", ~0.1 catches soft cuts.
+ * `scene` score is 0..1; ~0.3–0.4 is the usual "clear cut"; ~0.1 also catches soft, low-contrast ones.
  */
 export function ffmpegSceneThreshold(sensitivity: number): number {
   const s = Math.max(0, Math.min(1, Number.isFinite(sensitivity) ? sensitivity : 0.5));
-  return round(0.5 - s * 0.42); // 0 → 0.50, 0.5 → 0.29, 1 → 0.08
+  return round(0.4 - s * 0.34); // 0 → 0.40, 0.5 → 0.23, 1 → 0.06
 }
 
 /** Pure: pull the `pts_time:` of every selected frame out of `showinfo` stderr. Ascending, de-duplicated. */

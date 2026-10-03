@@ -86,6 +86,11 @@ import {
   NoneTtsProvider,
   TTS_UNAVAILABLE_MESSAGE,
   type Transcript,
+  detectSceneFfmpeg,
+  planSourceSplit,
+  frameSignature,
+  scoreSeries,
+  detectCutsFromScores,
 } from "@cadence/understanding";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -3785,6 +3790,83 @@ async function checkExportProgress(): Promise<void> {
   );
 }
 
+async function checkSceneSplit(): Promise<void> {
+  // Already-built video → divided into clips (senior-video-editor, feature #7).
+  // (a) the split op: a long single clip becomes labelled pieces that tile it
+  // exactly (same pictures, same length, correct source offsets) and still render
+  // + export-plan; (b) the free in-browser scoring finds colour-change cuts; (c) if
+  // ffmpeg is present, the REAL `select='gt(scene,X)'` scan finds the cuts of a
+  // real 3-shot mp4 and the plan splits a doc at them.
+  const director = await import("@cadence/director");
+  const doc = parseEditDoc({
+    version: 1,
+    meta: { title: "built", width: 640, height: 360, fps: 30, background: "#101418" },
+    media: [{ id: "clip-001", kind: "video", src: "/media/clip-001.mp4", durationSec: 90 }],
+    tracks: [
+      { id: "video", kind: "visual", clips: [{ id: "src", kind: "video", start: 0, duration: 90, mediaId: "clip-001", sourceIn: 0, transform: { x: 320, y: 180 } }] },
+      { id: "captions", kind: "visual", clips: [{ id: "cap", kind: "text", start: 50, duration: 4, text: "KEEP ME", fontSize: 48, color: "#ffcf70", transform: { x: 320, y: 300 } }] },
+    ],
+  });
+  const frame = async (d: EditDoc, t: number) => Buffer.from((await engine.renderFrame(d, t)).data);
+  const res = director.splitIntoScenes(doc, { sourceCuts: [20, 45.5, 70], labelPrefix: "Scene" });
+  assert(res.pieces === 4, `scene split: expected 4 pieces, got ${res.pieces}`);
+  const vids = res.doc.tracks.flatMap((t) => t.clips).filter((c) => c.kind === "video").sort((a, b) => a.start - b.start);
+  assert(vids.map((c) => c.kind === "video" ? c.sourceIn : -1).join() === "0,20,45.5,70", "scene split: source offsets must follow the cuts");
+  assert(vids.map((c) => c.label).join() === "Scene 1,Scene 2,Scene 3,Scene 4", "scene split: pieces must be labelled");
+  assert(docDurationSec(res.doc) === 90, "scene split: total length must not change");
+  const cap = res.doc.tracks.find((t) => t.id === "captions")!.clips[0]!;
+  assert(cap.start === 50, "scene split: overlays must not move (ripple-safe)");
+  for (const t of [10, 20.5, 46, 80]) assert((await frame(res.doc, t)).equals(await frame(doc, t)), `scene split: frame at ${t}s must be byte-identical`);
+  buildExportPlan(res.doc, (id) => `/media/${id}.mp4`, "/out/scenes.mp4", fakeTextOverlays(res.doc));
+  await renderAndAssert(res.doc, 47, "verify-scenes.png");
+
+  // (b) browser-path scoring on synthetic colour-change frames.
+  const px = (r: number, g: number, b: number): Uint8ClampedArray => {
+    const a = new Uint8ClampedArray(32 * 18 * 4);
+    for (let i = 0; i < 32 * 18; i++) { a[i * 4] = r; a[i * 4 + 1] = g; a[i * 4 + 2] = b; a[i * 4 + 3] = 255; }
+    return a;
+  };
+  const cols: [number, number, number][] = [[210, 40, 40], [40, 210, 60], [50, 60, 220]];
+  const sigs = [];
+  const times: number[] = [];
+  for (let s = 0; s < 3; s++) for (let i = 0; i < 12; i++) { sigs.push(frameSignature(px(...cols[s]!), 32, 18)); times.push(s * 3 + i * 0.25); }
+  const found = detectCutsFromScores(times, scoreSeries(sigs), 9, { sensitivity: 0.5, minShotSec: 1 }).map((c) => c.t);
+  assert(found.join() === "3,6", `scene scoring: expected cuts at 3,6 got ${found.join()}`);
+
+  // (c) real ffmpeg scene scan when available.
+  const info = await detectFfmpeg();
+  if (!info.available) {
+    console.log(`  \x1b[32m✔\x1b[0m check 71 (scene split): op + scoring ok · ffmpeg scan skipped (no ffmpeg)`);
+    return;
+  }
+  const bin = resolveFfmpegBin();
+  const dir = resolve(OUT_DIR, "scenes");
+  mkdirSync(dir, { recursive: true });
+  const mp4 = resolve(dir, "three-shots.mp4");
+  const r = spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=red:s=320x180:d=2:r=15", "-f", "lavfi", "-i", "color=c=white:s=320x180:d=2:r=15", "-f", "lavfi", "-i", "color=c=black:s=320x180:d=2:r=15", "-filter_complex", "concat=n=3:v=1:a=0", "-c:v", "libx264", "-pix_fmt", "yuv420p", mp4], { encoding: "utf8" });
+  assert(r.status === 0, `scene split: could not synthesize a 3-shot mp4 (${(r.stderr || "").slice(-200)})`);
+  const prev = process.env.FFMPEG_PATH;
+  const prevDir = process.env.CADENCE_MEDIA_DIR;
+  process.env.FFMPEG_PATH = bin;
+  process.env.CADENCE_MEDIA_DIR = dir; // the SSRF guard only accepts files under the media dir
+  try {
+    const scan = await detectSceneFfmpeg(mp4, { sensitivity: 0.5 });
+    assert(scan.available, `scene split: ffmpeg scan unavailable (${scan.available ? "" : scan.reason})`);
+    assert(scan.cuts.length === 2 && Math.abs(scan.cuts[0]! - 2) < 0.2 && Math.abs(scan.cuts[1]! - 4) < 0.2, `scene split: ffmpeg should cut at ~2s and ~4s, got ${scan.cuts.join()}`);
+    const plan = planSourceSplit({ method: "scenes", durationSec: 6, sceneCuts: scan.cuts, minShotSec: 1 });
+    const six = parseEditDoc({ ...doc, media: [{ id: "clip-001", kind: "video", src: "/media/clip-001.mp4", durationSec: 6 }], tracks: [{ id: "video", kind: "visual", clips: [{ id: "src", kind: "video", start: 0, duration: 6, mediaId: "clip-001", sourceIn: 0, transform: { x: 320, y: 180 } }] }] });
+    const cut = director.splitIntoScenes(six, { sourceCuts: plan.cuts });
+    assert(cut.pieces === 3, `scene split: ffmpeg cuts should make 3 clips, got ${cut.pieces}`);
+    await renderAndAssert(cut.doc, 3, "verify-scenes-ffmpeg.png");
+  } finally {
+    if (prev === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = prev;
+    if (prevDir === undefined) delete process.env.CADENCE_MEDIA_DIR;
+    else process.env.CADENCE_MEDIA_DIR = prevDir;
+  }
+  console.log(`  \x1b[32m✔\x1b[0m check 71 (scene split): op tiles exactly · scoring cuts at 3,6 · REAL ffmpeg scan cuts at ${"2,4"}`);
+}
+
 async function checkRealEncode(): Promise<void> {
   const info = await detectFfmpeg();
   if (!info.available) {
@@ -4272,6 +4354,7 @@ async function main(): Promise<void> {
   await checkGraphicsPack();
   await checkExportProgress();
   await checkEditingCraft();
+  await checkSceneSplit();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

@@ -40,6 +40,8 @@ export async function askDirector(input: {
   media: MediaAsset[];
   transcripts: Transcript[];
   doc: EditDoc;
+  /** Scene cut points the browser already detected (source seconds, by media id). */
+  sceneCuts?: Record<string, number[]>;
 }): Promise<DirectorResponse> {
   const res = await fetch("/api/director", {
     method: "POST",
