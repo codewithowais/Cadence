@@ -332,6 +332,12 @@ const clipBase = {
   start: z.number().nonnegative(),
   /** How long the clip occupies the timeline, in seconds. */
   duration: z.number().positive(),
+  /**
+   * Optional human label ("Scene 3", the first words of a sentence…). Set by
+   * `split_into_scenes` so the pieces of a divided video are recognisable;
+   * additive + optional, so existing docs are unchanged.
+   */
+  label: z.string().optional(),
 };
 
 /** Crossfade-in / -out durations in seconds (0 = hard cut). Shared by visual clips. */

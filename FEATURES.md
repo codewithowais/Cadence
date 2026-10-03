@@ -76,6 +76,9 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 **Editing speed & timeline craft** (Senior Video Editor)
 - ✅ J/K/L shuttle (2×/4×, reverse), frame step `,` `.` (⇧ = 10), ↑/↓ cut-to-cut, I/O in/out range → **Remove range** / **Keep only range**, snapping toggle `N` with a snap guide, visible + closable **gaps**, multi-select (⇧/⌘-click, marquee, ⌘A) with group delete/duplicate/nudge, **copy/paste attributes** (⌘⇧C/⌘⇧V), **Split all tracks** (⇧S), speed presets 0.5–2×, **Freeze frame** (`F`). Tools: `split_all_tracks`, `close_gaps`, `cut_range`, `hold_frame`, `retime_clip`. Preview now honors speed/freeze/reverse.
 
+**Divide a finished video into clips** (Senior Video Editor — understanding/ingest)
+- ✅ Upload a rendered video as ONE long clip → a dismissible **“Divide into scenes?”** offer; or Media room → **Divide into clips**: scene changes (free, in-browser frame analysis, no install; ffmpeg server upgrade when present), transcript sentences, silences, beats, or every N seconds. Sensitivity + shortest-clip sliders re-preview instantly (cut markers on the timeline, a mini strip, thumbnails per shot). **Apply** makes labelled, ripple-safe clips (audio rides with each piece; undoable). Chat: “split this video into scenes”, “chop every 5 seconds”, “split by sentence” (`split_into_scenes`).
+
 **Graphics, overlays & social elements** (Motion Designer)
 - ✅ Design → Graphics: 34 animated presets — social CTAs (Subscribe with bell, Like, Follow, Link in bio, Swipe up, Comment), countdowns/timers/count-ups, progress bars/story segments/percent ring, 6 lower-third styles, stickers & hand-drawn annotations. Shape motion engine (13 intros, 10 exits, 9 loops) for any shape. Tools: `add_graphic`, `add_lower_third`, `add_progress_bar`, `add_countdown`, `edit_graphic`, `animate_shape`. Preview == export (verify check 68).
 

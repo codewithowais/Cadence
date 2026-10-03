@@ -11,6 +11,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./scenes": {
+      "types": "./src/scenes.ts",
+      "default": "./src/scenes.ts"
+    },
     "./tts": {
       "types": "./src/tts.ts",
       "default": "./src/tts.ts"

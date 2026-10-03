@@ -15,6 +15,11 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ Full emoji catalog (1,870 base / 3,395 w/ skin tones), virtualized picker, search, skin tones, recents/favorites, drag onto the Stage; ✅ color emoji drawn as Twemoji sprites identically in preview / node / export (carried-forward limitation resolved); ✅ sticker + 7 reaction packs; ✅ `add_emoji` / `add_reaction` (transcript-timed) / `edit_emoji`; ✅ 9 emoji text styles. Details: `docs/agents/emoji-cycle-j.md`.
 - ⬜ Open: timeline-lane drop of emoji (contract documented; CutsStrip owned elsewhere); emoji newer than Unicode 15.0 have no art; native-font emoji remain in DOM labels.
 
+## Cycle J — Already-built video → divided into clips — ✅ shipped (Senior Video Editor lane, feature #7)
+
+- ✅ Pure scene scoring + 4 other split strategies (`packages/understanding/src/scenes.ts`), ffmpeg scan upgrade (`scenes-ffmpeg.ts`), `splitIntoScenes` op, `split_into_scenes` tool + routing + evals, in-browser detector, banner + Media-room section + live markers, `/api/scenes`. See `docs/agents/scene-split-cycle-j.md` and CHANGELOG S7.1. *verified: unit 186/186 · verify 71/71 · evals 9/9 · next build · e2e scene-split.*
+- ⬜ **Limitations:** hard cuts only (slow dissolves/fades are under-detected — raise sensitivity or use sentences/interval); PySceneDetect not wired; the timeline strip shows the generic clip name (the new `label` shows in the Media room list + code drawer, CutsStrip is another lane's file); a clip trimmed before dividing gets numbered, not transcript, labels.
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*

@@ -17,6 +17,8 @@ export async function POST(req: NextRequest) {
     const project = new ProjectState({
       media: body?.media ?? [],
       transcripts: body?.transcripts ?? [],
+      // Scene cuts the browser already detected (source seconds, by media id).
+      sceneCuts: body?.sceneCuts ?? undefined,
       doc: body?.doc ? parseEditDoc(body.doc) : undefined,
     });
     const result = await new StubDirector().interpret(request, project);

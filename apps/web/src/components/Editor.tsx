@@ -89,6 +89,8 @@ import { useAutosave } from "@/lib/use-autosave";
 import { SCRATCH_DRAFT_KEY } from "@/lib/autosave";
 import { RecoverDraftBanner } from "./RecoverDraftBanner";
 import { EmojiDropZone } from "./EmojiDropZone";
+import { SceneOfferBanner, SCENE_OFFER_MIN_SEC, type SceneSplitBridge } from "./SceneSplit";
+import { collectSceneCuts } from "@/lib/scene-director";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { withStableHandlers } from "@/lib/stable-memo";
 import { buildProjectFile, matchFilesToMissing, parseProjectFile, projectFileName } from "@/lib/project-file";
@@ -244,6 +246,12 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // from the PERSISTED `doc.markers` (see `markers` below) so they survive
   // save/load + undo — they are not editor-only component state.
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // "Divide into scenes": the media the dismissible offer is about, a bump counter
+  // that tells the Media room to auto-start a scan, and the live-preview cut times
+  // (timeline seconds) merged into the timeline's marker strip until applied.
+  const [sceneOffer, setSceneOffer] = useState<string | null>(null);
+  const [sceneToken, setSceneToken] = useState(0);
+  const [scenePreview, setScenePreview] = useState<number[]>([]);
   // On-preview placement (Walkthrough room): the armed gesture + a resolver so the
   // Demo room can `await` the fractions the Stage overlay reports.
   const [placement, setPlacement] = useState<PlacementRequest | null>(null);
@@ -331,6 +339,11 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   const markers = useMemo(
     () => (doc.markers ?? []).map((m) => m.t).sort((a, b) => a - b),
     [doc.markers],
+  );
+  // Markers as drawn on the timeline: the persisted ones plus any live scene-cut preview.
+  const stripMarkers = useMemo(
+    () => (scenePreview.length ? [...new Set([...markers, ...scenePreview])].sort((a, b) => a - b) : markers),
+    [markers, scenePreview],
   );
   // Source for BEAT DETECTION: prefer the project's music, then any audio, then
   // the base video's own audio. We need the raw File (or object URL) to decode.
@@ -527,6 +540,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           setMediaList(added);
           setTranscripts({});
           reset(combinedVideoDoc(added)); // one combined doc + fresh history
+          // A long single video is probably already edited -> offer to divide it into scenes.
+          setSceneOffer(added.length === 1 && (added[0]!.durationSec ?? 0) >= SCENE_OFFER_MIN_SEC ? added[0]!.id : null);
+          setScenePreview([]);
         }
         setTimeSec(0);
         say("you", added.length === 1 ? `Added ${added[0]!.label}` : `Added ${added.length} videos`);
@@ -672,7 +688,11 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     setBusyLabel("Applying your edit…");
     setPlaying(false);
     try {
-      const res = await askDirector({ request: text, media: projectMedia, transcripts: Object.values(transcripts), doc });
+      // "Divide into scenes" needs frame analysis the server can't do -> scan here first.
+      const sceneCuts = await collectSceneCuts(text, doc, projectMedia, urls, (d, t) =>
+        setBusyLabel(`Scanning for scene changes ${Math.round((d / Math.max(1, t)) * 100)}%…`),
+      );
+      const res = await askDirector({ request: text, media: projectMedia, transcripts: Object.values(transcripts), doc, sceneCuts });
       // On an EMPTY project, keep only a result that actually CREATES something to
       // watch (a text video, a countdown, a graphic…). A look / reframe / caption
       // with no footage is a no-op, so the caller queues it until media arrives.
@@ -1602,6 +1622,24 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     }
   }
 
+  // "Divide into scenes" wiring for the Media room (see SceneSplit): the divided doc
+  // lands as ONE undoable edit, narrated + with an Undo toast like any Director edit.
+  const sceneBridge: SceneSplitBridge = {
+    files,
+    autoStartToken: sceneToken,
+    onApply: (next, summary) => {
+      setPlaying(false);
+      commit(next);
+      setSceneOffer(null);
+      setScenePreview([]);
+      say("director", summary, "edit", { tools: ["split_into_scenes"] });
+      showUndoToast(summary);
+    },
+    onPreview: setScenePreview,
+    onUndo: undo,
+    canUndo,
+  };
+
   // Keep the selection valid: if the selected clip vanishes (ripple-delete, a
   // Director rewrite, start-over), clear it so the inspector never dangles.
   useEffect(() => {
@@ -1861,6 +1899,16 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         {autosave.offer && (
           <RecoverDraftBanner draft={autosave.offer} onRestore={restoreSession} onDiscard={discardSession} />
         )}
+        <SceneOfferBanner
+          doc={doc}
+          offerMediaId={sceneOffer}
+          onAccept={() => {
+            setSceneOffer(null);
+            setRoom("media");
+            setSceneToken((n) => n + 1);
+          }}
+          onDismiss={() => setSceneOffer(null)}
+        />
         <TopBar
           title={doc.meta.title || projectName || "Untitled"}
           onRename={renameProject}
@@ -1939,6 +1987,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onReorderMedia={reorderMedia}
             onRemoveMedia={removeMedia}
             onAddMediaToTimeline={addMediaToTimeline}
+            scene={sceneBridge}
             onRecordVoiceover={addVoiceoverFile}
             onSetTrackVolume={setAudioTrackVolume}
             transcripts={transcripts}
@@ -2017,7 +2066,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onDelete: deleteSelectedClip,
               onSetClipVolume: setSelectedClipVolume,
               onMove: moveClipDir,
-              markers,
+              markers: stripMarkers,
               onAddMarker: addMarker,
               onRemoveMarker: removeMarker,
               onAddTrack: addTrackOfKind,

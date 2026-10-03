@@ -37,7 +37,9 @@ import { fillerCut } from "./filler";
 import { buildSlideshowDoc } from "./slideshow";
 import { buildDemo, type BuildDemoOptions } from "./demo";
 import { addTrack, moveClipToTrack, removeTrack, reorderTrack, setTrack } from "./tracks";
-import { addSfx, autoDuck, autoSfx, beatSync, generatedMusicOf, generateMusic, setVoiceEnhance } from "./audio";
+import { addSfx, autoDuck, autoSfx, beatSync, generatedMusicOf, generateMusic, musicBeatTimes, setVoiceEnhance } from "./audio";
+import { splitIntoScenes } from "./scenes";
+import { planSourceSplit, SPLIT_METHODS, SplitPlanError, type SplitMethod } from "@cadence/understanding/scenes";
 import { MOOD_DEFS, SFX_DEFS, type MusicMood, type SfxKind } from "./sound-synth";
 import { rollEdit, slipEdit, slideEdit } from "./trims";
 import {
@@ -1938,6 +1940,98 @@ export const splitAllTracksTool: DirectorTool<{ atSec: number }> = {
   },
 };
 
+// ---- divide an already-built video into clips --------------------------------
+
+export interface SplitIntoScenesToolInput {
+  method?: SplitMethod;
+  sensitivity?: number;
+  minShotSec?: number;
+  every?: number;
+  mediaId?: string;
+  cuts?: number[];
+}
+
+const METHOD_PHRASE: Record<SplitMethod, string> = {
+  scenes: "scene changes",
+  sentences: "sentences",
+  silence: "silences",
+  beats: "the beat",
+  interval: "a fixed interval",
+};
+
+export const splitIntoScenesTool: DirectorTool<SplitIntoScenesToolInput> = {
+  name: "split_into_scenes",
+  description:
+    "Divide an already-built (finished) video into separate editable clips so each part can be rearranged, trimmed, deleted or restyled. method: scenes (visual shot changes — default; uses the cut points the browser detected), sentences (transcript), silence (gaps in speech), beats (timeline beat markers / generated music), interval (`every` N seconds). sensitivity 0..1 (higher = more cuts), minShotSec = shortest clip. Optional `cuts` = explicit cut points in source seconds. Pieces tile the original exactly, so captions/music/other tracks stay in sync; each piece is labelled.",
+  inputSchema: z.object({
+    method: z.enum(SPLIT_METHODS as unknown as [SplitMethod, ...SplitMethod[]]).optional(),
+    sensitivity: z.number().min(0).max(1).optional(),
+    minShotSec: z.number().positive().max(600).optional(),
+    every: z.number().positive().optional(),
+    mediaId: z.string().optional(),
+    cuts: z.array(z.number().nonnegative()).max(5000).optional(),
+  }) as unknown as z.ZodType<SplitIntoScenesToolInput>,
+  async execute(input, ctx) {
+    const doc = ctx.project.doc;
+    const method: SplitMethod = input.method ?? "scenes";
+    let target: Extract<EditDocT["tracks"][number]["clips"][number], { kind: "video" }> | undefined;
+    for (const t of doc.tracks) {
+      for (const c of t.clips) {
+        if (c.kind === "video" && (input.mediaId ? c.mediaId === input.mediaId : true)) {
+          target = target ?? c;
+        }
+      }
+    }
+    if (!target) throw new Error("There's no video on the timeline to divide — add a video first.");
+    const mediaId = target.mediaId;
+    const media = doc.media.find((m) => m.id === mediaId) ?? ctx.project.media.find((m) => m.id === mediaId);
+    const mediaDur = media?.durationSec ?? target.sourceIn + target.duration * (target.speed ?? 1);
+    const minShot = input.minShotSec;
+    const run = (o: Parameters<typeof splitIntoScenes>[1]) => splitIntoScenes(doc, { mediaId, minShotSec: minShot, ...o });
+
+    let result: ReturnType<typeof splitIntoScenes>;
+    try {
+      if (method === "interval") {
+        if (!(input.every && input.every > 0)) throw new SplitPlanError("Tell me how often to cut, e.g. “every 5 seconds”.");
+        result = run({ everySec: input.every, labelPrefix: "Part" });
+      } else if (method === "beats") {
+        const beats = input.cuts ?? (musicBeatTimes(doc).length > 1 ? musicBeatTimes(doc) : (doc.markers ?? []).map((m) => m.t));
+        const plan = planSourceSplit({ method, durationSec: docDurationSec(doc), beats, every: input.every, minShotSec: minShot });
+        result = run({ timelineCuts: plan.cuts, labelPrefix: "Part" });
+      } else {
+        const plan = planSourceSplit({
+          method,
+          durationSec: mediaDur,
+          sensitivity: input.sensitivity,
+          minShotSec: minShot,
+          sceneCuts: input.cuts ?? ctx.project.getSceneCuts(mediaId),
+          transcript: ctx.project.getTranscript(mediaId),
+        });
+        result = run({
+          sourceCuts: plan.cuts,
+          labels: plan.shots.map((s) => s.label),
+          labelPrefix: method === "scenes" ? "Scene" : method === "sentences" ? "Sentence" : "Part",
+        });
+      }
+    } catch (err) {
+      if (err instanceof SplitPlanError) throw new Error(err.message);
+      throw err;
+    }
+    if (result.pieces === 0) {
+      throw new Error(
+        method === "scenes"
+          ? "I didn't find any scene changes at this sensitivity — raise the sensitivity, or split every few seconds instead."
+          : `I found nothing to cut by ${METHOD_PHRASE[method]}.`,
+      );
+    }
+    return commit(
+      ctx.project,
+      result.doc,
+      `Divided “${media?.label ?? "your video"}” into ${result.pieces} clips by ${METHOD_PHRASE[method]} — each is its own clip now, so rearrange, trim, delete or restyle any part.`,
+    );
+  },
+};
+
 export const closeGapsTool: DirectorTool<{ trackId?: string }> = {
   name: "close_gaps",
   description:
@@ -2077,6 +2171,7 @@ export const DIRECTOR_TOOLS = {
   style_text: styleTextTool,
   set_background: setBackgroundTool,
   split_all_tracks: splitAllTracksTool,
+  split_into_scenes: splitIntoScenesTool,
   close_gaps: closeGapsTool,
   cut_range: cutRangeTool,
   hold_frame: holdFrameTool,

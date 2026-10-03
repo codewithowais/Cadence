@@ -11,6 +11,8 @@ export interface ProjectStateInit {
   doc?: EditDoc;
   media?: MediaAsset[];
   transcripts?: Transcript[];
+  /** Scene-cut points (SOURCE seconds) the client already detected, by media id. */
+  sceneCuts?: Record<string, number[]>;
 }
 
 /** An empty but valid edit-doc. */
@@ -22,11 +24,13 @@ export class ProjectState {
   doc: EditDoc;
   media: MediaAsset[];
   private transcripts: Map<string, Transcript>;
+  private sceneCuts: Map<string, number[]>;
 
   constructor(init: ProjectStateInit = {}) {
     this.doc = init.doc ?? emptyDoc();
     this.media = init.media ?? [];
     this.transcripts = new Map((init.transcripts ?? []).map((t) => [t.mediaId, t]));
+    this.sceneCuts = new Map(Object.entries(init.sceneCuts ?? {}));
   }
 
   addMedia(asset: MediaAsset): void {
@@ -39,6 +43,15 @@ export class ProjectState {
 
   getTranscript(mediaId: string): Transcript | undefined {
     return this.transcripts.get(mediaId);
+  }
+
+  /** Detected scene cuts (source seconds) for a media — set by the browser/ffmpeg detector. */
+  setSceneCuts(mediaId: string, cuts: number[]): void {
+    this.sceneCuts.set(mediaId, cuts);
+  }
+
+  getSceneCuts(mediaId: string): number[] | undefined {
+    return this.sceneCuts.get(mediaId);
   }
 
   /** Replace the edit-doc, validating it against the schema first. */
