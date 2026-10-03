@@ -800,6 +800,9 @@ export type CaptionWord = z.infer<typeof CaptionWord>;
  *  - "color" — recolor just the active word to `highlight` (the default).
  *  - "fill"  — a filled `highlight` pill behind the active word (dark ink on top).
  *  - "box"   — a `highlight` stroked box around the active word.
+ *  - "pop"   — recolor + SCALE the active word up (CapCut / Hormozi pop; `scale`).
+ *  - "underline" — recolor + a `highlight` underline bar under the active word.
+ *  - "glow"  — recolor + a soft `highlight` glow around the active word.
  * All defaulted / optional so absent ⇒ today's static caption (fully backward
  * compatible). Faithful: a text emphasis only, never a content change.
  */
@@ -807,7 +810,9 @@ export const Karaoke = z.object({
   enabled: z.boolean().default(false),
   /** Highlight color for the active word (recolor / fill / box, per `style`). */
   highlight: HexColor.default("#ffd54a"),
-  style: z.enum(["color", "fill", "box"]).default("color"),
+  style: z.enum(["color", "fill", "box", "pop", "underline", "glow"]).default("color"),
+  /** Active-word scale for the "pop" style (1 = none). Ignored by the other styles. */
+  scale: z.number().min(1).max(2).optional(),
 });
 export type Karaoke = z.infer<typeof Karaoke>;
 

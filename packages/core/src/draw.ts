@@ -353,6 +353,38 @@ function drawKaraokeLines(
         ctx.globalAlpha = op;
         ctx.fillStyle = hi;
         ctx.fillText(tok.text, x, y);
+      } else if (active && style === "pop") {
+        // CapCut/Hormozi pop: recolor + ease-out scale-up about the word's own center
+        // (neighbors do not reflow). The export renders the settled (full-scale) frame.
+        const S = clip.karaoke?.scale ?? 1.18;
+        const p = Math.max(0, Math.min(1, (t - (word?.start ?? t)) / 0.12));
+        const sc = 1 + (S - 1) * (1 - (1 - p) * (1 - p));
+        setShadow(true);
+        ctx.globalAlpha = op;
+        ctx.fillStyle = hi;
+        ctx.save();
+        ctx.translate(x + w / 2, y);
+        ctx.scale(sc, sc);
+        ctx.fillText(tok.text, -w / 2, 0);
+        ctx.restore();
+      } else if (active && style === "underline") {
+        setShadow(true);
+        ctx.globalAlpha = op;
+        ctx.fillStyle = hi;
+        ctx.fillText(tok.text, x, y);
+        setShadow(false);
+        const barH = Math.max(3, clip.fontSize * 0.07);
+        ctx.fillRect(x, y + clip.fontSize * 0.5, w, barH);
+      } else if (active && style === "glow") {
+        ctx.globalAlpha = op;
+        ctx.fillStyle = hi;
+        ctx.shadowColor = hi;
+        ctx.shadowBlur = clip.fontSize * 0.5;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+        ctx.fillText(tok.text, x, y);
+        ctx.fillText(tok.text, x, y);
+        setShadow(false);
       } else {
         setShadow(true);
         ctx.globalAlpha = alpha;

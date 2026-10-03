@@ -60,6 +60,7 @@ import {
   slideshowTool,
   speedTool,
   styleCaptionsTool,
+  setCaptionPresetTool,
   titleTool,
   transitionTool,
   vfxTool,
@@ -304,6 +305,21 @@ const CAPTION_COLORS: Record<string, string> = {
  * about captions AND names at least one style attribute (color / weight / outline
  * / position / font), so a plain "add captions" still routes to add_captions only.
  */
+/** Map a request to a CAPTION_PRESETS key ("hormozi captions", "mrbeast style", "neon subtitles"). */
+function parseCaptionPreset(req: string): string | null {
+  if (!/caption|subtitle|karaoke|words?\b/.test(req)) return null;
+  const table: [RegExp, string][] = [
+    [/hormozi|alex hormozi|yellow pop/, "hormozi"],
+    [/mr\.? ?beast|beast style|comic caps/, "beast"],
+    [/neon (?:caption|subtitle|karaoke|style)|(?:caption|subtitle)s? .*\bneon\b|glow(?:ing)? (?:caption|word)/, "neon"],
+    [/pill (?:caption|subtitle|style)|rounded (?:caption|subtitle)/, "pill"],
+    [/underline (?:caption|subtitle|style|karaoke)|editorial caption/, "underline"],
+    [/marker (?:caption|subtitle|style)|hand ?(?:drawn|written) caption/, "marker"],
+  ];
+  for (const [re, key] of table) if (re.test(req)) return key;
+  return null;
+}
+
 function parseCaptionStyle(req: string): CaptionStyleOpts | null {
   if (!/caption|subtitle/.test(req)) return null;
   const out: CaptionStyleOpts = {};
@@ -1190,10 +1206,24 @@ export class StubDirector {
       });
     }
 
-    if (/caption|subtitle|add text|burn.?in|words on screen/.test(req)) {
+    // A named caption STYLE preset ("hormozi captions", "mrbeast style subtitles",
+    // "neon karaoke captions") or plain karaoke → word-highlight captions + preset.
+    const capPreset = parseCaptionPreset(req);
+    const wantsKaraoke = /karaoke|word[- ]by[- ]word|highlight (?:the )?(?:spoken )?words?|animated captions?/.test(req);
+
+    if (/caption|subtitle|add text|burn.?in|words on screen/.test(req) || capPreset || wantsKaraoke) {
+      const kInput = capPreset || wantsKaraoke ? { karaoke: true } : {};
       steps.push({
-        run: (p) => captionsTool.execute({}, { project: p }),
-        call: { name: captionsTool.name, input: {} },
+        run: (p) => captionsTool.execute(kInput, { project: p }),
+        call: { name: captionsTool.name, input: kInput },
+      });
+    }
+
+    if (capPreset) {
+      const input = { preset: capPreset };
+      steps.push({
+        run: (p) => setCaptionPresetTool.execute(input, { project: p }),
+        call: { name: setCaptionPresetTool.name, input },
       });
     }
 

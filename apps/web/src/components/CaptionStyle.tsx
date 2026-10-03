@@ -30,6 +30,8 @@ import {
   setKaraoke,
   addCaptions,
   animateText,
+  applyCaptionPreset,
+  CAPTION_PRESETS,
   type CaptionStyleOpts,
   type CaptionPosition,
   type KaraokeStyle,
@@ -430,11 +432,14 @@ function PreviewChip({ s, h }: { s: CaptionState; h: number }) {
             <span
               key={i}
               style={{
-                color: active && s.karaokeStyle === "color" ? hi : s.color,
+                color: active && s.karaokeStyle !== "fill" ? hi : s.color,
+                transform: active && s.karaokeStyle === "pop" ? "scale(1.18)" : undefined,
+                textDecoration: active && s.karaokeStyle === "underline" ? `underline ${hi}` : undefined,
+                textShadow: active && s.karaokeStyle === "glow" ? `0 0 8px ${hi}` : undefined,
                 background: active && s.karaokeStyle === "fill" ? hi : "transparent",
                 border: active && s.karaokeStyle === "box" ? `1.5px solid ${hi}` : "1.5px solid transparent",
                 borderRadius: active ? "4px" : undefined,
-                padding: active && s.karaokeStyle !== "color" ? "0 3px" : "0 1px",
+                padding: active && (s.karaokeStyle === "fill" || s.karaokeStyle === "box") ? "0 3px" : "0 1px",
                 marginRight: i < words.length - 1 ? "3px" : undefined,
                 WebkitTextStroke: undefined,
               }}
@@ -513,6 +518,9 @@ const KARAOKE_STYLES: { key: KaraokeStyle; label: string }[] = [
   { key: "color", label: "Color" },
   { key: "fill", label: "Fill" },
   { key: "box", label: "Box" },
+  { key: "pop", label: "Pop" },
+  { key: "underline", label: "Underline" },
+  { key: "glow", label: "Glow" },
 ];
 
 export function CaptionStyleSection({
@@ -578,6 +586,18 @@ export function CaptionStyleSection({
     if (!captionsExist) return;
     try {
       onApplyDoc(positionCaptions(doc, { anchor, offset, clipId }), "cap-position");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Viral styles: font + outline + box + position + karaoke word-highlight + entrance
+  // animation in ONE undoable step (the shared engine presets; also the Director's
+  // `set_caption_preset` tool).
+  const applyViralPreset = (key: string) => {
+    if (!captionsExist) return;
+    try {
+      onApplyDoc(applyCaptionPreset(doc, key, { clipId }));
     } catch {
       /* ignore */
     }
@@ -692,6 +712,14 @@ export function CaptionStyleSection({
           <Row label="presets">
             {PRESETS.map((p) => (
               <Toggle key={p.key} onClick={() => applyPreset(p)} disabled={busy} title={`Apply the “${p.label}” caption style`}>
+                {p.label}
+              </Toggle>
+            ))}
+          </Row>
+
+          <Row label="viral styles">
+            {CAPTION_PRESETS.map((p) => (
+              <Toggle key={p.key} onClick={() => applyViralPreset(p.key)} disabled={busy} title={p.hint}>
                 {p.label}
               </Toggle>
             ))}

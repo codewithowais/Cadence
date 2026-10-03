@@ -224,7 +224,7 @@ export function adjustColor(doc: EditDoc, partial: Partial<ColorGrade>): EditDoc
 // ---- Captions --------------------------------------------------------------
 
 /** Word-by-word "karaoke" highlight style for a caption (see schema `Karaoke`). */
-export type KaraokeStyle = "color" | "fill" | "box";
+export type KaraokeStyle = "color" | "fill" | "box" | "pop" | "underline" | "glow";
 
 /** Options for {@link addCaptions}. All optional so the default is a plain caption. */
 export interface AddCaptionsOptions {
@@ -332,8 +332,10 @@ export interface SetKaraokeOptions {
   enabled?: boolean;
   /** Highlight color for the active word. */
   highlight?: string;
-  /** How the active word is emphasized: color / fill / box. */
+  /** How the active word is emphasized: color / fill / box / pop / underline / glow. */
   style?: KaraokeStyle;
+  /** Active-word scale for the "pop" style (1..2). */
+  scale?: number;
   /** Toggle ONE caption clip (by id); otherwise every caption clip. */
   clipId?: string;
 }
@@ -364,6 +366,7 @@ export function setKaraoke(doc: EditDoc, opts: SetKaraokeOptions = {}): EditDoc 
       enabled,
       highlight: opts.highlight ?? clip.karaoke?.highlight ?? "#ffd54a",
       style: opts.style ?? clip.karaoke?.style ?? "color",
+      ...((opts.scale ?? clip.karaoke?.scale) !== undefined ? { scale: opts.scale ?? clip.karaoke?.scale } : {}),
     };
   }
   return parseEditDoc(clone);
@@ -719,7 +722,7 @@ type MutableTextClip = {
   outline?: { color: string; width: number };
   shadow?: { color: string; blur: number; offsetX: number; offsetY: number };
   box?: { style: string; color?: string; opacity: number; radius?: number; padX?: number; padY?: number };
-  karaoke?: { enabled: boolean; highlight: string; style: KaraokeStyle };
+  karaoke?: { enabled: boolean; highlight: string; style: KaraokeStyle; scale?: number };
   words?: { text: string; start: number; end: number }[];
   transform: { x: number; y: number; scale: number; rotation: number; opacity: number };
 };

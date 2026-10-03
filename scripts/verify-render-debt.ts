@@ -6,13 +6,19 @@
  *   71 export z-order: shapes/text/layers composite in TRACK order (a shape above
  *      text covers it; text above a shape stays readable); hidden text exports nothing;
  *      a mid-stack adjustment grades only what is beneath it — plan + a real encode
+ *   72 karaoke styles + 6 caption presets: pop/underline/glow render a distinct active
+ *      word on the shared canvas; every preset applies + renders; set_caption_preset
+ *      tool + stub routing; a REAL export shows the highlight color stepping word to word
  */
 import { mkdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
-import { parseEditDoc, type EditDoc } from "@cadence/core";
+import { parseEditDoc, type EditDoc, type TextClip } from "@cadence/core";
+import { CanvasRenderEngine } from "@cadence/render-node";
+import type { Transcript } from "@cadence/understanding";
+import { addCaptions, applyCaptionPreset, CAPTION_PRESETS, DIRECTOR_TOOLS, ProjectState, StubDirector } from "@cadence/director";
 import {
   buildExportPlan,
   detectFfmpeg,
@@ -180,8 +186,122 @@ export async function checkExportZOrder(): Promise<void> {
   ok(`check 71 (export z-order): text/shape/layer overlays composite in TRACK order both ways; hidden text track skipped; mid-stack adjustment grades only what is beneath (topmost stays final); ${real}`);
 }
 
+// ---------------------------------------------------------------------------
+// 72 · karaoke styles + caption presets
+// ---------------------------------------------------------------------------
+
+function karaokeBase(): { doc: EditDoc; transcript: Transcript } {
+  const doc = parseEditDoc({
+    version: 1,
+    meta: { title: "k", width: 640, height: 480, fps: 30, background: "#101418" },
+    media: [{ id: "v", kind: "video", src: "/media/v.mp4", durationSec: 30 }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c", kind: "video", start: 0, duration: 3, sourceIn: 0, mediaId: "v", transform: { x: 320, y: 240 } }] }],
+  });
+  const transcript: Transcript = {
+    mediaId: "v", durationSec: 3, language: "en",
+    segments: [{ id: "s0", start: 0, end: 3, text: "grow fast now", words: [
+      { text: "grow", start: 0, end: 1 }, { text: "fast", start: 1, end: 2 }, { text: "now", start: 2, end: 3 },
+    ] }],
+    words: [],
+  };
+  return { doc, transcript };
+}
+
+const hexToRgb = (hex: string): [number, number, number] => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+
+/** Centroid x + count of pixels within `tol` of the highlight color. */
+function colorCentroid(px: Uint8ClampedArray, w: number, h: number, hex: string, tol = 40): { n: number; cx: number } {
+  const [tr, tg, tb] = hexToRgb(hex);
+  let n = 0;
+  let sx = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (Math.abs(px[i]! - tr) < tol && Math.abs(px[i + 1]! - tg) < tol && Math.abs(px[i + 2]! - tb) < tol) {
+        n++;
+        sx += x;
+      }
+    }
+  }
+  return { n, cx: n ? sx / n : -1 };
+}
+
+export async function checkKaraokePresets(): Promise<void> {
+  const engine = new CanvasRenderEngine();
+  const { doc: base, transcript } = karaokeBase();
+  const frame = async (d: EditDoc, t: number): Promise<Buffer> => Buffer.from((await engine.renderFrame(d, t)).data);
+
+  // (a) the three NEW styles each render a distinct active word, and differ from "color".
+  const styled = (style: string): EditDoc => addCaptions(base, transcript, { karaoke: true, karaokeStyle: style as never });
+  const colorAt = await frame(styled("color"), 1.5);
+  for (const style of ["pop", "underline", "glow"]) {
+    const d = styled(style);
+    const cap = d.tracks.find((t) => t.id === "captions")!.clips[0] as TextClip;
+    assert(cap.karaoke?.style === style, `karaoke style ${style} must round-trip through the schema`);
+    const a = await frame(d, 0.5);
+    const b = await frame(d, 1.5);
+    assert(!a.equals(b), `karaoke ${style}: different active words must render distinct pixels`);
+    assert(!b.equals(colorAt), `karaoke ${style}: must look different from the plain color style`);
+  }
+
+  // (b) all 6 presets apply (style + karaoke + anim), parse, and render at an active-word time.
+  assert(CAPTION_PRESETS.length === 6, `expected 6 caption presets, got ${CAPTION_PRESETS.length}`);
+  const seen = new Set<string>();
+  const captioned = addCaptions(base, transcript);
+  for (const p of CAPTION_PRESETS) {
+    const d = applyCaptionPreset(captioned, p.key);
+    const cap = d.tracks.find((t) => t.id === "captions")!.clips[0] as TextClip;
+    assert(cap.karaoke?.enabled === true, `preset ${p.key} must enable karaoke`);
+    assert((cap.words?.length ?? 0) === 3, `preset ${p.key} must keep per-word timing`);
+    const f = await frame(d, 1.5);
+    assert(f.length > 1000, `preset ${p.key} must render`);
+    seen.add(`${cap.fontFamily}|${cap.karaoke?.style}|${cap.karaoke?.highlight}`);
+  }
+  assert(seen.size === 6, `the 6 presets must be visually distinct (font+style+color), got ${seen.size}`);
+  let threw = false;
+  try {
+    applyCaptionPreset(captioned, "nope");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "an unknown preset must throw a helpful error");
+
+  // (c) Director tool + StubDirector routing.
+  const mk = (): ProjectState => {
+    const p = new ProjectState({ media: [{ id: "v", kind: "video", src: "/media/v.mp4", durationSec: 30 }] });
+    p.setDoc(base);
+    p.setTranscript(transcript);
+    return p;
+  };
+  const project = mk();
+  await DIRECTOR_TOOLS.add_captions!.execute({ karaoke: true }, { project });
+  await DIRECTOR_TOOLS.set_caption_preset!.execute({ preset: "hormozi" }, { project });
+  const tc = project.doc.tracks.find((t) => t.id === "captions")!.clips[0] as TextClip;
+  assert(tc.karaoke?.style === "pop" && tc.karaoke.highlight === "#ffe14a", "set_caption_preset hormozi → yellow pop karaoke");
+  const r = await new StubDirector().interpret("add hormozi style captions", mk());
+  assert(r.toolCalls.some((c) => c.name === "set_caption_preset"), "StubDirector must route 'hormozi captions' to set_caption_preset");
+  assert(r.toolCalls.some((c) => c.name === "add_captions"), "…and add the karaoke captions first");
+
+  // (d) REAL export: the highlight color moves word → word, and Hormozi's pop is exported.
+  const s = await ensureSource("karaoke-src.mp4");
+  let real = "plan-only (ffmpeg absent)";
+  if (s) {
+    const d = parseEditDoc({ ...applyCaptionPreset(captioned, "hormozi"), media: [{ id: "v", kind: "video", src: s.src, durationSec: 30 }] });
+    const resolveMedia = (): string => s.src;
+    const e0 = await exportFrame(d, resolveMedia, 0.5, "karaoke-w0");
+    const e2 = await exportFrame(d, resolveMedia, 2.5, "karaoke-w2");
+    const c0 = colorCentroid(e0.px, e0.w, e0.h, "#ffe14a");
+    const c2 = colorCentroid(e2.px, e2.w, e2.h, "#ffe14a");
+    assert(c0.n > 150 && c2.n > 150, `exported karaoke must show the highlight color (n=${c0.n}/${c2.n})`);
+    assert(c2.cx > c0.cx + 40, `highlight must step left→right across words on export (cx ${c0.cx.toFixed(0)} → ${c2.cx.toFixed(0)})`);
+    real = `real encode: highlight centroid x ${c0.cx.toFixed(0)} → ${c2.cx.toFixed(0)}`;
+  }
+  ok(`check 72 (karaoke styles + presets): pop/underline/glow styles distinct on the shared canvas; 6 caption presets apply+render distinct; set_caption_preset tool + stub routing; ${real}`);
+}
+
 export async function checkRenderDebt(): Promise<void> {
   await checkExportZOrder();
+  await checkKaraokePresets();
 }
 
 if (process.argv[1]?.endsWith("verify-render-debt.ts")) {

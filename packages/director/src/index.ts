@@ -2,6 +2,7 @@ export * from "./project";
 export * from "./tools";
 export * from "./highlight";
 export * from "./edits";
+export * from "./caption-presets";
 export * from "./tracks";
 export * from "./trims";
 export * from "./craft";
