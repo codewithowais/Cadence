@@ -58,6 +58,7 @@ import {
 } from "@/lib/doc";
 import { UndoToast as UndoToastBase } from "./UndoToast";
 import { useEditingCraft } from "@/lib/use-editing-craft";
+import { useTimelineDnd } from "@/lib/use-timeline-dnd";
 import {
   findClip,
   isMainSequentialTrack,
@@ -1667,6 +1668,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     notify: showUndoToast,
   });
 
+  // Timeline drag-and-drop: drop mode (insert / overwrite), lane drops, group moves
+  // and the drop-on-preview handlers — pure ops from lib/timeline-dnd via `commit`.
+  const timelineDnd = useTimelineDnd({ doc, commit, notify: showUndoToast, setPlaying, setSelectedClipId, projectMedia, urls, timeSec });
+
   // ---- First-run ease: palette / next-step chips / checklist / prompt library ----
   // Every action maps onto an EXISTING path: prompts → handleSend (the composer's
   // path), everything else → the handler the button/shortcut already uses.
@@ -2019,6 +2024,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onDelta={(dy) => setRoomHeight((h) => clampPx(h + dy, ROOM_MIN, ROOM_MAX))}
           />
         )}
+        {/* `contents`: no layout box — only catches palette drops bubbling from the preview. */}
+        <div className="contents" {...timelineDnd.stageDrop}>
         <ErrorBoundary label="preview" resetKey={doc} onUndo={canUndo ? undo : undefined} className="min-h-0 flex-1">
         <EmojiDropZone doc={doc} timeSec={timeSec} onApplyDoc={(d) => commit(d)} onSelectClip={setSelectedClipId}>
         <Stage
@@ -2041,6 +2048,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         />
         </EmojiDropZone>
         </ErrorBoundary>
+        </div>
         </div>
         <ResizeHandle
           orientation="horizontal"
@@ -2106,6 +2114,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
                 setRoom("text");
               },
               craft: editingCraft.craft,
+              dnd: timelineDnd.dnd,
             }}
           />
           </ErrorBoundary>

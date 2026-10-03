@@ -44,6 +44,7 @@ import {
   type GraphicPresetDef,
 } from "@cadence/director";
 import { graphicFonts, loadGraphicFonts } from "@/lib/graphics-fonts";
+import { dragSource } from "@/lib/dnd-payload";
 
 const CAT_KEY = "cadence:gfxCat";
 const PW = 640; // preview composition (16:9) — drawn scaled into each tile
@@ -135,6 +136,7 @@ function PresetTile({ def, disabled, onAdd }: { def: GraphicPresetDef; disabled?
   return (
     <button
       type="button"
+      {...(disabled ? {} : dragSource({ type: "graphic", preset: def.key, label: def.label }))}
       onClick={onAdd}
       disabled={disabled}
       aria-label={`Add ${def.label}`}

@@ -94,6 +94,10 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 ## 3d. Cycle J — Custom ratio (details in `docs/agents/custom-ratio-cycle-j.md`)
 - ✅ **Canvas & size** — type any W×H or ratio (21:9 · 3:2 · 7:5 · 1.91:1) with link-lock, rotate and live validation; 40 platform presets (YouTube, Shorts/TikTok/Reels, Instagram post/story/carousel, Facebook, X, LinkedIn, Pinterest, Snapchat, Twitch, A4/poster, cinema scope, 4:3, 21:9, GIF) with ratio thumbnails; saved sizes + recents; **Fill / Fit with blurred or solid bars** (preview == export); text re-laid by fractions; **safe-zone guides**; **Magic resize** to many sizes + export all. Tools: `set_canvas_size`, `magic_resize` ("make it 21:9", "make it 1080 by 1350", "resize for all social platforms").
 
+**Timeline upgrade & drag-and-drop** (Senior Video Editor, Cycle J — details in `docs/agents/timeline-dnd-cycle-j.md`)
+- ✅ Proper **time ruler** (adaptive ticks, `m:ss` / frame labels), live **timecode** readout, **scrub** by dragging the ruler / playhead, zoom around the cursor (Ctrl/⌘+wheel), smooth playhead follow, per-track **height** S/M/L, **filmstrip thumbnails** on video clips, **waveforms** on audio clips, snap indicator with timecode.
+- ✅ **Drag & drop done properly:** reorder with a ghost + live drop preview, **Esc cancels**, **Insert / Overwrite** drop modes, drop Media / text styles / stickers / graphics onto a lane **at a time** or onto the **preview** as an overlay, move clips between tracks without collisions, **multi-select group drag**, edge auto-scroll, full undo/redo, keyboard lane move (⌥⇧↑/↓), pointer/touch-friendly.
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

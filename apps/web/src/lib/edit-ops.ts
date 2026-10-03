@@ -53,7 +53,7 @@ function isSequentialClip(track: Track, clip: Clip): boolean {
  * overlap). Non-sequential clips (text/solid overlays) are left untouched.
  * Mutates the passed track.
  */
-function reflowTrack(track: Track): void {
+export function reflowTrack(track: Track): void {
   let prevEnd = 0;
   let first = true;
   for (const clip of track.clips) {

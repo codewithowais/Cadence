@@ -25,6 +25,14 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **J3 Custom ratio / Canvas & size.** `meta.canvas` schema (optional, migration-tested), core canvas helpers + 40 presets + safe zones, `set_canvas_size` / `magic_resize` tools + StubDirector phrases + 3 evals, Fit (solid/blur) in the ffmpeg plan + node canvas + Stage, `CanvasPanel` (top-bar chip, Deliver room pills), Magic resize (sibling projects / files + export all). See `docs/agents/custom-ratio-cycle-j.md` and CHANGELOG S7.1.
   - ⬜ **Known limitations:** Fit applies to base footage/photos (not PiP); blurred preview duplicates the `<video>`; safe-zone insets are approximate; `quality.target*` clears on an aspect change; Magic resize is not subject-aware.
 
+## Cycle J — timeline + drag-and-drop (Senior Video Editor lane) — ✅ COMPLETE
+
+Details: `docs/agents/timeline-dnd-cycle-j.md` · CHANGELOG S7.1.
+
+- ✅ **Timeline:** adaptive ruler + timecode, scrubbing, Ctrl/⌘+wheel zoom, smooth follow, per-track height, filmstrip thumbnails, per-clip waveforms, snap indicator.
+- ✅ **Drag & drop:** ghost + drop preview, Esc cancel, Insert/Overwrite modes, group drag, edge auto-scroll, palette drops (media / text styles / stickers / graphics) onto lanes at a time or the preview, keyboard lane move.
+- ⬜ **Known limitations:** palette drags use HTML5 DnD (mouse/pen; touch gets tap-to-add, not drag); Esc cancels moves/drops but trims commit live (undoable); group drag onto a different lane moves only when every clip fits; overlays (text/stickers/graphics) intentionally stack instead of colliding; the default timeline panel height (150px) still hides the lanes under the toolbar until it is enlarged (divider or `cadence:tlH`).
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*

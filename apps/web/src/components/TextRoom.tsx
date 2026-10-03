@@ -54,6 +54,8 @@ import { BackgroundSwatch, TextSwatch, sampleText } from "./TextSwatch";
 import { GraphicsGallery } from "./GraphicsGallery";
 import { addQuickText, allTexts, findText, lastTitleId, patchText, type QuickTextKind } from "@/lib/text-edit";
 import { PRO_TEXT_PRESETS, insertProPreset, presetPreviewClip } from "@/lib/text-presets-pro";
+import { dragSource } from "@/lib/dnd-payload";
+import type { DropPayload } from "@/lib/timeline-dnd";
 
 type Cat = "create" | "scenes" | "text" | "style" | "animate" | "background";
 const CAT_KEY = "cadence:textCat";
@@ -153,17 +155,21 @@ function PreviewTile({
   onClick,
   disabled,
   render,
+  drag,
 }: {
   label: string;
   active?: boolean;
   onClick: () => void;
   disabled?: boolean;
   render: (hover: boolean) => ReactNode;
+  /** Makes the tile draggable onto a timeline lane / the preview. */
+  drag?: DropPayload;
 }) {
   const [hover, setHover] = useState(false);
   return (
     <button
       type="button"
+      {...(drag && !disabled ? dragSource(drag, label) : {})}
       onClick={onClick}
       disabled={disabled}
       aria-pressed={active}
@@ -649,6 +655,7 @@ function TextPane({ doc, busy, timeSec, selectedClipId, onApplyDoc, onSelectClip
               key={p.key}
               label={p.label}
               disabled={busy}
+              drag={{ type: "pro-text", key: p.key, label: p.label }}
               onClick={() => {
                 const { doc: next, id } = insertProPreset(doc, p, round2(Math.max(0, timeSec)));
                 onApplyDoc(next);
