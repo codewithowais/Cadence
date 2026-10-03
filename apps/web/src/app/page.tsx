@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { HeroDemo } from "@/components/landing/HeroDemo";
 import { StartingPoints } from "@/components/landing/StartingPoints";
+import { WhatsNew } from "@/components/landing/WhatsNew";
 import { FeatureIndex } from "@/components/landing/FeatureIndex";
 import { HowItWorks } from "@/components/landing/HowItWorks";
 import { PromptChips } from "@/components/landing/PromptChips";
@@ -26,6 +27,9 @@ export default function LandingPage() {
         <nav className="ml-auto flex items-center gap-1 text-sm sm:gap-2" aria-label="Main">
           <a href="#start" className="hidden rounded-lg px-3 py-1.5 text-muted transition hover:text-text md:inline-block">
             What you can make
+          </a>
+          <a href="#new" className="hidden rounded-lg px-3 py-1.5 text-muted transition hover:text-text lg:inline-block">
+            New
           </a>
           <a href="#features" className="hidden rounded-lg px-3 py-1.5 text-muted transition hover:text-text sm:inline-block">
             All features
@@ -101,6 +105,7 @@ export default function LandingPage() {
       </section>
 
       <StartingPoints />
+      <WhatsNew />
       <FeatureIndex />
       <HowItWorks />
       <PromptChips />
