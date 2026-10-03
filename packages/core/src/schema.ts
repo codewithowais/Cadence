@@ -85,8 +85,10 @@ export const ColorGrade = z.object({
    * export it becomes the ffmpeg `lut3d=file=<path>` filter (the path is resolved
    * through the SAME resolver/whitelist as media and escaped for the filtergraph;
    * lut3d reads a LOCAL file only — no arbitrary protocols). CSS/canvas have no
-   * .cube primitive, so the LUT is EXPORT-ONLY: the canvas preview skips it
-   * gracefully (documented, exactly like `curves`). Optional so existing docs stay
+   * .cube primitive: the export is EXACT (lut3d), the node canvas applies the exact
+   * table, and the browser preview approximates it with a fitted SVG filter
+   * (see core/lut.ts). `bundled:<key>` selects a built-in free look (no file; the
+   * exporter materializes a .cube). Optional so existing docs stay
    * valid. Faithful: a color remap only, never a content change.
    */
   lut: z.string().optional(),
@@ -126,6 +128,8 @@ export type KenBurns = z.infer<typeof KenBurns>;
  *  - neon        — flicker on like a neon sign.
  *  - glitch      — RGB-split jitter that settles.
  *  - scramble    — random glyphs that resolve into the real text.
+ *  - handwrite   — STROKE-REVEAL: each glyph's outline is drawn on like a pen, then
+ *                  the fill fades in (best with unit "letter" / "word").
  * Combine any style with `unit` (whole / line / word / letter) for staggered
  * per-line, per-word, or per-letter animation.
  */
@@ -151,6 +155,7 @@ export const TEXT_ANIM_STYLES = [
   "neon",
   "glitch",
   "scramble",
+  "handwrite",
 ] as const;
 export const TextAnimStyle = z.enum(TEXT_ANIM_STYLES);
 export type TextAnimStyle = z.infer<typeof TextAnimStyle>;
@@ -809,6 +814,9 @@ export type CaptionWord = z.infer<typeof CaptionWord>;
  *  - "color" — recolor just the active word to `highlight` (the default).
  *  - "fill"  — a filled `highlight` pill behind the active word (dark ink on top).
  *  - "box"   — a `highlight` stroked box around the active word.
+ *  - "pop"   — recolor + SCALE the active word up (CapCut / Hormozi pop; `scale`).
+ *  - "underline" — recolor + a `highlight` underline bar under the active word.
+ *  - "glow"  — recolor + a soft `highlight` glow around the active word.
  * All defaulted / optional so absent ⇒ today's static caption (fully backward
  * compatible). Faithful: a text emphasis only, never a content change.
  */
@@ -816,7 +824,9 @@ export const Karaoke = z.object({
   enabled: z.boolean().default(false),
   /** Highlight color for the active word (recolor / fill / box, per `style`). */
   highlight: HexColor.default("#ffd54a"),
-  style: z.enum(["color", "fill", "box"]).default("color"),
+  style: z.enum(["color", "fill", "box", "pop", "underline", "glow"]).default("color"),
+  /** Active-word scale for the "pop" style (1 = none). Ignored by the other styles. */
+  scale: z.number().min(1).max(2).optional(),
 });
 export type Karaoke = z.infer<typeof Karaoke>;
 
@@ -1537,6 +1547,12 @@ export const TextVideoRecipe = z.object({
   theme: z.string().default("bold"),
   format: z.string().default("story"),
   pace: z.enum(["slow", "normal", "fast"]).default("normal"),
+  /**
+   * Per-scene THEME overrides (scene index → theme key). A scene absent here uses
+   * `theme`. Optional so existing docs are unchanged; written by buildTextVideo from
+   * `TextScene.theme` so a rebuild (scene edit / reframe) keeps each scene's look.
+   */
+  sceneThemes: z.record(z.string(), z.string()).optional(),
 });
 export type TextVideoRecipe = z.infer<typeof TextVideoRecipe>;
 

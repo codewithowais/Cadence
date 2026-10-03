@@ -38,6 +38,7 @@ import { DirectorRail as DirectorRailBase } from "./DirectorRail";
 import { ResizeHandle } from "./ResizeHandle";
 import { TopBar as TopBarBase } from "./TopBar";
 import { QuickActions as QuickActionsBase } from "./QuickActions";
+import { SpeedRamp } from "./SpeedRamp";
 import { AppliedStatus as AppliedStatusBase } from "./AppliedStatus";
 import { Stage } from "./Stage";
 import { CutsStrip } from "./CutsStrip";
@@ -1954,6 +1955,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             the wrapper is `contents` and the layout is exactly the stacked one. */}
         <div className={sideDock ? "flex min-h-0 flex-1 flex-col md:flex-row-reverse" : "contents"}>
         {room === "edit" ? (
+          <>
           <ErrorBoundary label="quick actions" resetKey={doc} onUndo={canUndo ? undo : undefined} compact>
           <QuickActions
             mode={mode !== "none" ? mode : docHasText ? "text" : "none"}
@@ -1963,6 +1965,10 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
             onMore={() => runAction({ type: "ui", command: "library" })}
           />
           </ErrorBoundary>
+          <ErrorBoundary label="speed ramp" resetKey={doc} onUndo={canUndo ? undo : undefined} compact>
+            <SpeedRamp doc={doc} selectedClipId={selectedClipId} busy={busy} onApply={setClipSpeedRamp} onClear={clearClipRamp} />
+          </ErrorBoundary>
+          </>
         ) : (
           <div
             // Capped, self-scrolling options panel. `min()` guarantees it can

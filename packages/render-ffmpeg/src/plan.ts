@@ -450,6 +450,58 @@ function speedSetpts(speed: number): string {
  * More segments ⇒ closer to the curve; 8 is a good, cheap default.
  */
 const RAMP_SEGMENTS = 8;
+/** Hard cap on ramp segments (each is its own ffmpeg input) — keeps montage ramps cheap. */
+const RAMP_SEGMENTS_MAX = 40;
+
+/**
+ * Segment boundaries (clip progress, ascending, 0 … 1) for a ramped clip's export.
+ * Boundaries ALWAYS include every control point, so sharp features (a montage whip,
+ * a hero-time hold edge) land exactly on a cut instead of being averaged away by the
+ * old uniform 8-way split; each control interval is then subdivided in proportion to
+ * its width (and at least in two when its rate changes), up to RAMP_SEGMENTS_MAX
+ * total. A ramp with only its two endpoints keeps the historical 8 even segments, so
+ * those exports are byte-identical. Pure + deterministic.
+ */
+export function rampSegmentBounds(ramp: readonly (readonly [number, number])[], durSec = 3): number[] {
+  const pts = [...ramp].sort((a, b) => a[0] - b[0]);
+  const interior = pts.filter((q) => q[0] > 1e-6 && q[0] < 1 - 1e-6);
+  if (interior.length === 0) return Array.from({ length: RAMP_SEGMENTS + 1 }, (_, i) => i / RAMP_SEGMENTS);
+  const marks = Array.from(new Set<number>([0, 1, ...pts.map((q) => Math.min(1, Math.max(0, q[0])))])).sort((a, b) => a - b);
+  const rateAt = (p: number): number => {
+    if (p <= pts[0]![0]) return pts[0]![1];
+    for (let i = 1; i < pts.length; i++) {
+      if (p <= pts[i]![0]) {
+        const [p0, m0] = pts[i - 1]!;
+        const [p1, m1] = pts[i]!;
+        return p1 === p0 ? m1 : m0 + ((m1 - m0) * (p - p0)) / (p1 - p0);
+      }
+    }
+    return pts[pts.length - 1]![1];
+  };
+  let bounds: number[] = [0];
+  for (let i = 0; i < marks.length - 1; i++) {
+    const a = marks[i]!;
+    const b = marks[i + 1]!;
+    const w = b - a;
+    // A FLAT interval needs no subdivision (one constant-rate segment is exact). A
+    // changing one is split in proportion to its width — but never so finely that a
+    // segment reads < ~3 source frames (0.1s) or lasts < ~0.12s on the timeline: an
+    // input window under two frames collapses to a single frame and the segment
+    // plays SHORT (the timeline drifts). Fewer, wider segments are the safe fallback.
+    const changes = Math.abs(rateAt(a) - rateAt(b)) > 0.15 * Math.max(rateAt(a), rateAt(b));
+    let n = changes ? Math.max(2, Math.ceil(w / 0.0625)) : 1;
+    const srcOf = (x: number, y: number): number => durSec * (speedRampIntegral(ramp as never, y) - speedRampIntegral(ramp as never, x));
+    while (n > 1 && (srcOf(a, a + w / n) < 0.1 || durSec * (w / n) < 0.12)) n--;
+    for (let k = 1; k <= n; k++) bounds.push(a + (w * k) / n);
+  }
+  if (bounds.length - 1 > RAMP_SEGMENTS_MAX) {
+    // Too many: keep every control point, thin the sub-divisions evenly.
+    const keep = new Set(marks.map((m) => Math.round(m * 1e6)));
+    bounds = bounds.filter((b, i) => keep.has(Math.round(b * 1e6)) || i % 2 === 0);
+  }
+  bounds[bounds.length - 1] = 1;
+  return bounds.map((b) => Math.round(b * 1e6) / 1e6);
+}
 
 /**
  * atempo chain matching a speed factor. ffmpeg's atempo accepts [0.5, 100.0]; a
@@ -791,6 +843,61 @@ export function keyframeTransformExpr(
 }
 
 /**
+ * Transform keyframes (x / y / rotation / opacity) for a FULL-FRAME BASE clip — the
+ * main video / photo track — as a LINEAR filter chain over the clip's own frames
+ * (clip-relative seconds: the chain runs after the per-clip `setpts` reset, so `t`/`T`
+ * start at 0). Mirrors the canvas order (rotate about the centre → translate) and
+ * fills the exposed edges with the doc background, exactly like the preview:
+ *  - opacity → rgba `geq` blending the frame toward the background colour (fade);
+ *  - rotation → `rotate` about the centre, corners filled with the background;
+ *  - x / y → `pad` by the keyframes' reach, then a per-frame `crop` window.
+ * Every expression is the SAME eased `keyframeTransformExpr` the PiP path uses.
+ * Returns [] when the clip has none of these keyframes (the fast path stays
+ * byte-identical). `scale` keyframes are handled separately (zoompan).
+ */
+export function baseTransformKeyframeFilters(
+  clip: { duration: number; keyframes?: Keyframe[]; transform: { x: number; y: number } },
+  W: number,
+  H: number,
+  bgHex: string,
+): string[] {
+  const rel = { start: 0, duration: clip.duration, keyframes: clip.keyframes };
+  const xE = keyframeTransformExpr(rel, "x");
+  const yE = keyframeTransformExpr(rel, "y");
+  const rE = keyframeTransformExpr(rel, "rotation");
+  const oE = keyframeTransformExpr(rel, "opacity", "T");
+  if (!xE && !yE && !rE && !oE) return [];
+  const bg = hexToFfColor(bgHex);
+  const [R, G, B] = [2, 4, 6].map((i) => parseInt(bg.color.slice(i, i + 2), 16));
+  const out: string[] = [];
+  if (oE) {
+    const a = `(${oE})`;
+    out.push(
+      "format=rgba",
+      `geq=r='r(X\\,Y)*${a}+${R}*(1-${a})':g='g(X\\,Y)*${a}+${G}*(1-${a})':b='b(X\\,Y)*${a}+${B}*(1-${a})':a='255'`,
+      "format=yuv420p",
+    );
+  }
+  if (rE) out.push(`rotate=a='(${rE})*PI/180':ow=${W}:oh=${H}:c=${bg.color}`);
+  // Translation reach: the biggest offset any keyframe (or the static transform) asks for.
+  const reach = (prop: KeyframeProp, centre: number, fallback: number): number => {
+    const vs = (clip.keyframes ?? []).filter((k) => k.prop === prop).map((k) => Math.abs(k.value - centre));
+    return Math.ceil(Math.max(0, ...vs, Math.abs(fallback - centre))) + 2;
+  };
+  if (xE || yE) {
+    const mx = xE ? reach("x", W / 2, clip.transform.x) : 0;
+    const my = yE ? reach("y", H / 2, clip.transform.y) : 0;
+    const dx = xE ? `(${xE})-${r3(W / 2)}` : "0";
+    const dy = yE ? `(${yE})-${r3(H / 2)}` : "0";
+    out.push(
+      `pad=${W + 2 * mx}:${H + 2 * my}:${mx}:${my}:color=${bg.color}`,
+      `crop=${W}:${H}:x='clip(${mx}-(${dx})\\,0\\,${2 * mx})':y='clip(${my}-(${dy})\\,0\\,${2 * my})'`,
+    );
+  }
+  return out;
+}
+
+/**
  * A stereo `pan` filter placing the clip in the stereo field: -1 hard left, 0
  * center, +1 hard right. Left gain = 1-max(0,pan), right gain = 1+min(0,pan), so
  * center is unchanged and the ends silence the opposite channel.
@@ -999,6 +1106,7 @@ function soloActive(doc: EditDoc): boolean {
 function collectTextClips(doc: EditDoc): TextClip[] {
   const out: TextClip[] = [];
   for (const track of doc.tracks) {
+    if (track.hidden) continue; // a hidden track draws nothing (matches activeClipsAt / canvas)
     for (const clip of track.clips) if (clip.kind === "text") out.push(clip);
   }
   out.sort((a, b) => a.start - b.start);
@@ -1077,6 +1185,57 @@ function adjustmentFilters(
     }
   }
   return out;
+}
+
+/** One queued item of the z-ordered overlay pass (see {@link zOrderedOverlayItems}). */
+export type ZOverlayItem =
+  | { kind: "layer"; clip: VideoClip | ImageClip }
+  | { kind: "text"; clip: TextClip }
+  | { kind: "shape"; clip: ShapeClip }
+  | { kind: "adjustment"; clip: AdjustmentClip };
+
+/**
+ * PURE z-order resolver for the export's composite pass. Merges the upper video
+ * layers, text clips, shapes and MID-STACK adjustment layers into ONE list ordered
+ * by (track array index, clip start, array order) — the same bottom→top rule the
+ * preview canvas uses. An adjustment with nothing above it (the usual topmost
+ * "adjustments" track) is NOT included: it stays the final post-composite grade
+ * (graded over callouts/cursors too), byte-identical to the historical behavior;
+ * {@link finalAdjustmentClips} returns those. An adjustment with content above it
+ * grades only what sits beneath it (captions on a higher track stay ungraded).
+ */
+export function zOrderedOverlayItems(
+  doc: EditDoc,
+  src: { layers: (VideoClip | ImageClip)[]; texts: TextClip[]; shapes: ShapeClip[]; adjustments: AdjustmentClip[] },
+): ZOverlayItem[] {
+  const trackOf = new Map<string, number>();
+  const orderOf = new Map<string, number>();
+  doc.tracks.forEach((t, ti) =>
+    t.clips.forEach((c, ci) => {
+      trackOf.set(c.id, ti);
+      orderOf.set(c.id, ci);
+    }),
+  );
+  const items: { it: ZOverlayItem; ti: number; start: number; ci: number }[] = [];
+  const push = (it: ZOverlayItem): void => {
+    items.push({ it, ti: trackOf.get(it.clip.id) ?? 0, start: it.clip.start, ci: orderOf.get(it.clip.id) ?? 0 });
+  };
+  src.layers.forEach((clip) => push({ kind: "layer", clip }));
+  src.texts.forEach((clip) => push({ kind: "text", clip }));
+  src.shapes.forEach((clip) => push({ kind: "shape", clip }));
+  const topContentTrack = items.reduce((m, x) => Math.max(m, x.ti), -1);
+  for (const clip of src.adjustments) {
+    const ti = trackOf.get(clip.id) ?? 0;
+    if (ti < topContentTrack) push({ kind: "adjustment", clip }); // mid-stack only
+  }
+  items.sort((a, b) => a.ti - b.ti || a.start - b.start || a.ci - b.ci);
+  return items.map((x) => x.it);
+}
+
+/** Adjustment layers NOT in the z list: the final post-composite grades (nothing above them). */
+export function finalAdjustmentClips(adjustments: AdjustmentClip[], zItems: ZOverlayItem[]): AdjustmentClip[] {
+  const mid = new Set(zItems.filter((x) => x.kind === "adjustment").map((x) => x.clip.id));
+  return adjustments.filter((a) => !mid.has(a.id));
 }
 
 /**
@@ -1326,6 +1485,8 @@ export function buildExportPlan(
       ...(kfZoom ? [kfZoom] : []),
       ...lookFilters(c.look, resolveMediaPath),
       "format=yuv420p",
+      // x / y / rotation / opacity keyframes on the base clip (export == preview).
+      ...baseTransformKeyframeFilters(c, W, H, doc.meta.background),
       ...(appendFps ? [`fps=${fps}`] : []),
     ];
   };
@@ -1348,9 +1509,11 @@ export function buildExportPlan(
     const pan = panFilter(c.pan);
     const vSeg: string[] = [];
     const aSeg: string[] = [];
-    for (let s = 0; s < RAMP_SEGMENTS; s++) {
-      const p0 = s / RAMP_SEGMENTS;
-      const p1 = (s + 1) / RAMP_SEGMENTS;
+    const bounds = rampSegmentBounds(ramp, dur);
+    const segCount = bounds.length - 1;
+    for (let s = 0; s < segCount; s++) {
+      const p0 = bounds[s]!;
+      const p1 = bounds[s + 1]!;
       const i0 = speedRampIntegral(ramp, p0);
       const i1 = speedRampIntegral(ramp, p1);
       const segTimeline = dur * (p1 - p0); // this segment's timeline seconds
@@ -1387,10 +1550,10 @@ export function buildExportPlan(
         aSeg.push(`[${alab}]`);
       }
     }
-    filters.push(`${vSeg.join("")}concat=n=${RAMP_SEGMENTS}:v=1:a=0[v${i}]`);
+    filters.push(`${vSeg.join("")}concat=n=${segCount}:v=1:a=0[v${i}]`);
     if (includeAudio) {
       if (hasAudio) {
-        filters.push(`${aSeg.join("")}concat=n=${RAMP_SEGMENTS}:v=0:a=1[a${i}]`);
+        filters.push(`${aSeg.join("")}concat=n=${segCount}:v=0:a=1[a${i}]`);
       } else {
         // No source audio ⇒ synthesize matching silence (mirrors audioSegmentFilter).
         const silIdx = addInput(
@@ -1485,6 +1648,7 @@ export function buildExportPlan(
         zoompanFor(c, W, H, fps),
         ...lookFilters(c.look, resolveMediaPath),
         "format=yuv420p",
+        ...baseTransformKeyframeFilters(c, W, H, doc.meta.background),
         `fps=${fps}`,
       ];
       pushVideoChain(filters, `${idx}:v`, vChain, c.regionFx, `v${i}`);
@@ -1534,6 +1698,7 @@ export function buildExportPlan(
         ...(kfZoom ? [kfZoom] : []),
         ...lookFilters(c.look, resolveMediaPath),
         "format=yuv420p",
+        ...baseTransformKeyframeFilters(c, W, H, doc.meta.background),
         `fps=${fps}`,
       ];
       pushVideoChain(filters, `${idx}:v`, vChain, c.regionFx, `v${i}`);
@@ -1578,8 +1743,12 @@ export function buildExportPlan(
   //                     double-exposure / leak layer that spans the timeline).
   // In the common single-visual-track case (base + a "broll" lane) this is exactly
   // the historical b-roll overlay pass — byte-for-byte unchanged.
+  // The layer / text / shape passes are DEFINED here and RUN further down in true
+  // z-order (see `zOrderedOverlayItems`), so a shape on a lower track no longer
+  // renders over text on a higher one (and a higher video layer covers lower text),
+  // exactly like the preview canvas.
   const overlayLayers = collectUpperLayers(doc);
-  overlayLayers.forEach((clip, i) => {
+  const compositeLayer = (clip: VideoClip | ImageClip, i: number): void => {
     const blend = clip.blendMode ?? "normal";
     const chroma = clip.chroma;
     const mask = clip.mask;
@@ -1603,7 +1772,10 @@ export function buildExportPlan(
     const yExpr = kfEligible ? keyframeTransformExpr(clip, "y") : null;
     const rotExpr = kfEligible ? keyframeTransformExpr(clip, "rotation") : null; // degrees
     const opExpr = kfEligible ? keyframeTransformExpr(clip, "opacity", "T") : null; // geq uses T
-    const hasXformKf = !!(xExpr || yExpr || rotExpr || opExpr);
+    // SCALE keyframes resize the box per frame (scale eval=frame, AFTER rotate so a
+    // uniform scale commutes with it) and the overlay centers on the live `overlay_w/h`.
+    const scExpr = kfEligible ? keyframeTransformExpr(clip, "scale") : null;
+    const hasXformKf = !!(xExpr || yExpr || rotExpr || opExpr || scExpr);
     // A rotated box grows to a CONSTANT square big enough to hold the PiP box at any
     // angle, so the (static or time-varying) overlay centering stays valid per frame.
     const rotBox = Math.round(Math.hypot(boxW, boxH));
@@ -1646,6 +1818,14 @@ export function buildExportPlan(
         // exposed corners transparent (alpha-safe). Keyframe degrees → radians.
         chain.push(`rotate=a='(${rotExpr})*PI/180':ow=${rotBox}:oh=${rotBox}:c=none`);
       }
+      if (scExpr) {
+        // The box was built at the static scale s0; the keyframed scale is an absolute
+        // fraction of the frame width, so ratio = s(t)/s0 (even sizes for yuv420p).
+        const s0 = Math.max(0.01, clip.transform.scale);
+        chain.push(
+          `scale=w='max(2\\,trunc(iw*(${scExpr})/${r3(s0)}/2)*2)':h='max(2\\,trunc(ih*(${scExpr})/${r3(s0)}/2)*2)':eval=frame`,
+        );
+      }
     } else {
       chain.push("format=yuv420p", `setpts=PTS-STARTPTS+${st}/TB`);
     }
@@ -1660,8 +1840,10 @@ export function buildExportPlan(
       // static transform when they have no keyframes, so one animated axis still works.
       const ovW = rotExpr ? rotBox : boxW;
       const ovH = rotExpr ? rotBox : boxH;
-      const ox = xExpr ? `(${xExpr})-${r3(ovW / 2)}` : String(Math.round(clip.transform.x - ovW / 2));
-      const oy = yExpr ? `(${yExpr})-${r3(ovH / 2)}` : String(Math.round(clip.transform.y - ovH / 2));
+      const halfW = scExpr ? "overlay_w/2" : String(r3(ovW / 2));
+      const halfH = scExpr ? "overlay_h/2" : String(r3(ovH / 2));
+      const ox = xExpr ? `(${xExpr})-${halfW}` : scExpr ? `${r3(clip.transform.x)}-${halfW}` : String(Math.round(clip.transform.x - ovW / 2));
+      const oy = yExpr ? `(${yExpr})-${halfH}` : scExpr ? `${r3(clip.transform.y)}-${halfH}` : String(Math.round(clip.transform.y - ovH / 2));
       filters.push(
         `[${videoLabel}][bov${i}]overlay=x='${ox}':y='${oy}':enable='between(t\\,${st}\\,${en})'[${out}]`,
       );
@@ -1672,7 +1854,7 @@ export function buildExportPlan(
       filters.push(`[${videoLabel}][bov${i}]overlay=${ox}:${oy}:enable='between(t\\,${st}\\,${en})'[${out}]`);
     }
     videoLabel = out;
-  });
+  };
 
   // ---- Text overlay helper (transparent PNG, time-gated) ------------------
   // Overlay one pre-rendered transparent PNG (composition-sized, text already
@@ -1723,7 +1905,7 @@ export function buildExportPlan(
   // and titles are pixel-perfect. Clips with no rendered PNG in `textOverlays` are
   // skipped.
   const texts = canvasBase ? [] : collectTextClips(doc);
-  texts.forEach((clip, i) => {
+  const compositeText = (clip: TextClip, i: number): void => {
     // KARAOKE: one PNG per word, each overlaid gated to that word's [start,end], so
     // the highlight steps word-by-word on export (matching the per-frame preview).
     const wordPngs = karaokeOverlays?.get(clip.id);
@@ -1748,14 +1930,14 @@ export function buildExportPlan(
     const png = textOverlays?.get(clip.id);
     if (!png) return;
     overlayPng(png, clip.start, clip.start + clip.duration, `vtext${i}`);
-  });
+  };
 
   // ---- Vector shapes (rect / ellipse / line / arrow) ----------------------
   // Each shape clip is rasterized to a transparent composition-sized PNG (canvas
   // engine, so preview == export) and overlaid time-gated to its span — the SAME
-  // path as text/callout labels. No shapes ⇒ this loop is empty (byte-identical).
+  // path as text/callout labels. No shapes ⇒ nothing is queued (byte-identical).
   const shapes = canvasBase ? [] : collectShapes(doc);
-  shapes.forEach((clip, i) => {
+  const compositeShape = (clip: ShapeClip, i: number): void => {
     const segs = animatedOverlays?.get(clip.id);
     if (segs && segs.length > 0) {
       overlaySegments(segs, clip.start, clip.start + clip.duration, `vsha${i}`);
@@ -1764,7 +1946,39 @@ export function buildExportPlan(
     const png = shapeOverlays?.get(clip.id);
     if (!png) return;
     overlayPng(png, clip.start, clip.start + clip.duration, `vshape${i}`);
+  };
+
+  // ---- TRUE Z-ORDER of layers + text + shapes (+ adjustments) --------------
+  // Track array order is z-order (bottom → top), the SAME rule the preview canvas
+  // uses. Every upper video layer, text clip, shape and adjustment layer is queued
+  // with its z key and run in that order — fixing the old fixed text→shape order
+  // (all text under all shapes) and letting an adjustment layer grade ONLY what
+  // sits beneath it. In the common doc (layers < text < shapes by track) this is
+  // byte-identical to the previous fixed order.
+  const adjustmentsAll = canvasBase ? [] : collectAdjustments(doc);
+  const zItems = zOrderedOverlayItems(doc, {
+    layers: overlayLayers,
+    texts,
+    shapes,
+    adjustments: adjustmentsAll,
   });
+  const layerIdx = new Map<string, number>(overlayLayers.map((c, i) => [c.id, i]));
+  const textIdx = new Map<string, number>(texts.map((c, i) => [c.id, i]));
+  const shapeIdx = new Map<string, number>(shapes.map((c, i) => [c.id, i]));
+  const adjIdx = new Map<string, number>(adjustmentsAll.map((c, i) => [c.id, i]));
+  for (const item of zItems) {
+    if (item.kind === "layer") compositeLayer(item.clip, layerIdx.get(item.clip.id)!);
+    else if (item.kind === "text") compositeText(item.clip, textIdx.get(item.clip.id)!);
+    else if (item.kind === "shape") compositeShape(item.clip, shapeIdx.get(item.clip.id)!);
+    else {
+      const parts = adjustmentFilters(item.clip, resolveMediaPath);
+      if (parts.length > 0) {
+        const out = `vadj${adjIdx.get(item.clip.id)!}`;
+        filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
+        videoLabel = out;
+      }
+    }
+  }
 
   // ---- Callout / highlight boxes (drawbox border + optional dim + label) ---
   // Faithful overlay: a bright border around the rect, an optional dim of the
@@ -1805,11 +2019,11 @@ export function buildExportPlan(
   // its span. Applied here (after the visual composite + overlays) as a
   // post-composite pass, ordered by start. When there are no adjustment clips this
   // is a no-op and the graph is byte-for-byte unchanged (the fast path).
-  const adjustments = canvasBase ? [] : collectAdjustments(doc);
-  adjustments.forEach((clip, i) => {
+  const adjustments = finalAdjustmentClips(adjustmentsAll, zItems);
+  adjustments.forEach((clip) => {
     const parts = adjustmentFilters(clip, resolveMediaPath);
     if (parts.length === 0) return;
-    const out = `vadj${i}`;
+    const out = `vadj${adjIdx.get(clip.id)!}`;
     filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
     videoLabel = out;
   });

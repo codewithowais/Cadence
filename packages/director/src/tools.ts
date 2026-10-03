@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   BackgroundGradient,
   BackgroundPattern,
+  BUNDLED_LUTS,
   docDurationSec,
   ratioLabel,
   EditDoc,
@@ -57,6 +58,7 @@ import {
 import {
   buildTextVideo,
   restyleTextVideo,
+  setSceneTheme,
   textVideoScenes,
   TEXT_VIDEO_FORMATS,
   TEXT_VIDEO_THEME_DEFS,
@@ -155,6 +157,7 @@ import {
   type TranscriptEditUnit,
 } from "./edits";
 import { magicTargets, setCanvasFit, setCanvasSize, withCanvasSettings, type SetCanvasOptions } from "./canvas-ops";
+import { applyCaptionPreset, CAPTION_PRESETS } from "./caption-presets";
 
 const KF_PROPS = ["x", "y", "scale", "rotation", "opacity", "volume"] as const;
 const KF_EASINGS = ["linear", "ease-in", "ease-out", "ease-in-out"] as const;
@@ -372,11 +375,11 @@ export const magicResizeTool: DirectorTool<{ targets?: string[]; social?: boolea
 export const captionsTool: DirectorTool<{ karaoke?: boolean; highlight?: string; karaokeStyle?: KaraokeStyle }> = {
   name: "add_captions",
   description:
-    "Burn in captions from the transcript, synced through the current cuts. Every caption carries per-word timing; pass karaoke:true to make them highlight word-by-word as spoken (highlight = active-word color; karaokeStyle = color/fill/box).",
+    "Burn in captions from the transcript, synced through the current cuts. Every caption carries per-word timing; pass karaoke:true to make them highlight word-by-word as spoken (highlight = active-word color; karaokeStyle = color/fill/box/pop/underline/glow).",
   inputSchema: z.object({
     karaoke: z.boolean().optional(),
     highlight: z.string().optional(),
-    karaokeStyle: z.enum(["color", "fill", "box"]).optional(),
+    karaokeStyle: z.enum(["color", "fill", "box", "pop", "underline", "glow"]).optional(),
   }),
   async execute(input, ctx) {
     const { transcript } = sourceVideo(ctx.project);
@@ -399,17 +402,34 @@ export const captionsTool: DirectorTool<{ karaoke?: boolean; highlight?: string;
 export const setKaraokeTool: DirectorTool<SetKaraokeOptions> = {
   name: "set_karaoke",
   description:
-    "Turn word-by-word karaoke highlighting on/off for captions (needs captions with per-word timing from add_captions). enabled (default true), highlight (active-word color), style (color/fill/box). Pass clipId to affect ONE caption; omit for all.",
+    "Turn word-by-word karaoke highlighting on/off for captions (needs captions with per-word timing from add_captions). enabled (default true), highlight (active-word color), style (color/fill/box/pop/underline/glow; pop also takes scale 1-2). Pass clipId to affect ONE caption; omit for all.",
   inputSchema: z.object({
     enabled: z.boolean().optional(),
     highlight: z.string().optional(),
-    style: z.enum(["color", "fill", "box"]).optional(),
+    style: z.enum(["color", "fill", "box", "pop", "underline", "glow"]).optional(),
+    scale: z.number().min(1).max(2).optional(),
     clipId: z.string().optional(),
   }),
   async execute(input, ctx) {
     const doc = setKaraoke(ctx.project.doc, input);
     const on = input.enabled ?? true;
     return commit(ctx.project, doc, on ? "Enabled karaoke word-highlight on captions." : "Disabled karaoke highlight.");
+  },
+};
+
+// ---- set_caption_preset ----------------------------------------------------
+
+export const setCaptionPresetTool: DirectorTool<{ preset: string; clipId?: string; karaoke?: boolean }> = {
+  name: "set_caption_preset",
+  description: `Restyle captions with a popular short-form preset (font, outline, box, position, karaoke word-highlight, entrance animation): ${CAPTION_PRESETS.map((p) => `${p.key} (${p.hint})`).join("; ")}. Needs captions (add_captions first). Pass clipId for ONE caption; karaoke:false keeps captions static.`,
+  inputSchema: z.object({
+    preset: z.enum(CAPTION_PRESETS.map((p) => p.key) as [string, ...string[]]),
+    clipId: z.string().optional(),
+    karaoke: z.boolean().optional(),
+  }),
+  async execute(input, ctx) {
+    const doc = applyCaptionPreset(ctx.project.doc, input.preset, { clipId: input.clipId, karaoke: input.karaoke });
+    return commit(ctx.project, doc, `Applied the ${input.preset} caption style.`);
   },
 };
 
@@ -772,6 +792,9 @@ const SPEED_RAMP_PRESET_ENUM = [
   "ease-in-out",
   "ramp-up",
   "ramp-down",
+  "montage",
+  "hero-time",
+  "flash-in",
 ] as const satisfies readonly SpeedRampPreset[];
 
 export const speedRampTool: DirectorTool<{
@@ -781,7 +804,7 @@ export const speedRampTool: DirectorTool<{
 }> = {
   name: "set_speed_ramp",
   description:
-    "Speed ramp / time-remap curve (CapCut 'Curve'): vary playback speed across the clip. Pass `points` — control points [clipProgress 0..1, speedMultiplier 0.1..10] — for a custom curve, or a named `preset` (bullet-time, hero, ease-in-out, ramp-up, ramp-down). Optional `atSec` targets a single clip. The clip keeps its timeline length; only how fast it plays through the source varies.",
+    "Speed ramp / time-remap curve (CapCut 'Curve'): vary playback speed across the clip. Pass `points` — control points [clipProgress 0..1, speedMultiplier 0.1..10] — for a custom curve, or a named `preset` (bullet-time, hero, hero-time, montage, flash-in, ease-in-out, ramp-up, ramp-down). Optional `atSec` targets a single clip. The clip keeps its timeline length; only how fast it plays through the source varies.",
   inputSchema: z
     .object({
       points: z
@@ -1364,7 +1387,7 @@ export const adjustHslTool: DirectorTool<{ hueShift?: number; saturation?: numbe
 export const applyLutTool: DirectorTool<{ lut: string; clipId?: string }> = {
   name: "apply_lut",
   description:
-    "Import a 3D LUT (.cube color lookup table) as the creative look, merged onto the main visual clips (or one clip by `clipId`). The LUT is applied on EXPORT (ffmpeg lut3d) as a color remap on top of the other grade; the canvas preview approximates the other grade fields but not the LUT (documented). Pass an empty `lut` to clear it. Faithful — color only.",
+    `Import a 3D LUT (.cube color lookup table) as the creative look, merged onto the main visual clips (or one clip by clipId). The LUT is applied exactly on EXPORT (ffmpeg lut3d); the browser preview approximates it with a fitted filter. Built-in free looks need no file — pass lut:"bundled:<key>" (or just the key): ${BUNDLED_LUTS.map((l) => l.key).join(", ")}. Pass an empty lut to clear it. Faithful — color only.`,
   inputSchema: z.object({ lut: z.string(), clipId: z.string().min(1).optional() }),
   async execute(input, ctx) {
     const doc = applyLut(ctx.project.doc, { lut: input.lut, clipId: input.clipId });
@@ -1794,6 +1817,28 @@ export const restyleTextVideoTool: DirectorTool<{ theme: TextVideoTheme }> = {
   },
 };
 
+export const setSceneThemeTool: DirectorTool<{ scene: number | "first" | "last"; theme: TextVideoTheme | "inherit" }> = {
+  name: "set_scene_theme",
+  description:
+    "Give ONE scene of a text video its own theme (fonts, colors, background, motion, and the transition into it) while the rest keep the video's theme. `scene` is the 1-based scene number (or first / last); theme `inherit` makes it follow the video's theme again.",
+  inputSchema: z.object({
+    scene: z.union([z.number().int().min(1), z.enum(["first", "last"])]),
+    theme: z.union([z.enum(TV_THEME_ENUM), z.literal("inherit")]),
+  }),
+  async execute(input, ctx) {
+    const n = textVideoScenes(ctx.project.doc).length;
+    const index = input.scene === "first" ? 0 : input.scene === "last" ? n - 1 : input.scene - 1;
+    const doc = setSceneTheme(ctx.project.doc, index, input.theme === "inherit" ? null : input.theme);
+    return commit(
+      ctx.project,
+      doc,
+      input.theme === "inherit"
+        ? `Scene ${index + 1} now follows the video's theme.`
+        : `Scene ${index + 1} now uses the ${TEXT_VIDEO_THEME_DEFS[input.theme].label} theme.`,
+    );
+  },
+};
+
 const TEXT_TARGET = z
   .union([z.enum(["all", "titles", "captions"]), z.object({ clipId: z.string().min(1) })])
   .optional();
@@ -2199,6 +2244,7 @@ export const DIRECTOR_TOOLS = {
   style_captions: styleCaptionsTool,
   position_captions: positionCaptionsTool,
   set_karaoke: setKaraokeTool,
+  set_caption_preset: setCaptionPresetTool,
   build_demo: buildDemoTool,
   add_cursor: addCursorTool,
   type_text: typeTextTool,
@@ -2237,6 +2283,7 @@ export const DIRECTOR_TOOLS = {
   slide_edit: slideEditTool,
   make_text_video: makeTextVideoTool,
   restyle_text_video: restyleTextVideoTool,
+  set_scene_theme: setSceneThemeTool,
   animate_text: animateTextTool,
   style_text: styleTextTool,
   set_background: setBackgroundTool,

@@ -25,6 +25,7 @@ import {
   animateTextTool,
   makeTextVideoTool,
   restyleTextVideoTool,
+  setSceneThemeTool,
   setBackgroundTool,
   styleTextTool,
   addMaskTool,
@@ -63,7 +64,10 @@ import {
   setPanTool,
   slideshowTool,
   speedTool,
+  speedRampTool,
+  applyLutTool,
   styleCaptionsTool,
+  setCaptionPresetTool,
   titleTool,
   transitionTool,
   vfxTool,
@@ -91,6 +95,7 @@ import type { MusicMood, SfxKind } from "./sound-synth";
 import { parseGraphicsRequest } from "./graphics-tools";
 import { parseEmojiRequest } from "./emoji-tools";
 import { parseTransformRequest } from "./transform-tools";
+import type { SpeedRampPreset } from "./edits";
 import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle, TranscriptEditMode, TranscriptEditUnit } from "./edits";
 import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
 import type { BlendMode, CurvePoint, KeyframeEasing, KeyframeProp } from "@cadence/core";
@@ -312,6 +317,48 @@ const CAPTION_COLORS: Record<string, string> = {
  * about captions AND names at least one style attribute (color / weight / outline
  * / position / font), so a plain "add captions" still routes to add_captions only.
  */
+/** Map a request to a bundled LUT key ("teal and orange look", "warm film grade"). */
+function parseBundledLut(req: string): string | null {
+  const table: [RegExp, string][] = [
+    [/teal (?:and|&|\+|n) orange|orange (?:and|&) teal|blockbuster (?:look|grade)/, "teal-orange"],
+    [/(?:warm|kodak|golden) film|film (?:stock )?warm|kodak/, "kodak-warm"],
+    [/cool film|fuji|film (?:stock )?cool/, "fuji-cool"],
+    [/faded film|film fade|matte film|faded (?:print|look)/, "film-fade"],
+    [/noir mono|black and white lut|\blut\b.*noir/, "noir"],
+  ];
+  for (const [re, key] of table) if (re.test(req)) return key;
+  return null;
+}
+
+/** Map a request to a speed-ramp preset ("bullet time", "hero time", "montage", "flash in", "speed ramp"). */
+function parseSpeedRampPreset(req: string): SpeedRampPreset | null {
+  if (/bullet.?time/.test(req)) return "bullet-time";
+  if (/hero.?time|hero (?:speed )?ramp|slow(?:-| )?mo(?:tion)? hero/.test(req)) return "hero-time";
+  if (/montage (?:speed )?ramp|speed ramp.{0,12}montage|beat montage|whip(?:s| pulses)/.test(req)) return "montage";
+  if (/flash.?in|whip in|speed in/.test(req)) return "flash-in";
+  if (/ease.?in.?out speed|speed ramp|time.?remap|speed curve|\bramp (?:it )?(?:up|down)\b/.test(req)) {
+    if (/ramp (?:it )?down|decelerat/.test(req)) return "ramp-down";
+    if (/ramp (?:it )?up|accelerat/.test(req)) return "ramp-up";
+    return "ease-in-out";
+  }
+  return null;
+}
+
+/** Map a request to a CAPTION_PRESETS key ("hormozi captions", "mrbeast style", "neon subtitles"). */
+function parseCaptionPreset(req: string): string | null {
+  if (!/caption|subtitle|karaoke|words?\b/.test(req)) return null;
+  const table: [RegExp, string][] = [
+    [/hormozi|alex hormozi|yellow pop/, "hormozi"],
+    [/mr\.? ?beast|beast style|comic caps/, "beast"],
+    [/neon (?:caption|subtitle|karaoke|style)|(?:caption|subtitle)s? .*\bneon\b|glow(?:ing)? (?:caption|word)/, "neon"],
+    [/pill (?:caption|subtitle|style)|rounded (?:caption|subtitle)/, "pill"],
+    [/underline (?:caption|subtitle|style|karaoke)|editorial caption/, "underline"],
+    [/marker (?:caption|subtitle|style)|hand ?(?:drawn|written) caption/, "marker"],
+  ];
+  for (const [re, key] of table) if (re.test(req)) return key;
+  return null;
+}
+
 function parseCaptionStyle(req: string): CaptionStyleOpts | null {
   if (!/caption|subtitle/.test(req)) return null;
   const out: CaptionStyleOpts = {};
@@ -426,6 +473,22 @@ function parseTextVideo(
   };
 }
 
+/** "make scene 2 neon", "last scene in the retro theme", "scene 3 back to the default theme". */
+function parseSceneTheme(req: string): { scene: number | "first" | "last"; theme: TextVideoTheme | "inherit" } | null {
+  const m = req.match(/\b(?:scene|slide)\s*#?(\d+)\b/) ?? null;
+  const which: number | "first" | "last" | null = m
+    ? Number(m[1])
+    : /\b(?:the )?last (?:scene|slide)\b/.test(req)
+      ? "last"
+      : /\b(?:the )?first (?:scene|slide)\b/.test(req)
+        ? "first"
+        : null;
+  if (which === null) return null;
+  if (/(?:back to|same as|follow(?:s)?|inherit|reset)\b.*(?:default|video|theme|rest|others)/.test(req)) return { scene: which, theme: "inherit" };
+  const theme = parseTheme(req);
+  return theme ? { scene: which, theme } : null;
+}
+
 /** "switch to the neon theme", "make it elegant", "restyle as retro" — on a text video. */
 function parseRestyle(req: string): TextVideoTheme | null {
   if (!/theme|style|restyle|make it|switch|change|look|turn it|go /.test(req)) return null;
@@ -434,6 +497,7 @@ function parseRestyle(req: string): TextVideoTheme | null {
 
 const ANIM_WORDS: [RegExp, TextAnimStyle][] = [
   [/typewriter|type(?:s|d)? (?:out|in)|typing/, "typewriter"],
+  [/handwrit|hand[- ]?writ|write[- ]?on|writes? (?:itself|on)|stroke[- ]?reveal|pen (?:draw|stroke)|calligraph|signature (?:reveal|draw)/, "handwrite"],
   [/scrambl|decod|hacker|matrix/, "scramble"],
   [/glitch/, "glitch"],
   [/neon|flicker(?:s)? on/, "neon"],
@@ -517,7 +581,18 @@ function parseStyleText(req: string): StyleTextInput | null {
   if (/caption|subtitle/.test(req)) return null; // captions have their own styler
   const aboutText = /\btext\b|title|font|letters|heading|typography|words/.test(req);
   const out: StyleTextInput = {};
-  const font = FONT_LIBRARY.find((f) => req.includes(f.family.toLowerCase()));
+  // A script/language word ("urdu font", "arabic text", "hindi title") picks the bundled
+  // Noto face for that script (preview == export; shaping + RTL handled by the engine).
+  const scriptFont = /nastaliq|\burdu\b/.test(req)
+    ? "noto-nastaliq-urdu"
+    : /arabic|naskh/.test(req)
+      ? "noto-naskh-arabic"
+      : /hindi|devanagari/.test(req)
+        ? "noto-sans-devanagari"
+        : null;
+  const font =
+    FONT_LIBRARY.find((f) => req.includes(f.family.toLowerCase())) ??
+    (scriptFont ? FONT_LIBRARY.find((f) => f.id === scriptFont) : undefined);
   if (font) out.fontFamily = fontStack(font);
   if (!aboutText && !font) return null;
   const color = req.match(/(?:text|title|font|letters)(?: colou?r)?(?: to| in)? (\w+)|(\w+) (?:text|titles?|letters|font)\b/);
@@ -1042,7 +1117,15 @@ export class StubDirector {
       });
       req = tv.instruction;
     } else if (isTextVideo(project.doc)) {
-      const theme = parseRestyle(req);
+      const sceneTheme = parseSceneTheme(req);
+      const theme = sceneTheme ? undefined : parseRestyle(req);
+      if (sceneTheme) {
+        const input = sceneTheme;
+        steps.push({
+          run: (p) => setSceneThemeTool.execute(input, { project: p }),
+          call: { name: setSceneThemeTool.name, input },
+        });
+      }
       if (theme) {
         const input = { theme };
         steps.push({
@@ -1223,7 +1306,17 @@ export class StubDirector {
     // preset so "make it warmer" nudges warmth instead of applying the warm look.
     const colorAdjust = parseColorAdjust(req, project.doc);
 
-    const look = parseLook(req);
+    // A built-in free 3D LUT look ("teal and orange", "warm film", "faded film").
+    const bundledLutKey = wantsSlideshow ? null : parseBundledLut(req);
+    if (bundledLutKey) {
+      const input = { lut: bundledLutKey };
+      steps.push({
+        run: (p) => applyLutTool.execute(input, { project: p }),
+        call: { name: applyLutTool.name, input },
+      });
+    }
+
+    const look = bundledLutKey ? null : parseLook(req);
     if (look && !wantsSlideshow && !colorAdjust) {
       steps.push({
         run: (p) => lookTool.execute({ look }, { project: p }),
@@ -1238,10 +1331,24 @@ export class StubDirector {
       });
     }
 
-    if (/caption|subtitle|add text|burn.?in|words on screen/.test(req)) {
+    // A named caption STYLE preset ("hormozi captions", "mrbeast style subtitles",
+    // "neon karaoke captions") or plain karaoke → word-highlight captions + preset.
+    const capPreset = parseCaptionPreset(req);
+    const wantsKaraoke = /karaoke|word[- ]by[- ]word|highlight (?:the )?(?:spoken )?words?|animated captions?/.test(req);
+
+    if (/caption|subtitle|add text|burn.?in|words on screen/.test(req) || capPreset || wantsKaraoke) {
+      const kInput = capPreset || wantsKaraoke ? { karaoke: true } : {};
       steps.push({
-        run: (p) => captionsTool.execute({}, { project: p }),
-        call: { name: captionsTool.name, input: {} },
+        run: (p) => captionsTool.execute(kInput, { project: p }),
+        call: { name: captionsTool.name, input: kInput },
+      });
+    }
+
+    if (capPreset) {
+      const input = { preset: capPreset };
+      steps.push({
+        run: (p) => setCaptionPresetTool.execute(input, { project: p }),
+        call: { name: setCaptionPresetTool.name, input },
       });
     }
 
@@ -1328,8 +1435,19 @@ export class StubDirector {
       });
     }
 
+    // Speed RAMP curve ("bullet time", "hero time", "montage speed ramp", "flash in",
+    // "speed ramp", "time remap") — a named time-remap preset beats a constant speed.
+    const rampPreset = parseSpeedRampPreset(req);
+    if (rampPreset) {
+      const input = { preset: rampPreset, atSec: parseAtSeconds(req) };
+      steps.push({
+        run: (p) => speedRampTool.execute(input, { project: p }),
+        call: { name: speedRampTool.name, input },
+      });
+    }
+
     // Speed ramp (slow motion / speed up).
-    const speed = parseSpeed(req);
+    const speed = rampPreset ? undefined : parseSpeed(req);
     if (speed !== undefined) {
       const input = { speed, atSec: parseAtSeconds(req) };
       steps.push({

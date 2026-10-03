@@ -49,6 +49,7 @@ import {
 } from "./text-anim";
 import { TextClip as TextClipSchema } from "./schema";
 import { getEmojiImageProvider, hasEmoji, splitGraphemes, wrapEmojiCtx } from "./emoji-draw";
+import { hasComplexScript, isRtlText, scriptFallbackFamilies, withFallbackFamilies } from "./script";
 import type {
   BackgroundGradient,
   BackgroundPattern,
@@ -120,9 +121,13 @@ export interface Ctx2D {
   lineJoin: string;
   lineCap: string;
   miterLimit: number;
+  /** Dash pattern (optional so minimal contexts still satisfy Ctx2D). */
+  setLineDash?(segments: number[]): void;
   font: string;
   textAlign: string;
   textBaseline: string;
+  /** Base text direction ("ltr" | "rtl"); optional so minimal contexts still satisfy Ctx2D. */
+  direction?: string;
   shadowColor: string;
   shadowBlur: number;
   shadowOffsetX: number;
@@ -293,6 +298,7 @@ function drawKaraokeLines(
   words: CaptionWord[],
   t: number,
   op: number,
+  rtl = false,
 ): void {
   const ls = clip.letterSpacing ?? 0;
   const space = ctx.measureText(" ").width + ls;
@@ -323,7 +329,8 @@ function drawKaraokeLines(
   const prevAlign = ctx.textAlign;
   ctx.textAlign = "left";
   for (let i = 0; i < n; i++) {
-    const line = lines[i]!;
+    // RTL lines run right-to-left: lay the tokens out in reversed (visual) order.
+    const line = rtl ? [...lines[i]!].reverse() : lines[i]!;
     const y = (i - (n - 1) / 2) * lineStep;
     const widths = line.map((tok) => ctx.measureText(tok.text).width);
     const total = widths.reduce((a, b) => a + b, 0) + space * Math.max(0, line.length - 1);
@@ -359,6 +366,38 @@ function drawKaraokeLines(
         ctx.globalAlpha = op;
         ctx.fillStyle = hi;
         ctx.fillText(tok.text, x, y);
+      } else if (active && style === "pop") {
+        // CapCut/Hormozi pop: recolor + ease-out scale-up about the word's own center
+        // (neighbors do not reflow). The export renders the settled (full-scale) frame.
+        const S = clip.karaoke?.scale ?? 1.18;
+        const p = Math.max(0, Math.min(1, (t - (word?.start ?? t)) / 0.12));
+        const sc = 1 + (S - 1) * (1 - (1 - p) * (1 - p));
+        setShadow(true);
+        ctx.globalAlpha = op;
+        ctx.fillStyle = hi;
+        ctx.save();
+        ctx.translate(x + w / 2, y);
+        ctx.scale(sc, sc);
+        ctx.fillText(tok.text, -w / 2, 0);
+        ctx.restore();
+      } else if (active && style === "underline") {
+        setShadow(true);
+        ctx.globalAlpha = op;
+        ctx.fillStyle = hi;
+        ctx.fillText(tok.text, x, y);
+        setShadow(false);
+        const barH = Math.max(3, clip.fontSize * 0.07);
+        ctx.fillRect(x, y + clip.fontSize * 0.5, w, barH);
+      } else if (active && style === "glow") {
+        ctx.globalAlpha = op;
+        ctx.fillStyle = hi;
+        ctx.shadowColor = hi;
+        ctx.shadowBlur = clip.fontSize * 0.5;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+        ctx.fillText(tok.text, x, y);
+        ctx.fillText(tok.text, x, y);
+        setShadow(false);
       } else {
         setShadow(true);
         ctx.globalAlpha = alpha;
@@ -389,7 +428,10 @@ export interface DrawOpts {
 /** The CSS/canvas `font` shorthand for a text clip (weight + optional italic). */
 export function textFont(clip: TextClip): string {
   const style = clip.italic ? "italic " : "";
-  return `${style}${fontWeightToCss(clip.fontWeight)} ${clip.fontSize}px ${clip.fontFamily}`;
+  // Arabic / Urdu / Devanagari text gets the bundled Noto faces listed after the
+  // clip's own font, so every glyph lands on a real face (see core/script.ts).
+  const family = withFallbackFamilies(clip.fontFamily, scriptFallbackFamilies(clip.text));
+  return `${style}${fontWeightToCss(clip.fontWeight)} ${clip.fontSize}px ${family}`;
 }
 
 /** `#RRGGBB[AA]` → `rgba(r,g,b,a)` with the alpha multiplied by `mul`. */
@@ -481,6 +523,8 @@ interface PaintFx {
   /** 0..1 animation-driven RGB split (glitch intro). */
   glitch: number;
   px: number;
+  /** Handwrite stroke-reveal: outline traced to `stroke` (0..1), fill at `fill` (0..1). */
+  handwrite?: { stroke: number; fill: number };
 }
 
 /**
@@ -539,6 +583,34 @@ function paintRuns(ctx: Ctx2D, clip: TextClip, runs: TextRun[], ls: number, fx: 
   }
 
   const fill: unknown = clip.fillGradient ? textGradient(ctx, clip.fillGradient, fx.block, fx.gradOrigin) : clip.color;
+
+  // ---- handwrite: stroke-reveal (outline drawn on like a pen, then the fill fades in) ----
+  const hw = fx.handwrite;
+  if (hw && (hw.stroke < 1 || hw.fill < 1)) {
+    if (hw.stroke > 0 && hw.fill < 1) {
+      // Each glyph subpath restarts its dash pattern, so one [d, ∞] dash traces every
+      // contour from its start to length d at once. 6×fontSize exceeds any single
+      // contour, so stroke=1 completes every outline.
+      ctx.save();
+      // The pen line melts into the fill as it comes in (no bold "pop" when it finishes).
+      ctx.globalAlpha = baseAlpha * (1 - hw.fill);
+      ctx.lineWidth = Math.max(1.5, fs * 0.014);
+      ctx.strokeStyle = fill;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.setLineDash?.([Math.max(0.5, hw.stroke * fs * 6), 1e6]);
+      drawAll("stroke");
+      ctx.setLineDash?.([]);
+      ctx.restore();
+    }
+    if (hw.fill > 0) {
+      ctx.globalAlpha = baseAlpha * hw.fill;
+      ctx.fillStyle = fill;
+      drawAll("fill");
+      ctx.globalAlpha = baseAlpha;
+    }
+    return;
+  }
 
   // ---- hollow / splice: stroke only ----
   if (eff && (eff.style === "hollow" || eff.style === "splice")) {
@@ -599,6 +671,7 @@ function layoutUnits(
   lineStep: number,
   ls: number,
   align: "left" | "center" | "right",
+  rtl = false,
 ): UnitBox[] {
   const out: UnitBox[] = [];
   const n = lines.length;
@@ -614,21 +687,29 @@ function layoutUnits(
       const space = ctx.measureText(" ").width + ls;
       const widths = words.map((w) => lineWidth(ctx, w, ls));
       const total = widths.reduce((a, b) => a + b, 0) + space * Math.max(0, words.length - 1);
+      // RTL: lay the words out right-to-left (visual order = reversed logical order), then
+      // push them in LOGICAL order so the stagger still starts at the first word.
+      const ordered = rtl ? [...words].reverse() : words;
+      const owidths = rtl ? [...widths].reverse() : widths;
       let x = alignLeft(align, total);
-      words.forEach((w, i) => {
-        out.push({ text: w, cx: x + widths[i]! / 2, cy, w: widths[i]! });
-        x += widths[i]! + space;
+      const lineUnits: UnitBox[] = [];
+      ordered.forEach((w, i) => {
+        lineUnits.push({ text: w, cx: x + owidths[i]! / 2, cy, w: owidths[i]! });
+        x += owidths[i]! + space;
       });
+      out.push(...(rtl ? lineUnits.reverse() : lineUnits));
       return;
     }
-    const chars = splitGraphemes(line);
+    const chars = rtl ? splitGraphemes(line).reverse() : splitGraphemes(line);
     const adv = chars.map((c) => ctx.measureText(c).width);
     const total = adv.reduce((a, b) => a + b, 0) + ls * Math.max(0, chars.length - 1);
     let x = alignLeft(align, total);
+    const letterUnits: UnitBox[] = [];
     chars.forEach((c, i) => {
-      if (!/\s/.test(c)) out.push({ text: c, cx: x + adv[i]! / 2, cy, w: adv[i]! });
+      if (!/\s/.test(c)) letterUnits.push({ text: c, cx: x + adv[i]! / 2, cy, w: adv[i]! });
       x += adv[i]! + ls;
     });
+    out.push(...(rtl ? letterUnits.reverse() : letterUnits));
   });
   return out;
 }
@@ -702,6 +783,17 @@ function paintPanels(
 export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts = {}): void {
   // A live counter (countdown / timer / count-up) draws its value at this frame.
   if (clip.counter) clip = { ...clip, text: counterText(clip, t) };
+  // Arabic / Urdu / Devanagari: letter-spacing and per-letter animation would tear the
+  // joined / clustered glyphs apart (the browser's CSS disables letter-spacing for
+  // cursive scripts too), so they are suppressed for these clips; base direction is
+  // taken from the first strong character (bidi P2/P3) and applied to the canvas.
+  if (hasComplexScript(clip.text)) {
+    const needsFix = (clip.letterSpacing ?? 0) !== 0 || clip.anim.unit === "letter";
+    if (needsFix) {
+      clip = { ...clip, letterSpacing: 0, anim: { ...clip.anim, unit: clip.anim.unit === "letter" ? "word" : clip.anim.unit } };
+    }
+  }
+  const rtl = isRtlText(clip.text);
   const px = opts.pxScale ?? 1;
   // Color emoji draw as bundled sprites (same pixels in preview / node / export).
   if (getEmojiImageProvider() && (hasEmoji(clip.text) || clip.words?.some((w) => hasEmoji(w.text)))) {
@@ -735,6 +827,7 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts =
   ctx.font = textFont(clip);
   ctx.textAlign = clip.align;
   ctx.textBaseline = "middle";
+  if (rtl) ctx.direction = "rtl";
 
   // Typewriter: reveal only the substring visible at this time (whole block).
   const tw = a.style === "typewriter" && !perUnit ? typewriterText(clip, t) : null;
@@ -766,7 +859,7 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts =
   if (perUnit && !karaokeOn) {
     const unit = a.unit as "line" | "word" | "letter";
     paintPanels(ctx, clip, fullLines, lineStep, ls, op * blockAlpha(clip, t));
-    const units = layoutUnits(ctx, fullLines, unit, lineStep, ls, clip.align);
+    const units = layoutUnits(ctx, fullLines, unit, lineStep, ls, clip.align, rtl);
     const n = units.length;
     for (let i = 0; i < n; i++) {
       const u = units[i]!;
@@ -794,6 +887,7 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts =
         block,
         gradOrigin: { x: u.cx, y: u.cy },
         glitch: s.glitch,
+        handwrite: s.strokeReveal < 1 || s.fillMul < 1 ? { stroke: s.strokeReveal, fill: s.fillMul } : undefined,
         px,
       });
       ctx.restore();
@@ -839,7 +933,7 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts =
       ctx.miterLimit = 2;
       drawTextLines(ctx, shownLines, lineStep, ls, "stroke", clip.align);
     }
-    drawKaraokeLines(ctx, karaokeLines, lineStep, clip, karaokeWords, t, op);
+    drawKaraokeLines(ctx, karaokeLines, lineStep, clip, karaokeWords, t, op, rtl);
     ctx.restore();
     return;
   }
@@ -851,7 +945,13 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts =
     y: (i - (n - 1) / 2) * lineStep,
     align: clip.align,
   }));
-  paintRuns(ctx, clip, runs, ls, { block, gradOrigin: { x: 0, y: 0 }, glitch: whole.glitch, px });
+  paintRuns(ctx, clip, runs, ls, {
+    block,
+    gradOrigin: { x: 0, y: 0 },
+    glitch: whole.glitch,
+    px,
+    handwrite: whole.strokeReveal < 1 || whole.fillMul < 1 ? { stroke: whole.strokeReveal, fill: whole.fillMul } : undefined,
+  });
   ctx.restore();
 }
 

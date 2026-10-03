@@ -7,6 +7,7 @@
 import {
   captionAnchorY,
   docDurationSec,
+  findBundledLut,
   parseEditDoc,
   sourceSpanSec,
   sourceTimeAt,
@@ -224,7 +225,7 @@ export function adjustColor(doc: EditDoc, partial: Partial<ColorGrade>): EditDoc
 // ---- Captions --------------------------------------------------------------
 
 /** Word-by-word "karaoke" highlight style for a caption (see schema `Karaoke`). */
-export type KaraokeStyle = "color" | "fill" | "box";
+export type KaraokeStyle = "color" | "fill" | "box" | "pop" | "underline" | "glow";
 
 /** Options for {@link addCaptions}. All optional so the default is a plain caption. */
 export interface AddCaptionsOptions {
@@ -332,8 +333,10 @@ export interface SetKaraokeOptions {
   enabled?: boolean;
   /** Highlight color for the active word. */
   highlight?: string;
-  /** How the active word is emphasized: color / fill / box. */
+  /** How the active word is emphasized: color / fill / box / pop / underline / glow. */
   style?: KaraokeStyle;
+  /** Active-word scale for the "pop" style (1..2). */
+  scale?: number;
   /** Toggle ONE caption clip (by id); otherwise every caption clip. */
   clipId?: string;
 }
@@ -364,6 +367,7 @@ export function setKaraoke(doc: EditDoc, opts: SetKaraokeOptions = {}): EditDoc 
       enabled,
       highlight: opts.highlight ?? clip.karaoke?.highlight ?? "#ffd54a",
       style: opts.style ?? clip.karaoke?.style ?? "color",
+      ...((opts.scale ?? clip.karaoke?.scale) !== undefined ? { scale: opts.scale ?? clip.karaoke?.scale } : {}),
     };
   }
   return parseEditDoc(clone);
@@ -719,7 +723,7 @@ type MutableTextClip = {
   outline?: { color: string; width: number };
   shadow?: { color: string; blur: number; offsetX: number; offsetY: number };
   box?: { style: string; color?: string; opacity: number; radius?: number; padX?: number; padY?: number };
-  karaoke?: { enabled: boolean; highlight: string; style: KaraokeStyle };
+  karaoke?: { enabled: boolean; highlight: string; style: KaraokeStyle; scale?: number };
   words?: { text: string; start: number; end: number }[];
   transform: { x: number; y: number; scale: number; rotation: number; opacity: number };
 };
@@ -961,6 +965,9 @@ export function setSpeed(
  *  - ease-in-out : slow, swell to fast at the middle, ease back to slow.
  *  - ramp-up     : accelerate steadily across the clip.
  *  - ramp-down   : decelerate steadily across the clip.
+ *  - montage     : three fast→slow pulses (beat-montage energy).
+ *  - hero-time   : real time → long slow-mo hold → real time.
+ *  - flash-in    : whip in fast, settle to real time.
  */
 export const SPEED_RAMP_PRESETS = {
   "bullet-time": [
@@ -987,6 +994,29 @@ export const SPEED_RAMP_PRESETS = {
   "ramp-down": [
     [0, 2.5],
     [1, 0.4],
+  ],
+  /** Beat montage: rapid fast→slow pulses (three whips) — cut-to-the-beat energy. */
+  montage: [
+    [0, 3],
+    [0.14, 0.6],
+    [0.3, 3],
+    [0.46, 0.6],
+    [0.62, 3],
+    [0.78, 0.6],
+    [1, 3],
+  ],
+  /** Hero time: real time → a long slow-motion hold on the moment → real time. */
+  "hero-time": [
+    [0, 1],
+    [0.3, 0.25],
+    [0.7, 0.25],
+    [1, 1],
+  ],
+  /** Flash-in: whip in at 4x then settle to real time for the rest of the clip. */
+  "flash-in": [
+    [0, 4],
+    [0.15, 1],
+    [1, 1],
   ],
 } as const satisfies Record<string, [number, number][]>;
 
@@ -2158,7 +2188,9 @@ export interface ApplyLutOpts {
  */
 export function applyLut(doc: EditDoc, opts: ApplyLutOpts): EditDoc {
   const clone: EditDoc = structuredClone(doc);
-  const lut = opts.lut.trim() || undefined;
+  let lut = opts.lut.trim() || undefined;
+  // A bare built-in key ("teal-orange") means the bundled look.
+  if (lut && !lut.includes("/") && !lut.includes(".") && findBundledLut(lut)) lut = `bundled:${findBundledLut(lut)!.key}`;
   let changed = 0;
   for (const track of clone.tracks) {
     for (const clip of track.clips) {

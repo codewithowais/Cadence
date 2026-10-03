@@ -4,6 +4,7 @@
  * Text room, and the text inspector, so every surface edits the doc the same way.
  */
 import {
+  hasComplexScript,
   parseEditDoc,
   type BackgroundGradient,
   type BackgroundPattern,
@@ -75,6 +76,15 @@ export function animateText(doc: EditDoc, input: AnimateTextInput): { doc: EditD
       // The legacy kinetic family animates FROM an offset; give it one if unset.
       if ((input.style === "kinetic" || input.style === "bounce") && a.fromY === 0 && a.fromX === 0) a.fromY = clip.fontSize * 0.6;
       if (input.style === "pop" && a.fromScale === 1) a.fromScale = 0.6;
+      if (input.style === "handwrite") {
+        // A pen takes time: ~0.1s per character (min 0.8s), traced letter by letter —
+        // or word by word for joined / clustered scripts, where a per-letter reveal
+        // would tear the glyphs apart.
+        if (input.durationSec === undefined) {
+          a.durationSec = Math.min(clip.duration * 0.85, Math.max(0.8, [...clip.text].length * 0.1));
+        }
+        if (input.unit === undefined && a.unit === "whole") a.unit = hasComplexScript(clip.text) ? "word" : "letter";
+      }
     }
     if (input.unit) a.unit = input.unit;
     if (input.durationSec !== undefined) a.durationSec = Math.max(0, Math.min(input.durationSec, clip.duration));

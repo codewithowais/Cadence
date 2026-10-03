@@ -3,7 +3,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   activeClipsAt,
-  cssFilter,
   emphasisScale,
   imageMotion,
   keyframeTransformState,
@@ -19,6 +18,7 @@ import { FitBackdrop, SafeZoneOverlay, useSafeZoneMode } from "./CanvasFit";
 import { TransformLayer, type CommitFn } from "./TransformLayer";
 import { TransformInspector } from "./TransformInspector";
 import { computePreview } from "@/lib/preview";
+import { adjustmentPreviewFilter, LutDefs, previewFilter } from "@/lib/lut-preview";
 import { clipGainAt } from "@/lib/audio-mix";
 import { fmtTime } from "@/lib/format";
 import type { PlacementRequest, PlacementResult } from "@/lib/placement";
@@ -263,6 +263,12 @@ export function Stage(props: StageProps) {
             ...(fitOn && !fitBlur ? { backgroundColor: doc.meta.canvas?.fillColor } : {}),
           }}
         >
+          {/* SVG filters for the LUT preview (and adjustment layers): referenced by the
+              media's CSS `filter: url(#…)`. Renders nothing when the doc has no LUT. */}
+          <LutDefs doc={doc} />
+          {/* Adjustment layers grade everything beneath them: their grade (+ LUT) rides on
+              this wrapper around the media + synthetic layers while the clip is active. */}
+          <div className="absolute inset-0" style={{ filter: adjustmentPreviewFilter(doc, timeSec) }} data-adjustment-wrap>
           {/* Backgrounds + synthetic clips BENEATH the footage (shared canvas drawing). */}
           {frameW > 0 && <SyntheticLayer doc={doc} timeSec={timeSec} layer="under" width={frameW} height={frameH} />}
 
@@ -328,7 +334,7 @@ export function Stage(props: StageProps) {
                 className={`absolute inset-0 h-full w-full ${fitCls} will-change-transform`}
                 style={{
                   opacity: ts ? ts.opacity : 0,
-                  filter: activeVideo ? cssFilter(activeVideo.look) : "none",
+                  filter: activeVideo ? previewFilter(activeVideo.look) : "none",
                   // Slide offset + zoom reveal + punch-in emphasis — all shared core helpers.
                   transform: ts
                     ? `translate(${ts.translateXPct}%, ${ts.translateYPct}%) scale(${emphasisScale(activeVideo!, timeSec) * ts.scaleMul})`
@@ -360,7 +366,7 @@ export function Stage(props: StageProps) {
                   className={`absolute inset-0 h-full w-full ${fitCls} will-change-transform`}
                   style={{
                     opacity: ts.opacity,
-                    filter: cssFilter(clip.look),
+                    filter: previewFilter(clip.look),
                     transform: `translate(${m.panXFrac * 100 + ts.translateXPct}%, ${m.panYFrac * 100 + ts.translateYPct}%) scale(${clip.transform.scale * m.scale * ts.scaleMul})`,
                     clipPath: ts.clipPath !== "none" ? ts.clipPath : undefined,
                   }}
@@ -389,7 +395,7 @@ export function Stage(props: StageProps) {
                 top: `${top}%`,
                 transform: `translate(-50%, -50%) rotate(${kf.rotation}deg)${flip}`,
                 opacity: transitionOpacity(clip, timeSec) * kf.opacityMul,
-                filter: cssFilter(clip.look),
+                filter: previewFilter(clip.look),
                 objectFit: "cover",
                 borderRadius: `${Math.max(4, scale * doc.meta.height * 0.02)}px`,
                 boxShadow: "0 8px 30px -8px rgba(0,0,0,0.7)",
@@ -405,6 +411,7 @@ export function Stage(props: StageProps) {
           {/* Text, shapes, callouts, cursors (and backgrounds above footage) — drawn by
               the SAME shared canvas code as the export, so the preview is exact. */}
           {frameW > 0 && <SyntheticLayer doc={doc} timeSec={timeSec} layer="over" width={frameW} height={frameH} />}
+          </div>
 
           {/* Safe-zone guides (preview only, never exported). */}
           <SafeZoneOverlay mode={safeMode} />

@@ -10,7 +10,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GlobalFonts } from "@napi-rs/canvas";
-import { FONT_LIBRARY, fontFilePath, fontFiles } from "@cadence/core";
+import { FONT_LIBRARY, fontFilePath, fontFiles, fontSubsets } from "@cadence/core";
 
 let registered: { dir: string | null; count: number } | null = null;
 
@@ -43,12 +43,25 @@ export function registerBundledFonts(): { dir: string | null; count: number } {
   if (dir) {
     for (const face of FONT_LIBRARY) {
       for (const { weight, style } of fontFiles(face)) {
-        const file = resolve(dir, fontFilePath(face, "latin", weight, style));
-        if (!existsSync(/* turbopackIgnore: true */ file)) continue;
-        try {
-          if (GlobalFonts.registerFromPath(/* turbopackIgnore: true */ file, face.family)) count++;
-        } catch {
-          /* a bad file must never break rendering */
+        // Latin faces: the latin subset under the family. SCRIPT faces (Arabic/Urdu/
+        // Devanagari): the script subset under the family and the latin subset under
+        // the alias `<family> Latin` — Skia matches ONE file per family, so mixed
+        // Latin + script text relies on the per-glyph fallback across the font stack
+        // (fontStack lists the alias right after the family).
+        const targets: [string, string][] = face.script
+          ? [
+              [fontSubsets(face).find((s) => s !== "latin") ?? "latin", face.family],
+              ["latin", `${face.family} Latin`],
+            ]
+          : [["latin", face.family]];
+        for (const [subset, family] of targets) {
+          const file = resolve(dir, fontFilePath(face, subset, weight, style));
+          if (!existsSync(/* turbopackIgnore: true */ file)) continue;
+          try {
+            if (GlobalFonts.registerFromPath(/* turbopackIgnore: true */ file, family)) count++;
+          } catch {
+            /* a bad file must never break rendering */
+          }
         }
       }
     }

@@ -188,6 +188,7 @@ import {
   type SqlQuery,
 } from "@cadence/db/queries";
 import { orderMigrations, listMigrations } from "@cadence/db";
+import { checkRenderDebt } from "./verify-render-debt";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = resolve(__dirname, "..", ".cadence");
@@ -4612,6 +4613,7 @@ async function main(): Promise<void> {
   await checkSceneSplit();
   await checkCustomCanvas();
   await checkPosition();
+  await checkRenderDebt();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

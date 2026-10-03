@@ -14,7 +14,7 @@
 import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FONT_LIBRARY, FONT_SUBSETS, fontFilePath, fontFiles } from "@cadence/core";
+import { FONT_LIBRARY, fontFilePath, fontFiles, fontSubsets } from "@cadence/core";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = resolve(ROOT, "apps/web/public/fonts");
@@ -38,14 +38,17 @@ const licenses: string[] = ["# Bundled font licenses", "", "Vendored from @fonts
 let files = 0;
 
 for (const face of FONT_LIBRARY) {
-  const pkg = resolve(ROOT, "node_modules/@fontsource", face.id);
+  // The repo's node_modules first; FONTSOURCE_DIR (optional) is a fallback so the sync
+  // can also run against a scratch install of extra packages.
+  const main = resolve(ROOT, "node_modules/@fontsource", face.id);
+  const pkg = existsSync(main) ? main : resolve(process.env.FONTSOURCE_DIR ?? main, face.id);
   const meta = JSON.parse(readFileSync(resolve(pkg, "package.json"), "utf8")) as { version: string; license: string };
   licenses.push(`- **${face.family}** — ${meta.license} (@fontsource/${face.id}@${meta.version})`);
   mkdirSync(resolve(OUT, face.id), { recursive: true });
   for (const { weight, style } of fontFiles(face)) {
     const cssFile = resolve(pkg, style === "italic" ? `${weight}-italic.css` : `${weight}.css`);
     const upstream = existsSync(cssFile) ? readFileSync(cssFile, "utf8") : "";
-    for (const subset of FONT_SUBSETS) {
+    for (const subset of fontSubsets(face)) {
       const rel = fontFilePath(face, subset, weight, style);
       const src = resolve(pkg, "files", rel.split("/")[1]!);
       if (!existsSync(src)) continue; // some faces ship no latin-ext

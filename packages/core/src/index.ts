@@ -10,3 +10,5 @@ export * from "./emoji-draw";
 export * from "./emoji";
 export * from "./canvas";
 export * from "./transform";
+export * from "./lut";
+export * from "./script";

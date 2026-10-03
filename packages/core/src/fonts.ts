@@ -9,7 +9,7 @@
  * generic family so text still renders if a file is missing.
  */
 
-export type FontCategory = "sans" | "display" | "serif" | "script" | "handwriting" | "mono";
+export type FontCategory = "sans" | "display" | "serif" | "script" | "handwriting" | "mono" | "multilingual";
 
 export interface FontFace {
   /** @fontsource package id (also the folder name under /fonts). */
@@ -23,6 +23,16 @@ export interface FontFace {
   readonly italics?: readonly number[];
   /** A short sample that shows the face's character in the picker. */
   readonly sample: string;
+  /**
+   * Bundled unicode subsets, when NOT the default latin + latin-ext. Script faces
+   * ship their script subset plus latin (Latin glyphs are registered under the
+   * alias family `<family> Latin`, so mixed text falls back per glyph).
+   */
+  readonly subsets?: readonly string[];
+  /** The non-Latin script this face is for (drives RTL / shaping handling + fallbacks). */
+  readonly script?: "arabic" | "devanagari";
+  /** True for right-to-left scripts. */
+  readonly rtl?: boolean;
 }
 
 export const FONT_LIBRARY: readonly FontFace[] = [
@@ -50,6 +60,10 @@ export const FONT_LIBRARY: readonly FontFace[] = [
   { id: "dancing-script", family: "Dancing Script", category: "script", weights: [400, 700], sample: "With love" },
   { id: "caveat", family: "Caveat", category: "handwriting", weights: [400, 700], sample: "Handwritten note" },
   { id: "permanent-marker", family: "Permanent Marker", category: "handwriting", weights: [400], sample: "Marker scrawl" },
+  // Non-Latin pack (Noto, SIL OFL): Arabic / Urdu (Naskh + Nastaliq) and Hindi (Devanagari).
+  { id: "noto-naskh-arabic", family: "Noto Naskh Arabic", category: "multilingual", weights: [400, 700], sample: "مرحبا بالعالم", subsets: ["arabic", "latin"], script: "arabic", rtl: true },
+  { id: "noto-nastaliq-urdu", family: "Noto Nastaliq Urdu", category: "multilingual", weights: [400, 700], sample: "اردو زبان", subsets: ["arabic", "latin"], script: "arabic", rtl: true },
+  { id: "noto-sans-devanagari", family: "Noto Sans Devanagari", category: "multilingual", weights: [400, 700], sample: "नमस्ते दुनिया", subsets: ["devanagari", "latin"], script: "devanagari" },
 ];
 
 const GENERIC: Record<FontCategory, string> = {
@@ -59,11 +73,14 @@ const GENERIC: Record<FontCategory, string> = {
   script: "cursive",
   handwriting: "cursive",
   mono: "monospace",
+  multilingual: "sans-serif",
 };
 
 /** The CSS `font-family` stack for a bundled face ("'Bebas Neue', sans-serif"). */
 export function fontStack(face: FontFace): string {
-  return `'${face.family}', ${GENERIC[face.category]}`;
+  // Script faces list their Latin alias so mixed Latin + script text falls back per glyph.
+  const alias = face.script ? `, '${face.family} Latin'` : "";
+  return `'${face.family}'${alias}, ${GENERIC[face.category]}`;
 }
 
 /** Find a bundled face by family name, id, or a stack that starts with it. */
@@ -81,6 +98,11 @@ export function fontFiles(face: FontFace): { weight: number; style: "normal" | "
 
 /** The unicode subsets bundled per file (latin covers English; latin-ext adds accents). */
 export const FONT_SUBSETS = ["latin", "latin-ext"] as const;
+
+/** The unicode subsets bundled for one face (script faces: their script + latin). */
+export function fontSubsets(face: FontFace): readonly string[] {
+  return face.subsets ?? FONT_SUBSETS;
+}
 
 /** Relative path of one bundled font file under the fonts directory. */
 export function fontFilePath(face: FontFace, subset: string, weight: number, style: "normal" | "italic"): string {

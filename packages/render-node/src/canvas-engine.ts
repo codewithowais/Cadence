@@ -14,7 +14,9 @@
 import { createCanvas, type Canvas, type SKRSContext2D } from "@napi-rs/canvas";
 import {
   activeClipsAt,
+  applyLutToRgba,
   blendCompositeOperation,
+  bundledLut,
   calloutTransform,
   cssFilter,
   drawCallout,
@@ -86,6 +88,16 @@ function shade(hex: string, k: number): string {
   return `#${c((n >> 16) & 255)}${c((n >> 8) & 255)}${c(n & 255)}`;
 }
 
+/** Grade a "#rrggbb" colour through a bundled LUT id (identity for anything else). */
+function lutFill(hex: string, lutId: string): string {
+  const lut = bundledLut(lutId);
+  if (!lut || !/^#[0-9a-f]{6}$/i.test(hex)) return hex;
+  const px = new Uint8ClampedArray([parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), 255]);
+  applyLutToRgba(px, lut);
+  const h = (n: number): string => n.toString(16).padStart(2, "0");
+  return `#${h(px[0]!)}${h(px[1]!)}${h(px[2]!)}`;
+}
+
 function drawMedia(
   ctx: SKRSContext2D,
   clip: VideoClip | ImageClip,
@@ -151,7 +163,10 @@ function drawMedia(
       ctx.fillRect(-frameW / 2, -frameH / 2, frameW, frameH);
     }
   }
-  ctx.fillStyle = fill;
+  // A bundled 3D LUT grades the placeholder tile EXACTLY (the tile is a flat colour,
+  // so grading its fill is the LUT applied to its pixels). Uploaded .cube files are
+  // export-only here (the canvas never reads client-supplied paths).
+  ctx.fillStyle = clip.look.lut ? lutFill(fill, clip.look.lut) : fill;
   ctx.beginPath();
   if (clip.chroma) {
     // Chroma key approximation: the keyed background is dropped, so the layer
@@ -292,6 +307,13 @@ function applyAdjustment(
     ctx.filter = "none";
     ctx.restore();
   }
+  // A bundled 3D LUT grades the whole composite exactly (per-pixel trilinear).
+  const adjLut = grade.lut ? bundledLut(grade.lut) : null;
+  if (adjLut) {
+    const img = ctx.getImageData(0, 0, w, h);
+    applyLutToRgba(img.data, adjLut);
+    ctx.putImageData(img, 0, 0);
+  }
   // Warm soft-light overlay for the warmth field — mirrors drawMedia's warm wash so
   // an adjustment's warmth reads the same as a per-clip warm look.
   if (grade.warmth > 0) {
@@ -304,6 +326,29 @@ function applyAdjustment(
   }
   // Optional whole-frame Vfx (vignette / grain / light-leak), gated to this window.
   if (clip.vfx) drawVfx(ctx, clip.vfx, w, h);
+}
+
+/**
+ * Highest track index holding z-orderable content that an adjustment can sit under
+ * (text / shape / video / image on a track other than the base). Mirrors the
+ * export's `zOrderedOverlayItems` rule so mid-stack adjustment parity holds.
+ */
+function topContentTrackIndex(doc: EditDoc): number {
+  let top = -1;
+  doc.tracks.forEach((t, ti) => {
+    if (t.hidden) return;
+    if (t.clips.some((c) => c.kind === "text" || c.kind === "shape")) top = Math.max(top, ti);
+  });
+  // Upper video layers (any visual track after the first media-bearing one) also count.
+  let seenBase = false;
+  doc.tracks.forEach((t, ti) => {
+    if (t.hidden || t.kind !== "visual") return;
+    const hasMedia = t.clips.some((c) => c.kind === "video" || c.kind === "image");
+    if (!hasMedia) return;
+    if (!seenBase && t.id !== "broll") seenBase = true;
+    else top = Math.max(top, ti);
+  });
+  return top;
 }
 
 // The active render time, so draw helpers can read it without threading it
@@ -334,9 +379,6 @@ function paintFrame(canvas: Canvas, doc: EditDoc, timeSec: number): void {
   // Adjustment layers grade the composite AFTER everything is drawn (post-pass);
   // they are not "content", so keep them out of the content draw.
   const adjustments = active.filter((c): c is AdjustmentClip => c.kind === "adjustment");
-  const content = active.filter(
-    (c) => c.kind !== "callout" && c.kind !== "cursor" && c.kind !== "adjustment",
-  );
 
   // A callout with zoom magnifies the composited CONTENT toward its rect. Apply
   // that transform (scale about the rect center, shared core helper) around the
@@ -349,7 +391,28 @@ function paintFrame(canvas: Canvas, doc: EditDoc, timeSec: number): void {
     ctx.translate(t.tx, t.ty);
     ctx.scale(t.scale, t.scale);
   }
-  for (const clip of content) drawContentClip(ctx, clip as Clip, doc, width, height);
+  // MID-STACK adjustment layers (content on a HIGHER track exists) grade only what is
+  // beneath them: applied inline in z-order, mirroring the export's z-ordered pass
+  // (render-ffmpeg zOrderedOverlayItems). Skipped under a zoom callout (the content
+  // transform is live) — those fall back to the final post-pass. Adjustments with
+  // nothing above them stay the FINAL grade (graded over callouts/cursors too).
+  const topContentTrack = zoomCallout ? -1 : topContentTrackIndex(doc);
+  const trackIdxOf = new Map<string, number>();
+  doc.tracks.forEach((t, ti) => t.clips.forEach((c) => trackIdxOf.set(c.id, ti)));
+  const midAdj = new Set(
+    adjustments.filter((a) => (trackIdxOf.get(a.id) ?? 0) < topContentTrack).map((a) => a.id),
+  );
+  const drawn = new Set<string>();
+  for (const clip of active as Clip[]) {
+    if (clip.kind === "adjustment") {
+      if (midAdj.has(clip.id)) {
+        applyAdjustment(ctx, canvas, clip as AdjustmentClip, width, height);
+        drawn.add(clip.id);
+      }
+    } else if (clip.kind !== "callout" && clip.kind !== "cursor") {
+      drawContentClip(ctx, clip, doc, width, height);
+    }
+  }
   if (zoomCallout) ctx.restore();
 
   // Callouts (dim + border + label), then cursors, over the content.
@@ -360,7 +423,7 @@ function paintFrame(canvas: Canvas, doc: EditDoc, timeSec: number): void {
   // window (only active ones reach here). Applied in start order, after all
   // content + overlays and before the whole-doc finishing pass. No-op when none.
   adjustments.sort((a, b) => a.start - b.start);
-  for (const adj of adjustments) applyAdjustment(ctx, canvas, adj, width, height);
+  for (const adj of adjustments) if (!drawn.has(adj.id)) applyAdjustment(ctx, canvas, adj, width, height);
 
   // Whole-frame finishing overlays (vignette / grain / light-leak), over everything.
   drawVfx(ctx, doc.vfx, width, height);

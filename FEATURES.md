@@ -103,6 +103,9 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - ✅ **Transform inspector** (Stage side panel): X · Y · W · H · rotation · scale · opacity, reference point, flip H/V, lock aspect, px/% units, 9-point + edge **align** (to the canvas or the selection), **distribute**, Fit / Fill / Reset, bring forward / send backward / to front / to back. **Keyframe-aware** (◆): editing a keyframed property writes a keyframe at the playhead.
 - ✅ Director: `set_transform`, `align_clip`, `arrange_clip` — *"move the title to the top left"*, *"make the logo smaller"*, *"center it"*, *"rotate 15 degrees"*, *"flip the logo"*, *"make it 50% transparent"*, *"send it to the back"* (verify check 71, evals g/h, details in `docs/agents/position-cycle-j.md`).
 
+## 3d. Cycle J — render fidelity & polish
+- True z-order export; keyframes (x/y/rotation/opacity/scale) export as in the preview; speed-ramp presets (montage, hero-time, bullet-time, flash-in) with a one-tap strip; karaoke styles (color/fill/box/pop/underline/glow) + 6 viral caption presets; `.cube` LUTs + 6 free built-in looks (exact export, approximate preview); adjustment layers preview; Urdu / Arabic / Hindi fonts with correct shaping and right-to-left layout; handwriting text animation; per-scene themes for text videos.
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

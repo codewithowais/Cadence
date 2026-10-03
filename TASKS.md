@@ -39,6 +39,11 @@ Canva/CapCut/After-Effects-grade placement: on-canvas selection box (move · res
 
 - ⬜ **Limitations carried forward:** flip + the reference point are preview/draw-canvas only (ffmpeg export does not mirror flipped overlays yet; the reference point is a UI aid, not stored); full-frame base footage is selectable but not draggable (use Overlay / reframe); text/overlay resize is uniform (corner handles); rotation of a base-track clip is not supported; group resize/rotate is single-layer only; callout/cursor layers are not on-canvas selectable (Demo room owns them); a lifted "Layer N" lane is a normal track (reorder via tracks).
 
+## Cycle J — render/engine debt — ✅ COMPLETE (details: `docs/agents/render-debt-cycle-j.md`)
+
+- ✅ Export z-order · keyframe export fidelity (base x/y/rot/opacity, PiP scale) · speed-ramp presets + strip + exact segmentation · karaoke pop/underline/glow + 6 caption presets · LUT parse + bundled looks + exact canvas/export + SVG preview · adjustment layers z-aware + previewed · Urdu/Arabic/Hindi (Noto, RTL, shaping) · handwriting animation · per-scene theme. verify checks 71–78.
+- ⬜ **Skipped:** preview audio for shuttle ≠1× (needs Stage/Editor transport rework; design in the doc). The "Deferred" items under Cycle F and "Follow-ups" under Cycle H (per-scene theme, Urdu/Arabic pack, stroke-reveal) are now done.
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*
