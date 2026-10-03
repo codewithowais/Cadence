@@ -3411,6 +3411,75 @@ async function checkEditingCraft(): Promise<void> {
 }
 
 /**
+ * Check 71 — POSITION (Cycle J): transformed layers render. A moved / rotated /
+ * flipped / faded shape or title changes the frame in the expected way; opacity 0
+ * is exactly "layer absent"; a keyframe written at the playhead renders the same
+ * frame as the equivalent static position; the align + set_transform Director tools
+ * produce docs that render and build an export plan.
+ */
+async function checkPosition(): Promise<void> {
+  const dir = await import("@cadence/director");
+  const base = parseEditDoc({
+    version: 1,
+    meta: { title: "position", width: 640, height: 360, fps: 30, background: "#101418" },
+    media: [],
+    tracks: [
+      { id: "gfx", kind: "visual", clips: [
+        { id: "box", kind: "shape", shape: "rect", start: 0, duration: 4, w: 160, h: 90, fill: "#ff5533", transform: { x: 200, y: 120 } },
+      ] },
+      { id: "titles", kind: "visual", clips: [
+        { id: "ttl", kind: "text", start: 0, duration: 4, text: "AB", fontSize: 72, color: "#ffffff", anim: { style: "none" }, transform: { x: 320, y: 270 } },
+      ] },
+    ],
+  });
+  const frame = async (d: EditDoc, t: number) => Buffer.from((await engine.renderFrame(d, t)).data);
+  const f0 = await frame(base, 1);
+  const noBox = parseEditDoc({ ...base, tracks: base.tracks.map((t) => (t.id === "gfx" ? { ...t, clips: [] } : t)) });
+
+  // (a) move / rotate / scale / flip each change the picture; opacity 0 == layer absent.
+  const moved = dir.setTransform(base, "box", { x: 440, y: 240 }, { atSec: 1 });
+  assert(!(await frame(moved, 1)).equals(f0), "position: moving the shape must change the frame");
+  const rotated = dir.setTransform(base, "box", { rotation: 40 }, { atSec: 1 });
+  assert(!(await frame(rotated, 1)).equals(f0), "position: rotating the shape must change the frame");
+  const scaled = dir.setTransform(base, "box", { w: 300, h: 40 }, { atSec: 1 });
+  assert(!(await frame(scaled, 1)).equals(f0), "position: resizing the shape must change the frame");
+  const flippedTitle = dir.setTransform(base, "ttl", { flipX: true }, { atSec: 1 });
+  assert(!(await frame(flippedTitle, 1)).equals(f0), "position: flipping the title must change the frame");
+  const bothFlipped = dir.setTransform(flippedTitle, "ttl", { flipX: false }, { atSec: 1 });
+  assert((await frame(bothFlipped, 1)).equals(f0), "position: flip on then off must restore the frame byte-for-byte");
+  const gone = dir.setTransform(base, "box", { opacity: 0 }, { atSec: 1 });
+  assert((await frame(gone, 1)).equals(await frame(noBox, 1)), "position: opacity 0 must equal the layer being absent");
+
+  // (b) keyframe-aware: editing a keyframed prop at the playhead keyframes it, and the
+  // frame there equals the static equivalent.
+  const kfDoc = parseEditDoc({ ...base, tracks: base.tracks.map((t) => (t.id === "gfx" ? { ...t, clips: t.clips.map((c) => ({ ...c, keyframes: [{ prop: "x", t: 0, value: 100, easing: "linear" }, { prop: "x", t: 1, value: 540, easing: "linear" }] })) } : t)) });
+  const edited = dir.setTransform(kfDoc, "box", { x: 330 }, { atSec: 2 });
+  const boxClip = edited.tracks[0]!.clips[0]!;
+  assert(boxClip.kind === "shape" && boxClip.keyframes!.filter((k) => k.prop === "x").length === 3, "position: editing a keyframed x must add a keyframe at the playhead");
+  const staticAt330 = dir.setTransform(base, "box", { x: 330 }, { atSec: 2 });
+  assert((await frame(edited, 2)).equals(await frame(staticAt330, 2)), "position: keyframe edit at the playhead must render like the static position");
+
+  // (c) align + Director tools → valid docs that render and export-plan.
+  const aligned = dir.alignClips(base, ["box"], "bottom-right", { margin: 20, atSec: 1 });
+  const ab = aligned.tracks[0]!.clips[0]!;
+  assert(ab.kind === "shape" && ab.transform.x === 640 - 20 - 80 && ab.transform.y === 360 - 20 - 45, "position: bottom-right align must land the shape's corner 20px inside the frame");
+  await renderAndAssert(aligned, 1, "verify-position-aligned.png");
+  const project = new ProjectState({ doc: base });
+  const r = await new StubDirector().interpret("move the title to the top left and make the shape smaller", project);
+  const names = r.toolCalls.map((c) => c.name);
+  assert(names.includes("align_clip") && names.includes("set_transform"), `position: expected align_clip + set_transform, got ${names.join(",")}`);
+  await renderAndAssert(r.doc, 1, "verify-position-director.png");
+  buildExportPlan(r.doc, (id) => `/media/${id}.mp4`, "/out/position.mp4", fakeTextOverlays(r.doc));
+  const arranged = dir.arrangeClip(base, "box", "front");
+  assert(arranged.tracks[arranged.tracks.length - 1]!.id === "gfx", "position: arrange front must move the shape's lane to the top");
+  await renderAndAssert(arranged, 1, "verify-position-arranged.png");
+
+  console.log(
+    "  \x1b[32m✔\x1b[0m check 74 (position): move/rotate/resize/flip change the frame · flip on→off restores byte-for-byte · opacity 0 == layer absent · keyframe edit at the playhead renders like the static position · align bottom-right lands 20px inside · Director “move the title to the top left + make the shape smaller” → align_clip + set_transform → renders + export plan · arrange front",
+  );
+}
+
+/**
  * Check 67 — "Sound made easy": procedural music + SFX health (listen-proxy:
  * no clipping, no DC, real level, silent tail) at 44.1 kHz, then REAL encodes of
  * generated music + SFX + smart duck + voice enhance + beat sync through the
@@ -4542,6 +4611,7 @@ async function main(): Promise<void> {
   await checkEditingCraft();
   await checkSceneSplit();
   await checkCustomCanvas();
+  await checkPosition();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

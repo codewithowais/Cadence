@@ -2045,6 +2045,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onFinishPlacement={finishPlacement}
           onStartWithText={() => setRoom("text")}
           onAddMedia={() => setRoom("media")}
+          selectedIds={editingCraft.craft.selectedIds}
+          onSelectLayer={(id, toggle) => (toggle && id ? editingCraft.craft.onToggleSelect(id) : setSelectedClipId(id))}
+          onCommitDoc={commit}
         />
         </EmojiDropZone>
         </ErrorBoundary>

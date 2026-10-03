@@ -73,6 +73,7 @@ import {
   closeGapsTool,
   cutRangeTool,
   holdFrameTool,
+  type DirectorTool,
   type ToolCall,
 } from "./tools";
 import { currentGrade } from "./edits";
@@ -89,6 +90,7 @@ import { isSynthSrc } from "./sound-synth";
 import type { MusicMood, SfxKind } from "./sound-synth";
 import { parseGraphicsRequest } from "./graphics-tools";
 import { parseEmojiRequest } from "./emoji-tools";
+import { parseTransformRequest } from "./transform-tools";
 import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle, TranscriptEditMode, TranscriptEditUnit } from "./edits";
 import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
 import type { BlendMode, CurvePoint, KeyframeEasing, KeyframeProp } from "@cadence/core";
@@ -1061,6 +1063,13 @@ export class StubDirector {
     // "cut from 2s to 5s" never also reads as a highlight / transcript cut and
     // "freeze … for 2s" doesn't also freeze the whole clip.
     if (!textMode) {
+      // Position & transform phrases ("move the title to the top left", "make the
+      // logo smaller", "center it", "rotate 15 degrees") are claimed first.
+      const tf = parseTransformRequest(req);
+      for (const s of tf.steps) {
+        steps.push({ run: (p) => (s.tool as DirectorTool<unknown>).execute(s.input, { project: p }), call: { name: s.tool.name, input: s.input } });
+      }
+      req = tf.rest;
       const craft = parseCraftRequest(req);
       steps.push(...craft.steps);
       req = craft.rest;

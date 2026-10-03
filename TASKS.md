@@ -33,6 +33,12 @@ Details: `docs/agents/timeline-dnd-cycle-j.md` · CHANGELOG S7.1.
 - ✅ **Drag & drop:** ghost + drop preview, Esc cancel, Insert/Overwrite modes, group drag, edge auto-scroll, palette drops (media / text styles / stickers / graphics) onto lanes at a time or the preview, keyboard lane move.
 - ⬜ **Known limitations:** palette drags use HTML5 DnD (mouse/pen; touch gets tap-to-add, not drag); Esc cancels moves/drops but trims commit live (undoable); group drag onto a different lane moves only when every clip fits; overlays (text/stickers/graphics) intentionally stack instead of colliding; the default timeline panel height (150px) still hides the lanes under the toolbar until it is enlarged (divider or `cadence:tlH`).
 
+## Cycle J — Position (feature #2) — ✅ COMPLETE
+
+Canva/CapCut/After-Effects-grade placement: on-canvas selection box (move · resize · rotate · nudge · in-place text edit · multi-select), smart guides + snapping, Transform inspector (numeric, reference point, units, align/distribute, Fit/Fill/Reset, arrange), keyframe-aware edits, `set_transform` / `align_clip` / `arrange_clip` Director tools. See `docs/agents/position-cycle-j.md`, CHANGELOG S7.1.
+
+- ⬜ **Limitations carried forward:** flip + the reference point are preview/draw-canvas only (ffmpeg export does not mirror flipped overlays yet; the reference point is a UI aid, not stored); full-frame base footage is selectable but not draggable (use Overlay / reframe); text/overlay resize is uniform (corner handles); rotation of a base-track clip is not supported; group resize/rotate is single-layer only; callout/cursor layers are not on-canvas selectable (Demo room owns them); a lifted "Layer N" lane is a normal track (reorder via tracks).
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*

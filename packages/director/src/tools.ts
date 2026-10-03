@@ -83,6 +83,7 @@ import {
   editGraphicTool,
 } from "./graphics-tools";
 import { addEmojiTool, addReactionTool, editEmojiTool } from "./emoji-tools";
+import { alignClipTool, arrangeClipTool, setTransformTool } from "./transform-tools";
 import {
   addAdjustment,
   addBroll,
@@ -2251,6 +2252,10 @@ export const DIRECTOR_TOOLS = {
   auto_duck: autoDuckTool,
   enhance_voice: enhanceVoiceTool,
   beat_sync: beatSyncTool,
+  // Position (Cycle J) — registered BEFORE the graphics tools, which must stay last.
+  set_transform: setTransformTool,
+  align_clip: alignClipTool,
+  arrange_clip: arrangeClipTool,
   add_graphic: addGraphicTool,
   add_lower_third: addLowerThirdTool,
   add_progress_bar: addProgressBarTool,

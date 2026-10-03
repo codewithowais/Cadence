@@ -157,6 +157,11 @@ export function keyframeTransformState(
   };
 }
 
+/** Mirror the current space about its origin per the transform's flip flags. */
+function applyFlip(ctx: Ctx2D, t: { flipX?: boolean; flipY?: boolean }): void {
+  if (t.flipX || t.flipY) ctx.scale(t.flipX ? -1 : 1, t.flipY ? -1 : 1);
+}
+
 // ---- text layout -----------------------------------------------------------
 
 /**
@@ -725,6 +730,7 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts =
   } else if (kfs.scale !== 1) {
     ctx.scale(kfs.scale, kfs.scale);
   }
+  applyFlip(ctx, clip.transform);
   ctx.globalAlpha = op * whole.opacity;
   ctx.font = textFont(clip);
   ctx.textAlign = clip.align;
@@ -1185,6 +1191,7 @@ export function drawShape(ctx: Ctx2D, clip: ShapeClip, t: number, opts: DrawOpts
   ctx.translate(kfs.x, kfs.y);
   if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
   if (kfs.scale !== 1) ctx.scale(kfs.scale, kfs.scale);
+  applyFlip(ctx, clip.transform);
 
   const w = clip.w;
   const h = clip.h;
@@ -1395,6 +1402,7 @@ export function drawShapeAnimated(ctx: Ctx2D, clip: ShapeClip, t: number, opts: 
   ctx.translate(kfs.x + m.dx, kfs.y + m.dy);
   if (kfs.rotation !== 0) ctx.rotate(degToRad(kfs.rotation));
   if (kfs.scale !== 1) ctx.scale(kfs.scale, kfs.scale);
+  applyFlip(ctx, clip.transform);
   if (m.swing !== 0) {
     ctx.translate(0, -h / 2);
     ctx.rotate(degToRad(m.swing));

@@ -9,3 +9,4 @@ export * from "./fonts";
 export * from "./emoji-draw";
 export * from "./emoji";
 export * from "./canvas";
+export * from "./transform";

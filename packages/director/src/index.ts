@@ -28,3 +28,5 @@ export * from "./graphics-tools";
 export * from "./emoji";
 export * from "./emoji-tools";
 export * from "./canvas-parse";
+export * from "./transform-ops";
+export * from "./transform-tools";
