@@ -26,3 +26,6 @@ Vendored from @fontsource by scripts/sync-fonts.ts.
 - **Dancing Script** — OFL-1.1 (@fontsource/dancing-script@5.3.0)
 - **Caveat** — OFL-1.1 (@fontsource/caveat@5.3.0)
 - **Permanent Marker** — Apache-2.0 (@fontsource/permanent-marker@5.3.0)
+- **Noto Naskh Arabic** — OFL-1.1 (@fontsource/noto-naskh-arabic@5.3.0)
+- **Noto Nastaliq Urdu** — OFL-1.1 (@fontsource/noto-nastaliq-urdu@5.3.0)
+- **Noto Sans Devanagari** — OFL-1.1 (@fontsource/noto-sans-devanagari@5.3.0)

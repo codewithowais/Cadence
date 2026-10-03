@@ -768,7 +768,7 @@ function StylePane({ doc, busy, selectedClipId, onApplyDoc, onSelectClip }: Text
     onApplyDoc(next, key);
   };
   const currentFont = findFont(ref.fontFamily);
-  const categories = ["all", "sans", "display", "serif", "script", "handwriting", "mono"];
+  const categories = ["all", "sans", "display", "serif", "script", "handwriting", "mono", "multilingual"];
   const fonts = FONT_LIBRARY.filter((f) => fontCat === "all" || f.category === fontCat);
   const effect = ref.effect?.style ?? "none";
 

@@ -19,6 +19,10 @@ import {
   BUNDLED_LUTS,
   BUNDLED_LUT_SIZE,
   bundledLut,
+  findFont,
+  hasComplexScript,
+  isRtlText,
+  textFont,
   lutApprox,
   lutSvgFilter,
   lutToCube,
@@ -31,7 +35,8 @@ import {
   type TextClip,
   type VideoClip,
 } from "@cadence/core";
-import { CanvasRenderEngine } from "@cadence/render-node";
+import { CanvasRenderEngine, registerBundledFonts } from "@cadence/render-node";
+import { GlobalFonts } from "@napi-rs/canvas";
 import type { Transcript } from "@cadence/understanding";
 import { addCaptions, applyCaptionPreset, CAPTION_PRESETS, DIRECTOR_TOOLS, ProjectState, setSpeedRamp, StubDirector } from "@cadence/director";
 import {
@@ -529,11 +534,146 @@ async function pixelAt(png: Buffer, x: number, y: number): Promise<[number, numb
   return [d[0]!, d[1]!, d[2]!];
 }
 
+// ---------------------------------------------------------------------------
+// 75 · Urdu / Arabic / Hindi: fonts, shaping, RTL order, fallback — preview canvas + export
+// ---------------------------------------------------------------------------
+
+export async function checkScriptSupport(): Promise<void> {
+  // (a) pure helpers.
+  assert(isRtlText("مرحبا Cadence") && !isRtlText("Cadence مرحبا") && !isRtlText("नमस्ते") && isRtlText("שלום") && !isRtlText("123 ... Hello"), "isRtlText must follow the first strong character");
+  assert(hasComplexScript("اردو") && hasComplexScript("हिन्दी") && !hasComplexScript("Hello"), "hasComplexScript: Arabic + Devanagari yes, Latin no");
+  const mkClip = (text: string, extra: Record<string, unknown> = {}): TextClip => {
+    const d = parseEditDoc({ version: 1, meta: { title: "s", width: 960, height: 540, fps: 30, background: "#000000" }, tracks: [{ id: "t", kind: "visual", clips: [{ id: "x", kind: "text", start: 0, duration: 3, text, fontSize: 90, color: "#ffffff", transform: { x: 480, y: 270 }, ...extra }] }] });
+    return d.tracks[0]!.clips[0] as TextClip;
+  };
+  assert(!textFont(mkClip("Hello")).includes("Noto"), "Latin text must not get script fallbacks (byte-identical font string)");
+  assert(textFont(mkClip("مرحبا")).includes("'Noto Naskh Arabic'"), "Arabic text must list the Noto Naskh fallback");
+  assert(textFont(mkClip("नमस्ते")).includes("'Noto Sans Devanagari'"), "Devanagari text must list the Noto Devanagari fallback");
+
+  // (b) the faces are bundled + registered (script subset under the family, latin under the alias).
+  const reg = registerBundledFonts();
+  assert(reg.dir && reg.count > 55, `bundled fonts must register (got ${reg.count})`);
+  for (const fam of ["Noto Naskh Arabic", "Noto Naskh Arabic Latin", "Noto Nastaliq Urdu", "Noto Sans Devanagari", "Noto Sans Devanagari Latin"]) {
+    assert(GlobalFonts.has(fam), `font family "${fam}" must be registered with Skia`);
+  }
+  for (const id of ["noto-naskh-arabic", "noto-nastaliq-urdu", "noto-sans-devanagari"]) {
+    assert(findFont(id)?.category === "multilingual", `${id} must be in the font library (multilingual)`);
+  }
+
+  // (c) SHAPING really happens: joined Arabic is narrower than its isolated letters; a Devanagari conjunct ligates.
+  const probe = createCanvas(10, 10).getContext("2d");
+  probe.font = "64px 'Noto Naskh Arabic'";
+  const joined = probe.measureText("مرحبا").width;
+  const isolated = [..."مرحبا"].reduce((a, ch) => a + probe.measureText(ch).width, 0);
+  assert(joined < isolated * 0.9, `Arabic must be shaped/joined (joined ${joined.toFixed(0)} vs isolated ${isolated.toFixed(0)})`);
+  probe.font = "64px 'Noto Sans Devanagari'";
+  const conj = probe.measureText("क्ष").width;
+  const parts = [..."क्ष"].reduce((a, ch) => a + probe.measureText(ch).width, 0);
+  assert(conj < parts * 0.9, `Devanagari conjuncts must ligate (क्ष ${conj.toFixed(0)} vs parts ${parts.toFixed(0)})`);
+
+  // (d) a clip in a LATIN font still renders Arabic via the fallback — identical to naming the Noto stack.
+  const eng = new CanvasRenderEngine();
+  const frame = async (c: TextClip, t = 1): Promise<Buffer> => {
+    const d = parseEditDoc({ version: 1, meta: { title: "s", width: 960, height: 540, fps: 30, background: "#000000" }, tracks: [{ id: "t", kind: "visual", clips: [c] }] });
+    return Buffer.from((await eng.renderFrame(d, t)).data);
+  };
+  const mixed = "مرحبا بالعالم Cadence";
+  const viaFallback = await frame(mkClip(mixed, { fontFamily: "Inter, sans-serif" }));
+  const arOnly = "مرحبا بالعالم";
+  const naskhStack = "'Noto Naskh Arabic', 'Noto Naskh Arabic Latin', sans-serif";
+  // The primary font's metrics set the vertical middle, so pixels shift slightly; the INK
+  // (glyph coverage) must still match — i.e. the fallback drew real Naskh, not tofu boxes.
+  const inkOf = async (png: Buffer): Promise<number> => {
+    const img = await loadImage(png);
+    const c = createCanvas(img.width, img.height);
+    const cx = c.getContext("2d");
+    cx.drawImage(img, 0, 0);
+    const d = cx.getImageData(0, 0, img.width, img.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) n += d[i]!;
+    return n;
+  };
+  const inkFallback = await inkOf(await frame(mkClip(arOnly, { fontFamily: "Inter, sans-serif" })));
+  const inkNamed = await inkOf(await frame(mkClip(arOnly, { fontFamily: naskhStack })));
+  assert(Math.abs(inkFallback - inkNamed) / inkNamed < 0.03, `Arabic in an Inter-stack clip must fall back to real Noto Naskh glyphs (ink ${inkFallback} vs ${inkNamed})`);
+  // …and the Latin part of the same line stays in Inter (first family), not tofu.
+  assert(!viaFallback.equals(await frame(mkClip(mixed, { fontFamily: naskhStack }))), "the Latin word keeps the clip's own font (Inter), not the Naskh alias");
+  writeFileSync(resolve(OUT, "script-arabic.png"), viaFallback);
+  writeFileSync(resolve(OUT, "script-hindi.png"), await frame(mkClip("नमस्ते दुनिया क्षत्रिय", { fontFamily: "Inter, sans-serif" })));
+  writeFileSync(resolve(OUT, "script-urdu.png"), await frame(mkClip("اردو زبان خوبصورت ہے", { fontFamily: "'Noto Nastaliq Urdu', 'Noto Nastaliq Urdu Latin', sans-serif", fontSize: 80 })));
+  const ink = async (png: Buffer): Promise<number> => {
+    const img = await loadImage(png);
+    const c = createCanvas(img.width, img.height);
+    const cx = c.getContext("2d");
+    cx.drawImage(img, 0, 0);
+    const d = cx.getImageData(0, 0, img.width, img.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i]! > 128) n++;
+    return n;
+  };
+  assert((await ink(viaFallback)) > 3000, "Arabic + Latin text must put real ink on the frame (not blank)");
+
+  // (e) letter-spacing is ignored for Arabic (it would break the joins) but still applies to Latin.
+  assert((await frame(mkClip("مرحبا بالعالم", { letterSpacing: 10 }))).equals(await frame(mkClip("مرحبا بالعالم", { letterSpacing: 0 }))), "letter-spacing must be suppressed for Arabic (joins preserved)");
+  assert(!(await frame(mkClip("Hello world", { letterSpacing: 10 }))).equals(await frame(mkClip("Hello world", { letterSpacing: 0 }))), "letter-spacing must still apply to Latin text");
+
+  // (f) RTL word animation order: the FIRST (rightmost) Arabic word appears first; Latin starts at the left.
+  const stagger = { anim: { style: "fade", unit: "word", durationSec: 1.2, delaySec: 0 } };
+  const inkSides = async (png: Buffer): Promise<{ left: number; right: number }> => {
+    const img = await loadImage(png);
+    const c = createCanvas(img.width, img.height);
+    const cx = c.getContext("2d");
+    cx.drawImage(img, 0, 0);
+    const d = cx.getImageData(0, 0, img.width, img.height).data;
+    let left = 0;
+    let right = 0;
+    for (let y = 0; y < img.height; y++)
+      for (let x = 0; x < img.width; x++) {
+        const v = d[(y * img.width + x) * 4]!;
+        if (x < img.width / 2) left += v;
+        else right += v;
+      }
+    return { left, right };
+  };
+  const ar = await inkSides(await frame(mkClip("كتب الطالب الدرس اليوم", { ...stagger }), 0.35));
+  const lt = await inkSides(await frame(mkClip("The student wrote today lesson", { ...stagger }), 0.35));
+  assert(ar.right > ar.left * 1.15, `Arabic words must reveal right-to-left (right ${ar.right} vs left ${ar.left})`);
+  assert(lt.left > lt.right * 1.15, `Latin words must reveal left-to-right (left ${lt.left} vs right ${lt.right})`);
+
+  // (g) REAL export: Arabic, Urdu and Hindi captions over footage burn in as real glyphs.
+  const s = await ensureSource("script-src.mp4");
+  let real = "canvas-only (ffmpeg absent)";
+  if (s) {
+    const d = parseEditDoc({
+      version: 1,
+      meta: { title: "s", width: 640, height: 480, fps: 30 },
+      media: [{ id: "v", kind: "video", src: s.src, durationSec: 3 }],
+      tracks: [
+        { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 3, mediaId: "v", transform: { x: 320, y: 240 } }] },
+        { id: "captions", kind: "visual", clips: [
+          { id: "ar", kind: "text", start: 0, duration: 3, text: "مرحبا بالعالم Cadence", fontSize: 54, color: "#ffffff", transform: { x: 320, y: 90 } },
+          { id: "ur", kind: "text", start: 0, duration: 3, text: "اردو زبان خوبصورت", fontFamily: "'Noto Nastaliq Urdu', 'Noto Nastaliq Urdu Latin', sans-serif", fontSize: 54, color: "#ffffff", transform: { x: 320, y: 240 } },
+          { id: "hi", kind: "text", start: 0, duration: 3, text: "नमस्ते दुनिया क्षत्रिय", fontSize: 54, color: "#ffffff", transform: { x: 320, y: 390 } },
+        ] },
+      ],
+    });
+    const f = await exportFrame(d, () => s.src, 1.5, "script-export");
+    const white = (r: number, g: number, b: number): boolean => r > 200 && g > 200 && b > 200;
+    const nAr = countNear(f.px, f.w, [0, 50, 640, 130], white);
+    const nUr = countNear(f.px, f.w, [0, 190, 640, 290], white);
+    const nHi = countNear(f.px, f.w, [0, 350, 640, 430], white);
+    assert(nAr > 1500 && nUr > 1200 && nHi > 1500, `exported Arabic/Urdu/Hindi must burn in real glyphs (ink ${nAr}/${nUr}/${nHi})`);
+    real = `real encode: burned-in glyph pixels Arabic ${nAr} · Urdu ${nUr} · Hindi ${nHi}`;
+  }
+  ok(`check 75 (Urdu/Arabic/Hindi): Noto Naskh/Nastaliq/Devanagari bundled (OFL) + registered; Arabic joins (${joined.toFixed(0)}<${isolated.toFixed(0)}) and Devanagari conjuncts ligate (${conj.toFixed(0)}<${parts.toFixed(0)}); script fallback in Latin-font clips; letter-spacing suppressed for joined scripts; RTL word reveal runs right-to-left; ${real}`);
+}
+
 export async function checkRenderDebt(): Promise<void> {
   await checkExportZOrder();
   await checkKaraokePresets();
   await checkSpeedRampPresets();
   await checkLutPipeline();
+  await checkScriptSupport();
 }
 
 if (process.argv[1]?.endsWith("verify-render-debt.ts")) {

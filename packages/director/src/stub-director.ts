@@ -555,7 +555,18 @@ function parseStyleText(req: string): StyleTextInput | null {
   if (/caption|subtitle/.test(req)) return null; // captions have their own styler
   const aboutText = /\btext\b|title|font|letters|heading|typography|words/.test(req);
   const out: StyleTextInput = {};
-  const font = FONT_LIBRARY.find((f) => req.includes(f.family.toLowerCase()));
+  // A script/language word ("urdu font", "arabic text", "hindi title") picks the bundled
+  // Noto face for that script (preview == export; shaping + RTL handled by the engine).
+  const scriptFont = /nastaliq|\burdu\b/.test(req)
+    ? "noto-nastaliq-urdu"
+    : /arabic|naskh/.test(req)
+      ? "noto-naskh-arabic"
+      : /hindi|devanagari/.test(req)
+        ? "noto-sans-devanagari"
+        : null;
+  const font =
+    FONT_LIBRARY.find((f) => req.includes(f.family.toLowerCase())) ??
+    (scriptFont ? FONT_LIBRARY.find((f) => f.id === scriptFont) : undefined);
   if (font) out.fontFamily = fontStack(font);
   if (!aboutText && !font) return null;
   const color = req.match(/(?:text|title|font|letters)(?: colou?r)?(?: to| in)? (\w+)|(\w+) (?:text|titles?|letters|font)\b/);
