@@ -261,7 +261,7 @@ export interface GraphicsRequest {
   input: Record<string, unknown>;
 }
 
-function parsePosition(req: string): GraphicPosition | undefined {
+export function parsePosition(req: string): GraphicPosition | undefined {
   if (/top[- ]left/.test(req)) return "top-left";
   if (/top[- ]right/.test(req)) return "top-right";
   if (/bottom[- ]left/.test(req)) return "bottom-left";
@@ -272,7 +272,7 @@ function parsePosition(req: string): GraphicPosition | undefined {
   return undefined;
 }
 
-function parseAt(req: string): number | undefined {
+export function parseAt(req: string): number | undefined {
   const m = /\bat (\d+(?:\.\d+)?)\s*(?:s|sec|secs|seconds?)\b/.exec(req);
   return m ? Number(m[1]) : undefined;
 }

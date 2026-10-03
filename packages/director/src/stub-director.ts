@@ -83,6 +83,7 @@ import { speechRegions } from "./audio";
 import { isSynthSrc } from "./sound-synth";
 import type { MusicMood, SfxKind } from "./sound-synth";
 import { parseGraphicsRequest } from "./graphics-tools";
+import { parseEmojiRequest } from "./emoji-tools";
 import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle, TranscriptEditMode, TranscriptEditUnit } from "./edits";
 import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
 import type { BlendMode, CurvePoint, KeyframeEasing, KeyframeProp } from "@cadence/core";
@@ -1556,7 +1557,11 @@ export class StubDirector {
     }
 
     // ---- graphics: CTAs, progress bars, countdowns, stickers, annotations ----
-    for (const g of parseGraphicsRequest(textMode ? textInstr : req, textMode)) {
+    const emo = parseEmojiRequest(textMode ? textInstr : req);
+    for (const g of emo.requests) {
+      steps.push({ run: (p) => g.tool.execute(g.input as never, { project: p }), call: { name: g.tool.name, input: g.input } });
+    }
+    for (const g of parseGraphicsRequest(emo.rest, textMode)) {
       steps.push({ run: (p) => g.tool.execute(g.input as never, { project: p }), call: { name: g.tool.name, input: g.input } });
     }
 
