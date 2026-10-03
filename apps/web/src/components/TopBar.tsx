@@ -281,9 +281,9 @@ export function TopBar(props: TopBarProps) {
           type="button"
           onClick={() => openCanvasPanel()}
           aria-label={`Canvas size ${props.doc.meta.width} by ${props.doc.meta.height}. Change size or ratio`}
-          title="Canvas & size — custom ratio, presets, magic resize"
+          title={`Canvas & size — ${props.doc.meta.width}×${props.doc.meta.height} · custom ratio, presets, magic resize`}
           data-testid="canvas-chip"
-          className="flex h-8 items-center gap-1.5 rounded-lg border border-line bg-elevated px-2 text-muted transition hover:border-amber/40 hover:text-text"
+          className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-elevated px-2 text-muted transition hover:border-amber/40 hover:text-text"
         >
           <span className="grid h-4 w-4 place-items-center" aria-hidden="true">
             <span
@@ -294,10 +294,10 @@ export function TopBar(props: TopBarProps) {
               }}
             />
           </span>
-          <span className="hidden tabular-nums lg:inline">
+          <span className="hidden tabular-nums 2xl:inline">
             {props.doc.meta.width}×{props.doc.meta.height}
           </span>
-          <span className="text-[10px] font-semibold text-faint">{props.doc.meta.canvas?.ratio ?? ratioLabel(props.doc.meta.width, props.doc.meta.height)}</span>
+          <span className="hidden text-[10px] font-semibold text-faint xl:inline">{props.doc.meta.canvas?.ratio ?? ratioLabel(props.doc.meta.width, props.doc.meta.height)}</span>
         </button>
         <div className="flex items-center gap-1">
           <IconButton onClick={props.onUndo} disabled={!props.canUndo} label="Undo (⌘Z)" path="M9 14 4 9l5-5 M4 9h11a5 5 0 0 1 0 10h-1" />
