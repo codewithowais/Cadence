@@ -85,6 +85,9 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 **Reliability, speed & trust** (CTO)
 - ✅ Live **export progress** (% + ETA + phase) with real server-side **cancel**, export **pre-flight** checks, **autosave + crash recovery** (doc + media in IndexedDB) for the scratch editor, panel **error boundaries**, **.cadence.json project files** with media re-link, playback perf (idle panels skip frames). Verify check 69.
 
+## 3d. Cycle J — render fidelity & polish
+- True z-order export; keyframes (x/y/rotation/opacity/scale) export as in the preview; speed-ramp presets (montage, hero-time, bullet-time, flash-in) with a one-tap strip; karaoke styles (color/fill/box/pop/underline/glow) + 6 viral caption presets; `.cube` LUTs + 6 free built-in looks (exact export, approximate preview); adjustment layers preview; Urdu / Arabic / Hindi fonts with correct shaping and right-to-left layout; handwriting text animation; per-scene themes for text videos.
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

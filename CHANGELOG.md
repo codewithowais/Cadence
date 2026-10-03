@@ -4,6 +4,18 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S7 — Cycle J: render/engine debt (render-ffmpeg lane)
+- **S7.1 Export z-order** — layers, text, shapes (and mid-stack adjustment layers) composite in true TRACK order (was: all text under all shapes); a hidden text track no longer exports. Topmost adjustment stays the final grade (byte-identical). Canvas applies mid-stack adjustments in the same order.
+- **S7.2 Karaoke + caption presets** — karaoke `pop` (scaled active word) / `underline` / `glow` styles; 6 one-tap viral presets (Hormozi, Beast, Neon, Pill, Underline, Marker) = font + outline + box + position + karaoke + entrance; `set_caption_preset` tool, stub routing ("hormozi captions", "karaoke"), CaptionStyle "viral styles" row.
+- **S7.3 Speed ramps** — new presets montage / hero-time / flash-in (+ existing bullet-time); `SpeedRamp.tsx` preset strip (with mini curves) in the Edit room when a video clip is selected; export segmentation now lands exactly on every control point and never makes sub-2-frame windows (fixes ramps that drifted/averaged away); stub routing.
+- **S7.4 LUTs** — pure `.cube` parse/serialize (`core/lut.ts`), 6 bundled free looks (`bundled:<key>`, exporter materializes the .cube), exact canvas apply (clip tile + adjustment layer), fitted SVG-filter preview in the browser (mean error < 0.01), adjustment layers now preview (Stage wrapper), import validates the file before upload; `apply_lut` accepts bare keys; stub routing.
+- **S7.5 Urdu/Arabic/Hindi** — Noto Naskh Arabic, Noto Nastaliq Urdu, Noto Sans Devanagari (OFL, vendored); shared text drawing sets base direction from the first strong char, keeps joins (no letter-spacing / per-letter animation on joined scripts), reverses word/karaoke layout for RTL, and adds script font fallbacks to any clip; Text room "Multilingual" category; stub font routing.
+- **S7.6 Keyframe export fidelity** — base-clip x / y / rotation / opacity keyframes (pad+crop, rotate, rgba geq) and PiP `scale` keyframes (scale eval=frame) now export as the same eased expressions the preview resolves; no keyframes ⇒ byte-identical.
+- **S7.7 Handwriting** — `handwrite` text animation: glyph outlines trace on like a pen, then the fill melts in; per-letter (per-word for joined scripts); `animate_text` defaults + stub routing.
+- **S7.8 Per-scene theme** — `TextScene.theme` / `textVideo.sceneThemes`, `setSceneTheme`, `set_scene_theme` tool, per-scene theme select in the Text room; survives reorder/reframe; a whole-video restyle resets overrides.
+- **S7.9 Tests** — verify checks 71–78 (`scripts/verify-render-debt.ts`, real ffmpeg encodes compared to the pure `valueAt` / LUT / curve), `tests/render-debt.test.ts`, `apps/web/e2e/render-debt.spec.ts`.
+- *Skipped:* preview audio for shuttle ≠ 1× (needs the Stage/Editor playback loop reworked — see docs/agents/render-debt-cycle-j.md).
+
 ### S6.1 — Cycle I: five specialist agents (parallel worktrees, merged + integrated)
 - **Senior Video Editor** — JKL/frame-step/in-out range, snapping, gaps, multi-select, paste attributes, split all, speed presets, freeze; 5 tools.
 - **Motion Designer** — 34 animated graphics presets (CTAs, countdowns, progress, lower thirds, stickers) + shape motion engine; 6 tools.
