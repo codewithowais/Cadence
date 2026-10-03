@@ -55,6 +55,7 @@ import {
 import {
   buildTextVideo,
   restyleTextVideo,
+  setSceneTheme,
   textVideoScenes,
   TEXT_VIDEO_FORMATS,
   TEXT_VIDEO_THEME_DEFS,
@@ -1745,6 +1746,28 @@ export const restyleTextVideoTool: DirectorTool<{ theme: TextVideoTheme }> = {
   },
 };
 
+export const setSceneThemeTool: DirectorTool<{ scene: number | "first" | "last"; theme: TextVideoTheme | "inherit" }> = {
+  name: "set_scene_theme",
+  description:
+    "Give ONE scene of a text video its own theme (fonts, colors, background, motion, and the transition into it) while the rest keep the video's theme. `scene` is the 1-based scene number (or first / last); theme `inherit` makes it follow the video's theme again.",
+  inputSchema: z.object({
+    scene: z.union([z.number().int().min(1), z.enum(["first", "last"])]),
+    theme: z.union([z.enum(TV_THEME_ENUM), z.literal("inherit")]),
+  }),
+  async execute(input, ctx) {
+    const n = textVideoScenes(ctx.project.doc).length;
+    const index = input.scene === "first" ? 0 : input.scene === "last" ? n - 1 : input.scene - 1;
+    const doc = setSceneTheme(ctx.project.doc, index, input.theme === "inherit" ? null : input.theme);
+    return commit(
+      ctx.project,
+      doc,
+      input.theme === "inherit"
+        ? `Scene ${index + 1} now follows the video's theme.`
+        : `Scene ${index + 1} now uses the ${TEXT_VIDEO_THEME_DEFS[input.theme].label} theme.`,
+    );
+  },
+};
+
 const TEXT_TARGET = z
   .union([z.enum(["all", "titles", "captions"]), z.object({ clipId: z.string().min(1) })])
   .optional();
@@ -2095,6 +2118,7 @@ export const DIRECTOR_TOOLS = {
   slide_edit: slideEditTool,
   make_text_video: makeTextVideoTool,
   restyle_text_video: restyleTextVideoTool,
+  set_scene_theme: setSceneThemeTool,
   animate_text: animateTextTool,
   style_text: styleTextTool,
   set_background: setBackgroundTool,

@@ -1493,6 +1493,12 @@ export const TextVideoRecipe = z.object({
   theme: z.string().default("bold"),
   format: z.string().default("story"),
   pace: z.enum(["slow", "normal", "fast"]).default("normal"),
+  /**
+   * Per-scene THEME overrides (scene index → theme key). A scene absent here uses
+   * `theme`. Optional so existing docs are unchanged; written by buildTextVideo from
+   * `TextScene.theme` so a rebuild (scene edit / reframe) keeps each scene's look.
+   */
+  sceneThemes: z.record(z.string(), z.string()).optional(),
 });
 export type TextVideoRecipe = z.infer<typeof TextVideoRecipe>;
 

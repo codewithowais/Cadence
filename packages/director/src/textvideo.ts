@@ -71,6 +71,8 @@ export interface TextScene {
   /** Optional big number / label (list items: "01"). */
   num?: string;
   durationSec?: number;
+  /** Per-scene theme override (absent ⇒ the video's theme). */
+  theme?: TextVideoTheme;
 }
 
 // ---- themes ------------------------------------------------------------------
@@ -514,7 +516,6 @@ function estLines(text: string, fs: number, maxW: number, charW: number): number
  */
 export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditDoc {
   const theme = opts.theme ?? (isTextVideoTheme(doc.textVideo?.theme) ? doc.textVideo!.theme : "bold");
-  const T = TEXT_VIDEO_THEME_DEFS[theme];
   const pace = opts.pace ?? doc.textVideo?.pace ?? "normal";
   const split = opts.scenes
     ? { format: opts.format ?? ((doc.textVideo?.format as TextVideoFormat | undefined) ?? "story"), scenes: opts.scenes }
@@ -536,8 +537,9 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
   // Type scale: the short edge, boosted on tall frames so vertical text fills the screen.
   const short = Math.min(W, H) * (portrait ? 1.3 : W / H > 1.5 ? 1 : 1.1);
   const maxW = W * (portrait ? 0.84 : 0.78);
-  const X = T.transitionSec;
   const lineHeight = 1.12;
+  /** The theme a scene renders in: its own override, else the video's theme. */
+  const themeOf = (sc: TextScene | undefined): TextVideoTheme => (sc?.theme && isTextVideoTheme(sc.theme) ? sc.theme : theme);
 
   const bgClips: unknown[] = [];
   const accClips: unknown[] = [];
@@ -545,13 +547,19 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
   let t = 0;
   scenes.forEach((scene, i) => {
     const last = i === scenes.length - 1;
+    // Per-scene theme: every style below (fonts, colours, motion, backgrounds,
+    // transition) reads THIS scene's theme. The incoming transition is the scene's
+    // own; the overlap that extends the previous scene is its theme's duration.
+    const T = TEXT_VIDEO_THEME_DEFS[themeOf(scene)];
+    const X = T.transitionSec;
+    const Xnext = last ? 0 : TEXT_VIDEO_THEME_DEFS[themeOf(scenes[i + 1])].transitionSec;
     const D = Math.max(1, sceneDuration(scene, pace, format));
     const bg = T.backgrounds[i % T.backgrounds.length]!;
     bgClips.push({
       id: `tv-s${i}-bg`,
       kind: "solid",
       start: round(t),
-      duration: round(D + (last ? 0 : X)),
+      duration: round(D + Xnext),
       color: bg.color,
       ...(bg.gradient ? { gradient: bg.gradient } : {}),
       ...(bg.pattern ? { pattern: bg.pattern } : {}),
@@ -577,7 +585,7 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
     const stackH = (scene.num ? numFs * 0.9 + gap : 0) + headH + (scene.sub ? gap * 1.4 + barSpace + subFs * 1.3 : 0);
     let y = H / 2 - stackH / 2;
     const tIn = round(t + (i === 0 ? 0.15 : X * 0.8));
-    const tOut = round(t + D + (last ? 0 : X * 0.1));
+    const tOut = round(t + D + (last ? 0 : Xnext * 0.1));
     const span = Math.max(0.8, round(tOut - tIn));
     const motion = isTitle || scene.kind === "item" ? T.intro : T.bodyIntro;
     const exit = last ? { style: "fade" as const, durationSec: Math.max(0.3, T.exit.durationSec) } : T.exit;
@@ -681,7 +689,7 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
       title: doc.textVideo ? doc.meta.title : first.length > 48 ? `${first.slice(0, 45)}…` : first,
       width: W,
       height: H,
-      background: T.backgrounds[0]!.color,
+      background: TEXT_VIDEO_THEME_DEFS[themeOf(scenes[0])].backgrounds[0]!.color,
     },
     media: doc.media.filter((m) => audioMedia.has(m.id)),
     tracks: [
@@ -690,8 +698,22 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
       { id: "tv-text", kind: "visual", name: "Text", clips: textClips },
       ...audioTracks,
     ],
-    textVideo: { theme, format, pace },
+    textVideo: {
+      theme,
+      format,
+      pace,
+      ...(sceneThemeMap(scenes, theme) ? { sceneThemes: sceneThemeMap(scenes, theme)! } : {}),
+    },
   });
+}
+
+/** scene index → theme for the scenes that differ from the video's theme (undefined when none). */
+function sceneThemeMap(scenes: TextScene[], base: TextVideoTheme): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  scenes.forEach((s, i) => {
+    if (s.theme && isTextVideoTheme(s.theme) && s.theme !== base) out[String(i)] = s.theme;
+  });
+  return Object.keys(out).length ? out : undefined;
 }
 
 // ---- read back + edit ------------------------------------------------------------
@@ -732,6 +754,7 @@ export function textVideoScenes(doc: EditDoc): TextScene[] {
     }
   }
   const idx = [...byIndex.keys()].sort((a, b) => a - b);
+  const sceneThemes = doc.textVideo?.sceneThemes ?? {};
   return idx
     .map((i, k) => {
       const s = byIndex.get(i)!;
@@ -748,6 +771,7 @@ export function textVideoScenes(doc: EditDoc): TextScene[] {
         ...(s.sub ? { sub: s.sub } : {}),
         ...(s.num ? { num: s.num } : {}),
         ...(dur ? { durationSec: round(dur) } : {}),
+        ...(isTextVideoTheme(sceneThemes[String(i)]) ? { theme: sceneThemes[String(i)] as TextVideoTheme } : {}),
       } as TextScene;
     })
     .filter((s) => s.head.length > 0);
@@ -759,10 +783,33 @@ export function setTextVideoScenes(doc: EditDoc, scenes: TextScene[]): EditDoc {
 }
 
 /** Switch a text video to another theme, keeping its scenes and timing. */
-export function restyleTextVideo(doc: EditDoc, theme: TextVideoTheme): EditDoc {
+export function restyleTextVideo(doc: EditDoc, theme: TextVideoTheme, opts: { keepSceneThemes?: boolean } = {}): EditDoc {
+  if (!isTextVideo(doc)) throw new Error("This project isn't a text video yet — make one first.");
+  // A whole-video restyle resets every per-scene override (the user asked for ONE look).
+  const scenes = textVideoScenes(doc).map((s) => (opts.keepSceneThemes ? s : { ...s, theme: undefined }));
+  return buildTextVideo(doc, { scenes: scenes.map(({ theme: t, ...rest }) => (t ? { ...rest, theme: t } : rest)), theme, size: { width: doc.meta.width, height: doc.meta.height } });
+}
+
+/**
+ * Give ONE scene its own theme (1-based scene number as shown in the Text room is
+ * `sceneIndex + 1`; this takes the 0-based index), or pass `null` to make it follow
+ * the video's theme again. Rebuilds the video so fonts, colours, motion, background
+ * and the transition INTO that scene all switch; every scene's words and timing are
+ * kept. Pure + re-parsed.
+ */
+export function setSceneTheme(doc: EditDoc, sceneIndex: number, theme: TextVideoTheme | null): EditDoc {
   if (!isTextVideo(doc)) throw new Error("This project isn't a text video yet — make one first.");
   const scenes = textVideoScenes(doc);
-  return buildTextVideo(doc, { scenes, theme, size: { width: doc.meta.width, height: doc.meta.height } });
+  if (!Number.isInteger(sceneIndex) || sceneIndex < 0 || sceneIndex >= scenes.length) {
+    throw new Error(`There is no scene ${sceneIndex + 1} — this video has ${scenes.length}.`);
+  }
+  const next = scenes.map((s, i) => {
+    if (i !== sceneIndex) return s;
+    const { theme: _drop, ...rest } = s;
+    void _drop;
+    return theme ? { ...rest, theme } : rest;
+  });
+  return buildTextVideo(doc, { scenes: next, size: { width: doc.meta.width, height: doc.meta.height } });
 }
 
 /** Re-lay a text video for a new frame size (reframe), keeping scenes + theme. */

@@ -23,6 +23,7 @@ import {
   animateTextTool,
   makeTextVideoTool,
   restyleTextVideoTool,
+  setSceneThemeTool,
   setBackgroundTool,
   styleTextTool,
   addMaskTool,
@@ -462,6 +463,22 @@ function parseTextVideo(
     input: { script, ...(theme ? { theme } : {}), ...(format ? { format } : {}), ...(aspect ? { aspect } : {}), ...(pace ? { pace } : {}) },
     instruction,
   };
+}
+
+/** "make scene 2 neon", "last scene in the retro theme", "scene 3 back to the default theme". */
+function parseSceneTheme(req: string): { scene: number | "first" | "last"; theme: TextVideoTheme | "inherit" } | null {
+  const m = req.match(/\b(?:scene|slide)\s*#?(\d+)\b/) ?? null;
+  const which: number | "first" | "last" | null = m
+    ? Number(m[1])
+    : /\b(?:the )?last (?:scene|slide)\b/.test(req)
+      ? "last"
+      : /\b(?:the )?first (?:scene|slide)\b/.test(req)
+        ? "first"
+        : null;
+  if (which === null) return null;
+  if (/(?:back to|same as|follow(?:s)?|inherit|reset)\b.*(?:default|video|theme|rest|others)/.test(req)) return { scene: which, theme: "inherit" };
+  const theme = parseTheme(req);
+  return theme ? { scene: which, theme } : null;
 }
 
 /** "switch to the neon theme", "make it elegant", "restyle as retro" — on a text video. */
@@ -1092,7 +1109,15 @@ export class StubDirector {
       });
       req = tv.instruction;
     } else if (isTextVideo(project.doc)) {
-      const theme = parseRestyle(req);
+      const sceneTheme = parseSceneTheme(req);
+      const theme = sceneTheme ? undefined : parseRestyle(req);
+      if (sceneTheme) {
+        const input = sceneTheme;
+        steps.push({
+          run: (p) => setSceneThemeTool.execute(input, { project: p }),
+          call: { name: setSceneThemeTool.name, input },
+        });
+      }
       if (theme) {
         const input = { theme };
         steps.push({

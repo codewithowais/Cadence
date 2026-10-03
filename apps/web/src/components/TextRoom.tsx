@@ -38,6 +38,7 @@ import {
   detectTextVideoFormat,
   isTextVideo,
   restyleTextVideo,
+  setSceneTheme,
   setBackground,
   setSceneText,
   setTextVideoScenes,
@@ -524,6 +525,21 @@ function ScenesPane({ doc, busy, timeSec, onApplyDoc, onSeek }: TextRoomProps) {
                     +
                   </button>
                 </div>
+                <select
+                  aria-label={`Scene ${i + 1} theme`}
+                  title="Give this scene its own theme (fonts, colors, background, motion)"
+                  value={s.theme ?? ""}
+                  disabled={busy}
+                  onChange={(e) => onApplyDoc(setSceneTheme(doc, i, (e.target.value || null) as TextVideoTheme | null))}
+                  className="h-6 max-w-[132px] rounded border border-line bg-panel px-1 text-[11px] text-muted"
+                >
+                  <option value="">Video theme</option>
+                  {TEXT_VIDEO_THEME_LIST.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
                 <div className="flex items-center gap-1">
                   <button type="button" disabled={busy || i === 0} onClick={() => move(i, -1)} className="rounded border border-line px-1.5 text-[11px] text-muted hover:text-text disabled:opacity-30" aria-label={`Move scene ${i + 1} up`}>
                     ↑

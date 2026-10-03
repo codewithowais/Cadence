@@ -39,7 +39,7 @@ import {
 import { CanvasRenderEngine, registerBundledFonts } from "@cadence/render-node";
 import { GlobalFonts } from "@napi-rs/canvas";
 import type { Transcript } from "@cadence/understanding";
-import { addCaptions, applyCaptionPreset, CAPTION_PRESETS, DIRECTOR_TOOLS, ProjectState, setSpeedRamp, StubDirector } from "@cadence/director";
+import { addCaptions, applyCaptionPreset, CAPTION_PRESETS, DIRECTOR_TOOLS, ProjectState, restyleTextVideo, retargetTextVideo, setSceneTheme, setSpeedRamp, setTextVideoScenes, StubDirector, TEXT_VIDEO_THEME_DEFS, textVideoScenes } from "@cadence/director";
 import {
   buildExportPlan,
   bundledLutFile,
@@ -884,6 +884,92 @@ export async function checkHandwrite(): Promise<void> {
   ok(`check 77 (handwriting stroke-reveal): outline traces then fill fades (ink ${inks.map((n) => Math.round(n / 1000)).join("k/")}k), settled frame byte-identical to the static title, per-letter reveal runs left→right, animate_text defaults + stub routing; ${real}`);
 }
 
+// ---------------------------------------------------------------------------
+// 78 · per-scene theme override for text videos
+// ---------------------------------------------------------------------------
+
+export async function checkSceneThemes(): Promise<void> {
+  const script = "Grow faster\nShip every week\nListen to users\nRepeat daily";
+  const project = new ProjectState({ media: [] });
+  await DIRECTOR_TOOLS.make_text_video!.execute({ script, theme: "minimal", format: "list" } as never, { project });
+  const base = project.doc;
+  const baseScenes = textVideoScenes(base);
+  assert(baseScenes.length >= 3, `expected a multi-scene video, got ${baseScenes.length}`);
+  assert(!base.textVideo?.sceneThemes, "a video with no overrides must not carry sceneThemes (byte-identical recipe)");
+
+  // (a) set one scene's theme: its clips restyle, the others and all words/timing stay.
+  const themed = setSceneTheme(base, 1, "neon");
+  assert(themed.textVideo?.theme === "minimal" && themed.textVideo?.sceneThemes?.["1"] === "neon", `recipe must record the override (got ${JSON.stringify(themed.textVideo)})`);
+  const scenes = textVideoScenes(themed);
+  assert(scenes[1]!.theme === "neon" && scenes[0]!.theme === undefined, "scene 2 reads back as neon, scene 1 follows the video");
+  assert(scenes.map((s) => s.head).join("|") === baseScenes.map((s) => s.head).join("|"), "every scene's words are kept");
+  const clipOf = (d: EditDoc, id: string): TextClip => d.tracks.flatMap((t) => t.clips).find((c) => c.id === id) as TextClip;
+  const bgOf = (d: EditDoc, i: number): { color: string; gradient?: unknown } => d.tracks.flatMap((t) => t.clips).find((c) => c.id === `tv-s${i}-bg`) as never;
+  const kind1 = baseScenes[1]!.kind;
+  const kind0 = baseScenes[0]!.kind;
+  assert(clipOf(themed, `tv-s1-${kind1}`).fontFamily === TEXT_VIDEO_THEME_DEFS.neon.head.family || clipOf(themed, `tv-s1-${kind1}`).fontFamily === TEXT_VIDEO_THEME_DEFS.neon.body.family, "scene 2's text must use the neon theme's font");
+  assert(clipOf(themed, `tv-s0-${kind0}`).fontFamily === clipOf(base, `tv-s0-${kind0}`).fontFamily, "scene 1 keeps the video theme's font");
+  assert(JSON.stringify(bgOf(themed, 1)) !== JSON.stringify(bgOf(base, 1)), "scene 2's background must change with its theme");
+  assert(JSON.stringify(bgOf(themed, 0)) === JSON.stringify(bgOf(base, 0)), "scene 1's background is untouched");
+  // timing identical (the overlap uses the next scene's theme but the scene starts don't move)
+  const starts = (d: EditDoc): number[] => baseScenes.map((_, i) => bgOf(d, i) as unknown as { start: number }).map((c) => (c as unknown as { start: number }).start);
+  assert(starts(themed).join() === starts(base).join(), "scene start times must not move when a scene's theme changes");
+
+  // (b) the override survives rebuilds: reorder, retarget (reframe), duration edits.
+  const reordered = setTextVideoScenes(themed, textVideoScenes(themed));
+  assert(JSON.stringify(reordered.textVideo?.sceneThemes) === JSON.stringify(themed.textVideo?.sceneThemes), "override survives a scene rebuild");
+  const swapped = setTextVideoScenes(themed, (() => { const s = textVideoScenes(themed); [s[0], s[1]] = [s[1]!, s[0]!]; return s; })());
+  assert(swapped.textVideo?.sceneThemes?.["0"] === "neon" && !swapped.textVideo?.sceneThemes?.["1"], "the override travels with its scene when scenes are reordered");
+  const vertical = retargetTextVideo(themed, 1080, 1920);
+  assert(vertical.textVideo?.sceneThemes?.["1"] === "neon", "override survives a reframe");
+
+  // (c) clearing + global restyle semantics.
+  assert(!setSceneTheme(themed, 1, null).textVideo?.sceneThemes, "inherit clears the override");
+  assert(!restyleTextVideo(themed, "elegant").textVideo?.sceneThemes, "a whole-video restyle resets overrides");
+  assert(restyleTextVideo(themed, "elegant", { keepSceneThemes: true }).textVideo?.sceneThemes?.["1"] === "neon", "…unless asked to keep them");
+  let threw = false;
+  try {
+    setSceneTheme(base, 99, "neon");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "an out-of-range scene must throw a readable error");
+
+  // (d) the rendered frames really differ per scene (background sample at a corner).
+  const eng = new CanvasRenderEngine();
+  const cornerAt = async (d: EditDoc, t: number): Promise<string> => {
+    const png = Buffer.from((await eng.renderFrame(d, t)).data);
+    const img = await loadImage(png);
+    const c = createCanvas(img.width, img.height);
+    const cx = c.getContext("2d");
+    cx.drawImage(img, 0, 0);
+    const p = cx.getImageData(4, 4, 1, 1).data;
+    return `${p[0]},${p[1]},${p[2]}`;
+  };
+  const t1 = bgOf(themed, 1) as unknown as { start: number };
+  const tMid = t1.start + 1.2;
+  assert((await cornerAt(themed, tMid)) !== (await cornerAt(base, tMid)), "the themed scene renders a different background than the video theme");
+  assert((await cornerAt(themed, 0.5)) === (await cornerAt(base, 0.5)), "an untouched scene renders identically");
+
+  // (e) tool + stub routing.
+  const p2 = new ProjectState({ media: [] });
+  p2.setDoc(base);
+  await DIRECTOR_TOOLS.set_scene_theme!.execute({ scene: 2, theme: "retro" }, { project: p2 });
+  assert(p2.doc.textVideo?.sceneThemes?.["1"] === "retro", "set_scene_theme scene 2 → retro");
+  await DIRECTOR_TOOLS.set_scene_theme!.execute({ scene: 2, theme: "inherit" }, { project: p2 });
+  assert(!p2.doc.textVideo?.sceneThemes, "set_scene_theme inherit clears it");
+  const p3 = new ProjectState({ media: [] });
+  p3.setDoc(base);
+  const r = await new StubDirector().interpret("make scene 3 neon", p3);
+  assert(r.toolCalls.some((c) => c.name === "set_scene_theme" && (c.input as { scene?: number }).scene === 3), `StubDirector must route "make scene 3 neon" (got ${JSON.stringify(r.toolCalls.map((c) => c.name))})`);
+  assert(p3.doc.textVideo?.sceneThemes?.["2"] === "neon", "…and apply it to scene 3");
+  const p4 = new ProjectState({ media: [] });
+  p4.setDoc(base);
+  const r4 = await new StubDirector().interpret("switch to the elegant theme", p4);
+  assert(r4.toolCalls.some((c) => c.name === "restyle_text_video"), "a plain theme request still restyles the whole video");
+  ok(`check 78 (per-scene theme): scene override changes that scene's font/colors/background/transition only (words, timing, other scenes untouched), persists in textVideo.sceneThemes through reorder/reframe/rebuild, global restyle resets it; set_scene_theme tool + stub routing; frames differ per scene`);
+}
+
 export async function checkRenderDebt(): Promise<void> {
   await checkExportZOrder();
   await checkKaraokePresets();
@@ -892,6 +978,7 @@ export async function checkRenderDebt(): Promise<void> {
   await checkScriptSupport();
   await checkKeyframeFidelity();
   await checkHandwrite();
+  await checkSceneThemes();
 }
 
 if (process.argv[1]?.endsWith("verify-render-debt.ts")) {
