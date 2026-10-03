@@ -1032,11 +1032,17 @@ function parsePromptVideo(req: string, original: string, project: ProjectState):
   if (extractScript(original).script) return null;
   const hasContent = docDurationSec(project.doc) > 0;
   const explicitNew = PV_CREATE.test(original);
-  if (hasContent && !explicitNew) return null;
-  const hasImages = project.media.some((m) => m.kind === "image");
-  const brief = parseBrief(original, { hasMedia: hasImages });
   const looksLikeEdit = /\b(?:add|insert|change|replace|remove|delete|trim|split|cut|move|rename|apply|set|fix)\b/.test(lower) && !explicitNew;
   if (looksLikeEdit) return null;
+  const hasImages = project.media.some((m) => m.kind === "image");
+  const brief = parseBrief(original, { hasMedia: hasImages });
+  if (hasContent && !explicitNew) {
+    // A sentence about the existing timeline ("make it punchier") is an edit. A self-contained
+    // description with a real noun in it ("birthday wish for Ayesha") is a new video.
+    const hasNoun = !!(brief.subject || brief.name || brief.topic || brief.place);
+    const aboutThis = /\b(?:it|these|them|(?:the|my|this) (?:video|clip))\b/.test(lower);
+    if (!hasNoun || aboutThis || brief.confidence < 0.7 || original.trim().split(/\s+/).length < 3) return null;
+  }
   if (brief.genre === "slideshow") {
     // "make a slideshow from my photos" is the plain photo slideshow tool unless a topic is given.
     return brief.subject ? { prompt: original } : null;
@@ -1049,13 +1055,16 @@ function parsePromptVideo(req: string, original: string, project: ProjectState):
 
 /** "make it punchier" / "shorter" / "a different style" / "regenerate" on a prompt-made video. */
 function parseRefineVideo(req: string, project: ProjectState): { kind: "regenerate" | "punchier" | "shorter" | "longer" | "different-style" } | null {
-  if (!storyboardOf(project.doc)) return null;
+  const prompted = !!storyboardOf(project.doc);
+  // punchier / shorter / different-style also work on any plain text video; regenerate / longer
+  // need the original description (the stored storyboard).
+  if (!prompted && !isTextVideo(project.doc)) return null;
   if (/\banimat|\btext\b.*\b(?:faster|slower)\b/.test(req)) return null;
   if (/\bpunch(?:ier|y)\b|\bsnappier\b|\btighter\b|\bmore (?:punch|energy)\b/.test(req)) return { kind: "punchier" };
   if (/\bshorter\b|\bcut it down\b|\btrim it down\b|\btoo long\b|\bquicker video\b/.test(req)) return { kind: "shorter" };
-  if (/\blonger\b|\btoo short\b|\bmore scenes\b|\bextend it\b/.test(req)) return { kind: "longer" };
+  if (prompted && /\blonger\b|\btoo short\b|\bmore scenes\b|\bextend it\b/.test(req)) return { kind: "longer" };
   if (/\b(?:different|another|new|fresh)\s+(?:style|look|vibe|feel)\b|\bswitch it up\b|\bstyle it differently\b/.test(req) && !parseTheme(req)) return { kind: "different-style" };
-  if (/\bregenerate\b|\bredo (?:it|this)\b|\brewrite\b|\btry again\b|\bnew version\b|\bfresh version\b|\bsomething different\b|\bstart over\b/.test(req)) return { kind: "regenerate" };
+  if (prompted && /\bregenerate\b|\bredo (?:it|this)\b|\brewrite\b|\btry again\b|\bnew version\b|\bfresh version\b|\bsomething different\b|\bstart over\b/.test(req)) return { kind: "regenerate" };
   return null;
 }
 

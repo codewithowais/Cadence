@@ -10,6 +10,18 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
   - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
 
+## Cycle J — Prompt-based video making (feature #6) — ✅ COMPLETE
+
+Goal: type ONE sentence and get a complete, editable video, with or without uploaded media. Full design + limitations in `docs/agents/prompt-to-video-cycle-j.md`; history in CHANGELOG S7.x.
+
+- ✅ **J1 Storyboard contract + planner** — zod `Storyboard`, `StoryboardPlanner`, pure `planVideo` (genre/platform/length/mood/palette/language/nouns → scenes of hand-written copy), regenerate-scene / refine / style helpers.
+- ✅ **J2 Realiser + Director tools** — `make_video_from_prompt`, `plan_video`, `refine_video`; reuses `buildTextVideo`, `add_graphic`, `generate_music`, `auto_sfx`, gated TTS + `auto_duck`; photos/clips behind the words; recipe stored on `doc.textVideo.storyboard`.
+- ✅ **J3 Claude seam (dormant)** — `ClaudeStoryboardPlanner` + `selectStoryboardPlanner`; mock-tested; stub is always the default. ⛔ *Money gate: the real LLM planner needs approval + a key + a host-supplied completion fn.*
+- ✅ **J4 StubDirector routing + fallback** — open-ended sentences, refinement phrases, "didn't understand" suggests the feature.
+- ✅ **J5 UI** — `PromptStudio` (compose → storyboard review → Create), Text room Describe tab, landing hero + chips, New project, empty state, rail, library ideas + next-step chips, catalog group.
+- ✅ **J6 QA** — unit, verify check 71, 11 evals, Playwright `prompt-video.spec.ts`.
+- ⬜ **Follow-ups:** wire the real Claude planner once the money gate is approved; more verified explainer topics / tips banks; Urdu/Arabic script once a Noto font pack lands; re-time `tv-media` + graphics when scenes are added/removed in the Text room; storyboard version branching in the DB.
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*

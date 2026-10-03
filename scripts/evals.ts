@@ -252,7 +252,7 @@ const EVALS: Eval[] = [
       const media = doc.tracks.find((t) => t.id === "tv-media");
       assert((media?.clips.length ?? 0) >= 6, `expected a photo behind each scene, got ${media?.clips.length}`);
       assert(doc.media.filter((m) => m.kind === "image").length === 6, "all 6 photos must be in the doc");
-      assert(doc.tracks.some((t) => t.id === "tv-scrim"), "expected a legibility scrim over the photos");
+      assert(media!.clips.every((c) => c.kind === "image" && c.look.brightness < 0.8), "photos are dimmed through their grade so the words stay legible");
     },
   }),
   promptEval({

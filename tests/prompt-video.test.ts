@@ -21,6 +21,7 @@ import {
   regenerateScene,
   removeScene,
   selectStoryboardPlanner,
+  setStoryboardStyle,
   setSceneText,
   storyboardDuration,
   storyboardOf,
@@ -322,4 +323,28 @@ test("routing: scripts, footage and edits are NOT hijacked; unknown input sugges
   const vague = await d.interpret("hmm what now", new ProjectState());
   assert.equal(vague.toolCalls.length, 0);
   assert.match(vague.summary, /describe a whole video in one sentence/i);
+});
+
+test("style controls: a palette change recolours every scene but keeps the words and the chosen music", () => {
+  const sb = planVideo({ prompt: "30s Instagram promo for my coffee shop, warm vibe, upbeat music" });
+  assert.equal(sb.music.mood, "upbeat", "the prompt's “upbeat music” wins over the warm mood's lo-fi");
+  const ocean = setStoryboardStyle(sb, { palette: "ocean" });
+  assert.equal(ocean.music.mood, "upbeat");
+  assert.equal(ocean.palette.name, "ocean");
+  assert.deepEqual(ocean.scenes.map((s) => s.heading), sb.scenes.map((s) => s.heading));
+  assert.notDeepEqual(ocean.scenes[0]!.background?.colors, sb.scenes[0]!.background?.colors);
+  assert.equal(setStoryboardStyle(sb, { music: "none" }).music.mood, "none");
+  assert.equal(setStoryboardStyle(sb, { aspect: "1:1" }).aspect, "1:1");
+});
+
+test("restyling keeps the graphics + music; a brand-new script does not inherit them", async () => {
+  const project = new ProjectState({ media: [] });
+  const d = new StubDirector();
+  await d.interpret("30s Instagram promo for my coffee shop", project);
+  assert.ok(project.doc.tracks.some((t) => /^graphics-/.test(t.id)));
+  const restyled = await d.interpret("switch to the neon theme", project);
+  assert.ok(restyled.doc.tracks.some((t) => /^graphics-/.test(t.id)), "CTA graphic survives a restyle");
+  assert.ok(restyled.doc.tracks.some((t) => t.id === "music"), "music survives a restyle");
+  const fresh = await d.interpret("make a text video: Big news. We just launched. Try it free today.", project);
+  assert.ok(!fresh.doc.tracks.some((t) => /^graphics-/.test(t.id)), "a fresh script starts clean");
 });

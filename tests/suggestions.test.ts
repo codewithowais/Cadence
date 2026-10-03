@@ -180,7 +180,7 @@ test("closestIdeas: everyday words map to real capabilities", () => {
   assert.ok(!ids("put subtitles on it", "none").includes("captions"));
   // No overlap at all → the mode's starters, so there's always something to tap.
   assert.deepEqual(ids("xyzzy plugh"), ["highlight-60", "filler", "captions"]);
-  assert.deepEqual(ids("xyzzy", "none"), ["tv-announce", "tv-quote", "tv-list"]);
+  assert.deepEqual(ids("xyzzy", "none"), ["pv-promo", "pv-birthday", "tv-announce"]); // the empty project leads with "describe a video"
 });
 
 // ---- fuzzy + palette ranking --------------------------------------------------------

@@ -24,7 +24,7 @@ export * from "./graphics";
 export * from "./graphics-tools";
 export * from "./storyboard";
 export { parseBrief, type Brief } from "./storyboard-brief";
-export { planVideo, refineStoryboard, regenerateScene, StubStoryboardPlanner, PALETTES, PALETTE_NAMES, type RefineKind } from "./storyboard-stub";
+export { planVideo, refineStoryboard, regenerateScene, setStoryboardStyle, StubStoryboardPlanner, PALETTES, PALETTE_NAMES, type RefineKind } from "./storyboard-stub";
 export {
   buildStoryboardVisuals,
   makeVideoFromPromptTool,

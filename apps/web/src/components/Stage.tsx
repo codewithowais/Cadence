@@ -44,6 +44,8 @@ interface StageProps {
   /** Empty-state actions: start a text video / open the media picker. */
   onStartWithText?: () => void;
   onAddMedia?: () => void;
+  /** Empty-state action: open the "Describe your video" studio. */
+  onDescribeVideo?: () => void;
 }
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
@@ -249,11 +251,21 @@ export function Stage(props: StageProps) {
                 <span className="text-sm font-medium text-white/85">Start with words or footage</span>
                 <span className="text-xs text-white/50">Type a script and get an animated text video — no upload needed. Or add a video or photos to edit.</span>
                 <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+                  {props.onDescribeVideo && (
+                    <button
+                      type="button"
+                      onClick={props.onDescribeVideo}
+                      data-testid="empty-describe"
+                      className="rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-onaccent transition hover:bg-amber-bright"
+                    >
+                      Describe your video
+                    </button>
+                  )}
                   {props.onStartWithText && (
                     <button
                       type="button"
                       onClick={props.onStartWithText}
-                      className="rounded-full bg-amber px-4 py-1.5 text-xs font-semibold text-onaccent transition hover:bg-amber-bright"
+                      className="rounded-full border border-white/25 px-4 py-1.5 text-xs font-medium text-white/85 transition hover:border-white/50"
                     >
                       Start with text
                     </button>

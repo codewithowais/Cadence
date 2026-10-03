@@ -674,15 +674,22 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
   const audioTracks = doc.tracks.filter((tr) => tr.kind === "audio");
   const audioMedia = new Set(audioTracks.flatMap((tr) => tr.clips.map((c) => ("mediaId" in c ? c.mediaId : ""))));
   // Photos/clips a prompt-made video (make_video_from_prompt) shows behind its scenes live on
-  // `tv-media` + `tv-scrim`. They survive restyle/reframe so changing the theme doesn't drop them.
+  // `tv-media`. They survive restyle/reframe so changing the theme doesn't drop them.
+  const keepOverlays = !!opts.scenes; // rebuilds of an existing video keep them; a fresh script does not
   const overlayTracks = doc.tracks
-    .filter((tr) => tr.id === "tv-media" || tr.id === "tv-scrim")
+    .filter((tr) => keepOverlays && tr.id === "tv-media")
     .map((tr) => ({
       ...tr,
       clips: tr.clips
         .filter((c) => c.start < t - 0.05)
         .map((c) => (c.start + c.duration > t + X ? { ...c, duration: round(t + X - c.start) } : c)),
     }))
+    .filter((tr) => tr.clips.length > 0);
+  // Animated graphics (CTAs, badges, stickers…) live on their own `graphics-*` lanes; a restyle /
+  // reframe re-lays the text but keeps them (clipped to the new length).
+  const graphicTracks = doc.tracks
+    .filter((tr) => keepOverlays && /^graphics-/.test(tr.id))
+    .map((tr) => ({ ...tr, clips: tr.clips.filter((c) => c.start < t - 0.05) }))
     .filter((tr) => tr.clips.length > 0);
   const overlayMedia = new Set(overlayTracks.flatMap((tr) => tr.clips.map((c) => ("mediaId" in c ? c.mediaId : ""))));
   const first = scenes[0]!.head.replace(/\s+/g, " ").trim();
@@ -701,6 +708,7 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
       ...overlayTracks,
       { id: "tv-accents", kind: "visual", name: "Accents", clips: accClips },
       { id: "tv-text", kind: "visual", name: "Text", clips: textClips },
+      ...graphicTracks,
       ...audioTracks,
     ],
     textVideo: { theme, format, pace, ...(doc.textVideo?.storyboard ? { storyboard: doc.textVideo.storyboard } : {}) },

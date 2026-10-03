@@ -59,10 +59,32 @@ export default function LandingPage() {
             footage, adds captions, fixes the sound, or makes a whole animated video from text. Everything
             it does stays editable, and the file you export looks exactly like the preview.
           </p>
-          <div className="mt-8 flex flex-wrap items-center gap-3">
+          {/* Prompt → video: a plain GET form, so it works before any JS loads. */}
+          <form action="/editor" method="get" className="mt-8 flex max-w-xl flex-col gap-2 sm:flex-row" aria-label="Describe your video">
+            <label htmlFor="hero-describe" className="sr-only">
+              Describe the video you want
+            </label>
+            <input
+              id="hero-describe"
+              name="describe"
+              data-testid="hero-describe"
+              type="text"
+              autoComplete="off"
+              placeholder="30s Instagram promo for my coffee shop…"
+              className="voice min-w-0 flex-1 rounded-xl border border-line bg-elevated px-4 py-3 text-base text-text placeholder:text-faint focus:border-amber/50"
+            />
+            <button
+              type="submit"
+              data-testid="hero-describe-go"
+              className="rounded-xl bg-amber px-5 py-3 text-sm font-semibold text-onaccent transition hover:bg-amber-bright"
+            >
+              Describe your video
+            </button>
+          </form>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
             <Link
               href="/editor"
-              className="rounded-xl bg-amber px-5 py-3 text-sm font-semibold text-onaccent transition hover:bg-amber-bright"
+              className="rounded-xl border border-line bg-elevated px-5 py-3 text-sm font-semibold text-text transition hover:border-amber/50"
             >
               Open the editor
             </Link>

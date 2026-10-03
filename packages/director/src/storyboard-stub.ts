@@ -516,6 +516,22 @@ export function punchy(text: string): string {
 
 export type RefineKind = "regenerate" | "punchier" | "shorter" | "longer" | "different-style";
 
+/** The storyboard review screen's style controls (palette / theme / mood / music / frame). Copy is untouched. */
+export function setStoryboardStyle(
+  sb: Storyboard,
+  patch: { palette?: string; theme?: Storyboard["theme"]; mood?: Mood; music?: Storyboard["music"]["mood"]; aspect?: StoryAspect; sfx?: boolean; voiceover?: boolean },
+): Storyboard {
+  let out = sb;
+  if (patch.palette && PALETTES[patch.palette]) out = restyle(out, patch.palette, out.mood, out.theme, "keep");
+  if (patch.mood) out = restyle(out, out.palette.name, patch.mood, out.theme);
+  if (patch.theme) out = { ...out, theme: patch.theme };
+  if (patch.music) out = { ...out, music: { ...out.music, mood: patch.music } };
+  if (patch.aspect) out = { ...out, aspect: patch.aspect };
+  if (patch.sfx !== undefined) out = { ...out, sfx: patch.sfx };
+  if (patch.voiceover !== undefined) out = { ...out, voiceover: patch.voiceover };
+  return out;
+}
+
 const STYLE_CYCLE: { theme: Storyboard["theme"]; mood: Mood }[] = [
   { theme: "bold", mood: "bold" },
   { theme: "elegant", mood: "elegant" },
@@ -528,7 +544,7 @@ const STYLE_CYCLE: { theme: Storyboard["theme"]; mood: Mood }[] = [
   { theme: "corporate", mood: "professional" },
 ];
 
-function restyle(sb: Storyboard, paletteName: string, mood: Mood, theme: Storyboard["theme"]): Storyboard {
+function restyle(sb: Storyboard, paletteName: string, mood: Mood, theme: Storyboard["theme"], music: "keep" | "mood" = "mood"): Storyboard {
   const palette = PALETTES[paletteName] ?? PALETTES.sunset!;
   const L = palette.colors.length;
   const motion = motionFor(mood);
@@ -538,7 +554,7 @@ function restyle(sb: Storyboard, paletteName: string, mood: Mood, theme: Storybo
     mood,
     theme,
     palette: { name: paletteName, colors: palette.colors, text: palette.text, accent: palette.accent },
-    music: { ...sb.music, mood: sb.music.mood === "none" ? "none" : MOOD_MUSIC[mood] },
+    music: { ...sb.music, mood: music === "keep" || sb.music.mood === "none" ? sb.music.mood : MOOD_MUSIC[mood] },
     pace: mood === "calm" || mood === "elegant" ? "slow" : mood === "energetic" || mood === "bold" ? "fast" : "normal",
     scenes: sb.scenes.map((s, i) => ({
       ...s,
@@ -577,7 +593,7 @@ export function refineStoryboard(sb: Storyboard, kind: RefineKind, media: MediaA
         if (!keepBody) delete next.body;
         return next;
       });
-      const bold = restyle({ ...sb, scenes }, sb.palette.name, sb.mood === "calm" || sb.mood === "elegant" ? "bold" : sb.mood, sb.theme === "minimal" || sb.theme === "elegant" ? "bold" : sb.theme);
+      const bold = restyle({ ...sb, scenes }, sb.palette.name, sb.mood === "calm" || sb.mood === "elegant" ? "bold" : sb.mood, sb.theme === "minimal" || sb.theme === "elegant" ? "bold" : sb.theme, "keep");
       return { ...bold, sfx: true, pace: "fast" };
     }
     case "different-style": {

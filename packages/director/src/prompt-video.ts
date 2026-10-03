@@ -122,7 +122,6 @@ export function buildStoryboardVisuals(sb: Storyboard, media: MediaAsset[], base
   // Backgrounds: the storyboard's per-scene gradient, pattern and transition.
   const used: MediaAsset[] = [];
   const mediaClips: unknown[] = [];
-  const scrimClips: unknown[] = [];
   sb.scenes.forEach((scene, i) => {
     const bg = byId.get(`tv-s${i}-bg`);
     if (!bg || bg.kind !== "solid") return;
@@ -137,44 +136,28 @@ export function buildStoryboardVisuals(sb: Storyboard, media: MediaAsset[], base
     const asset = scene.mediaId ? media.find((m) => m.id === scene.mediaId && (m.kind === "image" || m.kind === "video")) : undefined;
     if (!asset) return;
     if (!used.some((u) => u.id === asset.id)) used.push(asset);
-    const look = sb.look ? LOOK_PRESETS[sb.look] : undefined;
-    const lookObj = look ? { brightness: look.brightness, contrast: look.contrast, saturation: look.saturation, warmth: look.warmth } : undefined;
+    // The words sit on top of the photo, so it is dimmed through its own colour grade (brightness)
+    // rather than a scrim shape: a grade exports identically, while the export draws shapes
+    // after text (a scrim would dim the words).
+    const look = LOOK_PRESETS[sb.look ?? "none"];
     const common = {
       start: bg.start,
-      duration: bg.kind === "solid" ? bg.duration : scene.durationSec,
+      duration: bg.duration,
       transform: { x: W / 2, y: H / 2 },
       transitionInSec: bg.transitionInSec,
       transitionType: bg.transitionType,
-      ...(lookObj ? { look: lookObj } : {}),
+      look: { brightness: round(look.brightness * 0.58), contrast: look.contrast, saturation: look.saturation, warmth: look.warmth },
     };
     if (asset.kind === "image") {
       mediaClips.push({ ...common, id: `pv-m${i}`, kind: "image", mediaId: asset.id, motion: KEN_BURNS[i % KEN_BURNS.length] });
     } else {
       mediaClips.push({ ...common, id: `pv-m${i}`, kind: "video", mediaId: asset.id, sourceIn: 0, speed: 1, volume: 0, duration: round(Math.min(common.duration, asset.durationSec ?? common.duration)) });
     }
-    scrimClips.push({
-      id: `pv-scrim${i}`,
-      kind: "shape",
-      shape: "rect",
-      start: bg.start,
-      duration: common.duration,
-      w: W,
-      h: H,
-      fill: "#000000",
-      fillOpacity: 0.42,
-      transform: { x: W / 2, y: H / 2 },
-      transitionInSec: bg.transitionInSec,
-    });
   });
 
   if (mediaClips.length) {
     const bgIdx = clone.tracks.findIndex((t) => t.id === "tv-bg");
-    (clone.tracks as unknown[]).splice(
-      bgIdx + 1,
-      0,
-      { id: "tv-media", kind: "visual", name: "Your media", clips: mediaClips },
-      { id: "tv-scrim", kind: "visual", name: "Legibility scrim", clips: scrimClips },
-    );
+    (clone.tracks as unknown[]).splice(bgIdx + 1, 0, { id: "tv-media", kind: "visual", name: "Your media", clips: mediaClips });
     for (const u of used) if (!clone.media.some((m) => m.id === u.id)) clone.media.push(u);
   }
   doc = parseEditDoc(clone);
