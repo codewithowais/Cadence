@@ -50,6 +50,7 @@ import {
   type TransitionType,
   type VideoClip,
   type Vfx,
+  blurRadiusFor,
 } from "@cadence/core";
 
 /** What a built plan carries. `args` is the ffmpeg argv (no shell needed). */
@@ -475,6 +476,30 @@ export function atempoChain(speed: number): string[] {
   return steps.map((s) => `atempo=${r3(s)}`);
 }
 
+// --- canvas fit (Fill / Fit + solid or blurred bars) -------------------------
+
+/** Marker element in a video chain that pushVideoChain expands into a blurred-bg split. */
+const FIT_BLUR_MARK = "@fitblur";
+
+/**
+ * The scale-to-frame step of a base visual clip. Fill (the default / legacy) is the
+ * cover scale + crop. Fit contains the whole picture: solid bars via scale+pad, or a
+ * blurred, enlarged copy behind it (a marker pushVideoChain expands). Never stretches.
+ * Faithful: scale/pad/boxblur only.
+ */
+function coverFilters(doc: EditDoc, W: number, H: number): string[] {
+  const cv = doc.meta.canvas;
+  if (cv?.fit !== "fit") return [`scale=${W}:${H}:force_original_aspect_ratio=increase`, `crop=${W}:${H}`];
+  if (cv.fill === "solid") {
+    return [
+      `scale=${W}:${H}:force_original_aspect_ratio=decrease`,
+      `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x${cv.fillColor.replace("#", "")}`,
+      "setsar=1",
+    ];
+  }
+  return [`${FIT_BLUR_MARK}:${W}:${H}:${blurRadiusFor(cv, W, H)}`];
+}
+
 // --- static zoom / crop (manual reframe) ------------------------------------
 
 /**
@@ -876,6 +901,26 @@ function pushVideoChain(
   regionFx: RegionFx | undefined,
   outName: string,
 ): void {
+  // Canvas "Fit + blurred background": the chain carries a FIT_BLUR marker where the
+  // cover scale+crop would be; expand it into a split → blurred cover bg + contained fg.
+  const fb = chain.findIndex((f) => f.startsWith(FIT_BLUR_MARK));
+  if (fb >= 0) {
+    const [, fw, fh, radius] = chain[fb]!.split(":");
+    const pre = chain.slice(0, fb);
+    const post = chain.slice(fb + 1);
+    const o = outName;
+    filters.push(`[${head}]${[...pre, "split"].join(",")}[${o}fa][${o}fb]`);
+    filters.push(`[${o}fa]scale=${fw}:${fh}:force_original_aspect_ratio=increase,crop=${fw}:${fh},boxblur=${radius}:2[${o}bg]`);
+    filters.push(`[${o}fb]scale=${fw}:${fh}:force_original_aspect_ratio=decrease[${o}fg]`);
+    const tail = [`overlay=(W-w)/2:(H-h)/2`, "setsar=1", ...post].join(",");
+    if (regionFx) {
+      filters.push(`[${o}bg][${o}fg]${tail}[${o}pre]`);
+      filters.push(...regionFxGraph(regionFx, `${o}pre`, o));
+    } else {
+      filters.push(`[${o}bg][${o}fg]${tail}[${o}]`);
+    }
+    return;
+  }
   if (regionFx) {
     filters.push(`[${head}]${chain.join(",")}[${outName}pre]`);
     filters.push(...regionFxGraph(regionFx, `${outName}pre`, outName));
@@ -1275,8 +1320,7 @@ export function buildExportPlan(
         : [...stab, ...(c.reversed ? ["reverse"] : []), speedSetpts(c.speed)];
     return [
       ...head,
-      `scale=${W}:${H}:force_original_aspect_ratio=increase`,
-      `crop=${W}:${H}`,
+      ...coverFilters(doc, W, H),
       ...staticZoomFilters(c, W, H),
       ...(emph ? [emph] : []),
       ...(kfZoom ? [kfZoom] : []),
@@ -1321,8 +1365,7 @@ export function buildExportPlan(
       const vChain = [
         ...(c.reversed ? ["reverse"] : []),
         `setpts=(PTS-STARTPTS)/${r3(rate)}`,
-        `scale=${W}:${H}:force_original_aspect_ratio=increase`,
-        `crop=${W}:${H}`,
+        ...coverFilters(doc, W, H),
         ...staticZoomFilters(c, W, H),
         ...lookFilters(c.look, resolveMediaPath),
         "format=yuv420p",
@@ -1432,8 +1475,7 @@ export function buildExportPlan(
       const c = clip as ImageClip;
       const idx = addInput(["-loop", "1", "-t", String(r3(c.duration))], resolveMediaPath(c.mediaId));
       const vChain = [
-        `scale=${W}:${H}:force_original_aspect_ratio=increase`,
-        `crop=${W}:${H}`,
+        ...coverFilters(doc, W, H),
         // PERF: `-loop 1 -t` feeds ffmpeg many looped frames, and zoompan emits its
         // `d=` frame count PER INPUT FRAME — that multiplication rendered ~7,680
         // frames per still (a 5-minute encode). Trim to a SINGLE frame first so
@@ -1487,8 +1529,7 @@ export function buildExportPlan(
       const kfZoom = keyframeScaleZoompan(c, W, H, fps);
       const vChain = [
         "setpts=PTS-STARTPTS",
-        `scale=${W}:${H}:force_original_aspect_ratio=increase`,
-        `crop=${W}:${H}`,
+        ...coverFilters(doc, W, H),
         ...staticZoomFilters(c, W, H),
         ...(kfZoom ? [kfZoom] : []),
         ...lookFilters(c.look, resolveMediaPath),

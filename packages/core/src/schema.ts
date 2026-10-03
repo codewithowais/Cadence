@@ -1426,12 +1426,57 @@ export const Track = z.object({
 });
 export type Track = z.infer<typeof Track>;
 
+/**
+ * First-class CANVAS settings (Custom ratio / Canva "custom size" / Premiere sequence
+ * settings): how footage adapts to a frame whose aspect differs from the source, plus the
+ * user's own saved sizes. Entirely OPTIONAL on `meta` — a doc without it behaves exactly as
+ * before (frame-cover FILL), so every stored doc still parses unchanged. The frame size
+ * itself stays `meta.width`/`meta.height` (the single source of truth for every renderer).
+ * There is deliberately NO "stretch" fit: media is never distorted.
+ *
+ *  - fit "fill"  — cover the frame (crop the overflow). The historical behavior.
+ *  - fit "fit"   — contain the whole picture; the leftover bars take `fill`:
+ *      fill "blur"  — a blurred, enlarged copy of the picture (preview AND export);
+ *      fill "solid" — `fillColor`.
+ */
+export const CanvasFit = z.enum(["fill", "fit"]);
+export type CanvasFit = z.infer<typeof CanvasFit>;
+export const CanvasFill = z.enum(["blur", "solid"]);
+export type CanvasFill = z.infer<typeof CanvasFill>;
+export const CustomCanvasPreset = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(60),
+  width: z.number().int().min(64).max(7680),
+  height: z.number().int().min(64).max(7680),
+});
+export type CustomCanvasPreset = z.infer<typeof CustomCanvasPreset>;
+export const CanvasSettings = z.object({
+  fit: CanvasFit.default("fill"),
+  fill: CanvasFill.default("blur"),
+  fillColor: HexColor.default("#000000"),
+  /** Blur strength 0..1 for fill "blur". */
+  blur: z.number().min(0).max(1).default(0.6),
+  /** The ratio the user typed/picked ("21:9", "1.91:1") — a label only; width/height rule. */
+  ratio: z.string().max(24).optional(),
+  /** The preset id this size came from (UI highlight only). */
+  presetId: z.string().max(64).optional(),
+  /** Link-lock: editing one dimension keeps the ratio (UI preference, persisted). */
+  linked: z.boolean().default(true),
+  /** Preset ids queued for "Magic resize" (the Director's `magic_resize` records them here). */
+  magicTargets: z.array(z.string().max(64)).max(24).optional(),
+  /** The user's saved custom sizes, embedded so they travel with the project. */
+  customPresets: z.array(CustomCanvasPreset).max(24).default([]),
+});
+export type CanvasSettings = z.infer<typeof CanvasSettings>;
+
 export const Meta = z.object({
   title: z.string().default("Untitled"),
   fps: z.number().positive().default(30),
   width: z.number().int().positive().default(1920),
   height: z.number().int().positive().default(1080),
   background: HexColor.default("#000000"),
+  /** Canvas fit/fill + saved sizes. Absent ⇒ legacy frame-cover behavior. */
+  canvas: CanvasSettings.optional(),
 });
 export type Meta = z.infer<typeof Meta>;
 

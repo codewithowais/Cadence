@@ -7,6 +7,7 @@
  * The real Director swaps this rules brain for an LLM but calls the same tools.
  */
 import { docDurationSec, FONT_LIBRARY, fontStack, type ColorGrade, type EditDoc, type TextAnimStyle } from "@cadence/core";
+import { parseCanvasRequest, parseMagicResize } from "./canvas-parse";
 import {
   isTextVideo,
   type TextVideoAspect,
@@ -53,6 +54,8 @@ import {
   platformTool,
   qualityTool,
   reframeTool,
+  setCanvasSizeTool,
+  magicResizeTool,
   removeSilenceTool,
   reverseClipTool,
   setBlendTool,
@@ -1130,7 +1133,10 @@ export class StubDirector {
     // ---- transforms (apply on the current doc, in a sensible order) ----
     // A delivery platform ("export for tiktok") reframes + sets quality + fps in
     // one step, so it takes precedence over a plain aspect reframe.
-    const platform = parsePlatform(req);
+    // Magic resize ("resize for all social platforms") queues several sizes and wins
+    // over a single-platform preset.
+    const magicReq = parseMagicResize(req);
+    const platform = magicReq ? null : parsePlatform(req);
     const animateReq = parseAnimate(req);
     if (platform) {
       const input = { platform };
@@ -1155,9 +1161,28 @@ export class StubDirector {
       });
     }
 
+    if (magicReq) {
+      steps.push({
+        run: (p) => magicResizeTool.execute(magicReq, { project: p }),
+        call: { name: magicResizeTool.name, input: magicReq },
+      });
+    }
+
+    // Custom canvas — a numeric ratio ("make it 21:9", "3:2", "1.91:1"), an explicit
+    // "1080 by 1350", or a fit mode ("fit it with a blurred background"). Wins over the
+    // named-aspect reframe below; a fit-only request keeps the current frame size.
+    const canvasReq = !platform && !autoReframeReq && !magicReq ? parseCanvasRequest(req) : null;
+    if (canvasReq) {
+      steps.push({
+        run: (p) => setCanvasSizeTool.execute(canvasReq.input, { project: p }),
+        call: { name: setCanvasSizeTool.name, input: canvasReq.input },
+      });
+    }
+
     // A custom width×height ("reframe to 1600x900") wins over a named aspect.
-    const custom = parseCustomReframe(req);
-    const aspect = parseAspect(req);
+    const sizedCanvas = canvasReq?.kind === "size";
+    const custom = sizedCanvas || magicReq ? null : parseCustomReframe(req);
+    const aspect = sizedCanvas || magicReq ? null : parseAspect(req);
     if (custom && !autoReframeReq) {
       const input = { width: custom.width, height: custom.height };
       steps.push({
