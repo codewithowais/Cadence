@@ -10,6 +10,11 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
   - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
 
+## Cycle J — Already-built video → divided into clips — ✅ shipped (Senior Video Editor lane, feature #7)
+
+- ✅ Pure scene scoring + 4 other split strategies (`packages/understanding/src/scenes.ts`), ffmpeg scan upgrade (`scenes-ffmpeg.ts`), `splitIntoScenes` op, `split_into_scenes` tool + routing + evals, in-browser detector, banner + Media-room section + live markers, `/api/scenes`. See `docs/agents/scene-split-cycle-j.md` and CHANGELOG S7.1. *verified: unit 186/186 · verify 71/71 · evals 9/9 · next build · e2e scene-split.*
+- ⬜ **Limitations:** hard cuts only (slow dissolves/fades are under-detected — raise sensitivity or use sentences/interval); PySceneDetect not wired; the timeline strip shows the generic clip name (the new `label` shows in the Media room list + code drawer, CutsStrip is another lane's file); a clip trimmed before dividing gets numbered, not transcript, labels.
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*

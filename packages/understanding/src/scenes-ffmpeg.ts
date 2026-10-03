@@ -64,7 +64,7 @@ export async function ffmpegPresent(bin = process.env.FFMPEG_PATH || "ffmpeg"): 
   const { spawn } = await import("node:child_process");
   return new Promise((resolve) => {
     try {
-      const p = spawn(bin, ["-version"], { stdio: "ignore" });
+      const p = spawn(/* turbopackIgnore: true */ bin, ["-version"], { stdio: "ignore" });
       p.on("error", () => resolve(false));
       p.on("close", (code) => resolve(code === 0));
     } catch {
@@ -97,7 +97,7 @@ export async function detectSceneFfmpeg(
       }
     };
     try {
-      const p = spawn(bin, sceneScanArgs(safe, threshold), { stdio: ["ignore", "ignore", "pipe"] });
+      const p = spawn(/* turbopackIgnore: true */ bin, sceneScanArgs(safe, threshold), { stdio: ["ignore", "ignore", "pipe"] });
       const timer = setTimeout(() => {
         p.kill("SIGKILL");
         finish({ available: false, reason: "ffmpeg scene scan timed out." });
