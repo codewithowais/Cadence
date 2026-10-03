@@ -85,6 +85,10 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 **Reliability, speed & trust** (CTO)
 - ✅ Live **export progress** (% + ETA + phase) with real server-side **cancel**, export **pre-flight** checks, **autosave + crash recovery** (doc + media in IndexedDB) for the scratch editor, panel **error boundaries**, **.cadence.json project files** with media re-link, playback perf (idle panels skip frames). Verify check 69.
 
+**Timeline upgrade & drag-and-drop** (Senior Video Editor, Cycle J — details in `docs/agents/timeline-dnd-cycle-j.md`)
+- ✅ Proper **time ruler** (adaptive ticks, `m:ss` / frame labels), live **timecode** readout, **scrub** by dragging the ruler / playhead, zoom around the cursor (Ctrl/⌘+wheel), smooth playhead follow, per-track **height** S/M/L, **filmstrip thumbnails** on video clips, **waveforms** on audio clips, snap indicator with timecode.
+- ✅ **Drag & drop done properly:** reorder with a ghost + live drop preview, **Esc cancels**, **Insert / Overwrite** drop modes, drop Media / text styles / stickers / graphics onto a lane **at a time** or onto the **preview** as an overlay, move clips between tracks without collisions, **multi-select group drag**, edge auto-scroll, full undo/redo, keyboard lane move (⌥⇧↑/↓), pointer/touch-friendly.
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

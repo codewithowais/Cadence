@@ -10,6 +10,14 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
   - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
 
+## Cycle J — timeline + drag-and-drop (Senior Video Editor lane) — ✅ COMPLETE
+
+Details: `docs/agents/timeline-dnd-cycle-j.md` · CHANGELOG S7.1.
+
+- ✅ **Timeline:** adaptive ruler + timecode, scrubbing, Ctrl/⌘+wheel zoom, smooth follow, per-track height, filmstrip thumbnails, per-clip waveforms, snap indicator.
+- ✅ **Drag & drop:** ghost + drop preview, Esc cancel, Insert/Overwrite modes, group drag, edge auto-scroll, palette drops (media / text styles / stickers / graphics) onto lanes at a time or the preview, keyboard lane move.
+- ⬜ **Known limitations:** palette drags use HTML5 DnD (mouse/pen; touch gets tap-to-add, not drag); Esc cancels moves/drops but trims commit live (undoable); group drag onto a different lane moves only when every clip fits; overlays (text/stickers/graphics) intentionally stack instead of colliding; the default timeline panel height (150px) still hides the lanes under the toolbar until it is enlarged (divider or `cadence:tlH`).
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*
