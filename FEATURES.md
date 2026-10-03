@@ -69,8 +69,10 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - ✅ **Exports exactly as previewed** — media-less docs render every frame through the shared canvas; animated titles over footage export as frame sequences (no more frozen text).
 - ✅ **Text-video templates** in New project (Announcement, Quote, Tips list, Neon promo) + landing prompt chips.
 
-## 3d. Cycle J — emoji (Motion Designer, details in `docs/agents/emoji-cycle-j.md`)
-- ✅ Design → **Emoji**: all 1,870 standard emoji (3,395 with skin tones) — virtualized picker, search, categories, skin tones, recents + favorites, click-to-add or drag onto the preview; real color emoji in preview AND export (Twemoji sprites). 7 animated reaction packs (🔥 burst, ❤️ float-up, 👏 clap spam, 😂 laugh shake, confetti/party, sparkle, hearts pop), emoji inside any text, 9 emoji text styles. Tools: `add_emoji`, `add_reaction` (even "when I say love"), `edit_emoji`.
+## 3d. Cycle J — creation, placement & polish (7 parallel agents; details in `docs/agents/*-cycle-j.md`)
+
+**Emoji** (Motion Designer — `docs/agents/emoji-cycle-j.md`)
+- ✅ Design → **Emoji**: all 1,870 standard emoji (3,395 with skin tones) — virtualized picker, search, categories, skin tones, recents + favorites, click-to-add, or drag onto the preview **or onto a timeline lane at a time**; real color emoji in preview AND export (Twemoji sprites). 7 animated reaction packs (🔥 burst, ❤️ float-up, 👏 clap spam, 😂 laugh shake, confetti/party, sparkle, hearts pop), emoji inside any text, 9 emoji text styles. Tools: `add_emoji`, `add_reaction` (even "when I say love"), `edit_emoji`.
 
 ## 3c. Cycle I — specialist agent waves (details in `docs/agents/*.md`)
 **Editing speed & timeline craft** (Senior Video Editor)
@@ -91,7 +93,7 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 **Reliability, speed & trust** (CTO)
 - ✅ Live **export progress** (% + ETA + phase) with real server-side **cancel**, export **pre-flight** checks, **autosave + crash recovery** (doc + media in IndexedDB) for the scratch editor, panel **error boundaries**, **.cadence.json project files** with media re-link, playback perf (idle panels skip frames). Verify check 69.
 
-## 3d. Cycle J — Custom ratio (details in `docs/agents/custom-ratio-cycle-j.md`)
+**Custom ratio** (`docs/agents/custom-ratio-cycle-j.md`)
 - ✅ **Canvas & size** — type any W×H or ratio (21:9 · 3:2 · 7:5 · 1.91:1) with link-lock, rotate and live validation; 40 platform presets (YouTube, Shorts/TikTok/Reels, Instagram post/story/carousel, Facebook, X, LinkedIn, Pinterest, Snapchat, Twitch, A4/poster, cinema scope, 4:3, 21:9, GIF) with ratio thumbnails; saved sizes + recents; **Fill / Fit with blurred or solid bars** (preview == export); text re-laid by fractions; **safe-zone guides**; **Magic resize** to many sizes + export all. Tools: `set_canvas_size`, `magic_resize` ("make it 21:9", "make it 1080 by 1350", "resize for all social platforms").
 
 **Timeline upgrade & drag-and-drop** (Senior Video Editor, Cycle J — details in `docs/agents/timeline-dnd-cycle-j.md`)
@@ -101,12 +103,12 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 **Position & transform** (Cycle J — Canva / CapCut / After-Effects-grade placement)
 - ✅ **On-canvas selection box** for any text, shape, sticker or overlay: drag to move, 8 resize handles on shapes (corner handles on text/overlays, which scale uniformly), rotate handle (⇧ = 15°), ⇧ keeps aspect / ⌥ resizes from the centre, **arrow-key nudge** (⇧ ×10), **double-click text to edit in place**, ⇧-click multi-select. **Smart guides + snapping** to the canvas centre/edges, the 5% title-safe margins and other layers' edges/centres (⌥ bypasses). A whole drag is one undo step.
 - ✅ **Transform inspector** (Stage side panel): X · Y · W · H · rotation · scale · opacity, reference point, flip H/V, lock aspect, px/% units, 9-point + edge **align** (to the canvas or the selection), **distribute**, Fit / Fill / Reset, bring forward / send backward / to front / to back. **Keyframe-aware** (◆): editing a keyframed property writes a keyframe at the playhead.
-- ✅ Director: `set_transform`, `align_clip`, `arrange_clip` — *"move the title to the top left"*, *"make the logo smaller"*, *"center it"*, *"rotate 15 degrees"*, *"flip the logo"*, *"make it 50% transparent"*, *"send it to the back"* (verify check 71, evals g/h, details in `docs/agents/position-cycle-j.md`).
+- ✅ Director: `set_transform`, `align_clip`, `arrange_clip` — *"move the title to the top left"*, *"make the logo smaller"*, *"center it"*, *"rotate 15 degrees"*, *"flip the logo"*, *"make it 50% transparent"*, *"send it to the back"* (verify check 74, evals m/n, details in `docs/agents/position-cycle-j.md`).
 
-## 3d. Cycle J — render fidelity & polish
+**Render fidelity & polish** (`docs/agents/render-debt-cycle-j.md`)
 - True z-order export; keyframes (x/y/rotation/opacity/scale) export as in the preview; speed-ramp presets (montage, hero-time, bullet-time, flash-in) with a one-tap strip; karaoke styles (color/fill/box/pop/underline/glow) + 6 viral caption presets; `.cube` LUTs + 6 free built-in looks (exact export, approximate preview); adjustment layers preview; Urdu / Arabic / Hindi fonts with correct shaping and right-to-left layout; handwriting text animation; per-scene themes for text videos.
 
-## 3d. Cycle J — prompt-based video making (details in `docs/agents/prompt-to-video-cycle-j.md`)
+**Prompt-based video making** (`docs/agents/prompt-to-video-cycle-j.md`)
 - ✅ **Describe a whole video in one sentence** — "30s Instagram promo for my coffee shop, warm vibe, upbeat music", "birthday wish for Ayesha", "explain how photosynthesis works in 45s", "travel recap of Istanbul using my photos" (`make_video_from_prompt`). 12 genres (promo/ad, explainer, birthday & greeting, travel recap, tutorial/tips, announcement, quote, event invite, product launch, testimonial, intro/outro, photo slideshow) × platform / length / mood / palette / language read from the sentence; with or without uploaded media.
 - ✅ **A storyboard you review first** — scene cards with real, specific copy (never lorem ipsum): edit words, change a scene's length, reorder, regenerate one scene, swap theme / palette / music / shape, attach photos or clips (shown dimmed behind the words) — then **Create video** (one undoable step) into a fully editable text video with graphics, music and sound effects.
 - ✅ **Refine in a tap** — Regenerate · Punchier · Shorter · Longer · Different style (`refine_video`), in the studio, the Text room's Describe tab, the next-step chips and plain words ("make it punchier").
@@ -156,9 +158,9 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - ⛔ **Real Claude Director** (Anthropic API, metered) — planned drop-in behind the money gate; stub stays as fallback.
 
 ## 10. Engineering / quality gates
-- ✅ **Verify gate** — `npm run typecheck` + `npm run verify` renders real frames and asserts (currently **17 checks**: trivial, highlight, edit tools, slideshow, titles/fades/looks, enhance providers, export plan, ffmpeg-graceful, DB builders, migrations, music, b-roll, kinetic, punch-in, whisper-parse, transcriber-factory, agentic-loop).
-- ✅ **Eval suite** — `npm run evals` runs the agentic loop over 5 capability prompts, asserting each verifies, calls the right tools, and renders a proof frame (`.cadence/`).
-- ✅ **End-to-end browser test** — `npm run test:e2e` (Playwright, headless Chromium) drives the REAL running app: it authors a real `.webm` in-browser (canvas → `MediaRecorder`) plus PNG photos, uploads them through the actual file input, runs the full video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), the rooms rail, the Audio mute toggle, the photo→slideshow flow, and the graceful ffmpeg-missing export (message + JSON fallback) — asserting the edit-doc and AppliedStatus after each step, with a screenshot per step to `test-artifacts/`. CI: `npm run test:e2e:install` (Chromium) then `npm run test:e2e` (boots its own dev server when none is running).
+- ✅ **Verify gate** — `npm run typecheck` + `npm run verify` renders real frames and asserts (currently **83 numbered checks** incl. real ffmpeg encodes: trivial, highlight, edit tools, slideshow, titles/fades/looks, enhance providers, export plan, ffmpeg-graceful, DB builders, migrations, music, b-roll, kinetic, punch-in, whisper-parse, transcriber-factory, agentic-loop).
+- ✅ **Eval suite** — `npm run evals` runs the agentic loop over **28 capability prompts** (video, text, emoji, scene split, canvas, position, prompt-to-video), asserting each verifies, calls the right tools, and renders a proof frame (`.cadence/`).
+- ✅ **End-to-end browser test** — `npm run test:e2e` (Playwright, headless Chromium; **56 specs**) drives the REAL running app: it authors a real `.webm` in-browser (canvas → `MediaRecorder`) plus PNG photos, uploads them through the actual file input, runs the full video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), the rooms rail, the Audio mute toggle, the photo→slideshow flow, and the graceful ffmpeg-missing export (message + JSON fallback) — asserting the edit-doc and AppliedStatus after each step, with a screenshot per step to `test-artifacts/`. CI: `npm run test:e2e:install` (Chromium) then `npm run test:e2e` (boots its own dev server when none is running).
 - ✅ Pinned dependencies + committed lockfile; small verified commits; `TASKS.md` + `CHANGELOG.md` trail.
 
 ---
