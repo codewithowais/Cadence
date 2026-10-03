@@ -88,3 +88,12 @@ scene clips carry ids `tv-s{n}-{role}` and `doc.textVideo` stores the recipe
 `scripts/verify.ts`: builds a trivial edit-doc → validates via schema → renders
 frame 0 → asserts a real PNG. Paired with `tsc --noEmit`. Anything that changes
 the edit engine or composition must keep both green.
+
+## Prompt → video (the Storyboard seam)
+`prompt → StoryboardPlanner → Storyboard (zod JSON) → review UI → realiseStoryboard → EditDoc`.
+The **Storyboard** is the contract a real LLM would emit (genre, platform, mood, palette, scenes with
+copy/timing/graphic/media); the stub planner (`packages/director/src/storyboard-*.ts`) emits the same
+JSON deterministically and offline. The realiser reuses the existing engine and tools (`buildTextVideo`,
+`add_graphic`, `generate_music`, `auto_sfx`, gated TTS), and the Storyboard rides on
+`doc.textVideo.storyboard` so refinement survives versions. The Claude planner is dormant behind
+`DIRECTOR_MODE=claude` (money gate); swapping it in changes nothing downstream.

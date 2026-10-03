@@ -23,6 +23,19 @@ function toEditorHref(prompt: string) {
   return `/editor?prompt=${encodeURIComponent(prompt)}`;
 }
 
+/** One-sentence "describe a video" starters: they open the studio with the sentence filled in. */
+const DESCRIBE: string[] = [
+  "30s Instagram promo for my coffee shop, warm vibe, upbeat music",
+  "Birthday wish for Ayesha",
+  "Explain how photosynthesis works in 45s",
+  "Travel recap of Istanbul using my photos",
+  "5 tips for better sleep",
+];
+
+function toStudioHref(prompt: string) {
+  return `/editor?describe=${encodeURIComponent(prompt)}`;
+}
+
 export function PromptChips() {
   return (
     <section className="mx-auto max-w-6xl px-6 py-16 sm:py-20">
@@ -35,7 +48,25 @@ export function PromptChips() {
           </p>
         </div>
 
-        <ul className="mt-8 flex flex-wrap gap-3">
+        <p className="mt-8 text-sm font-medium text-text">Describe a whole video in one sentence</p>
+        <ul className="mt-3 flex flex-wrap gap-3" aria-label="Describe-a-video examples">
+          {DESCRIBE.map((prompt) => (
+            <li key={prompt}>
+              <Link
+                href={toStudioHref(prompt)}
+                className="group inline-flex items-center gap-2 rounded-full border border-amber/40 bg-amber/5 px-4 py-2 text-sm text-text transition hover:border-amber hover:bg-amber/10"
+              >
+                <span aria-hidden="true" className="text-amber transition-transform group-hover:translate-x-0.5">
+                  &rsaquo;
+                </span>
+                <span className="voice">{prompt}</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+
+        <p className="mt-8 text-sm font-medium text-text">Or edit and style what you have</p>
+        <ul className="mt-3 flex flex-wrap gap-3">
           {PROMPTS.map((prompt) => (
             <li key={prompt}>
               <Link

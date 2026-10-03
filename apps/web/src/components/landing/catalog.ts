@@ -24,6 +24,18 @@ export interface CatalogGroup {
 
 export const CATALOG: CatalogGroup[] = [
   {
+    id: "describe",
+    title: "Describe a whole video",
+    summary: "Type one sentence. Cadence plans the scenes, writes the copy and builds an editable video — with or without your photos.",
+    items: [
+      { name: "One sentence to a finished video", what: "Promos, birthday wishes, explainers, travel recaps, tips, invites, launches, testimonials and intros. It picks the length, shape, mood, colors and music for you.", say: "30s Instagram promo for my coffee shop, warm vibe, upbeat music" },
+      { name: "Check it before it's built", what: "See the storyboard first: edit any words, change a scene's length, reorder, or have a single scene written again." },
+      { name: "Your photos behind the words", what: "Attach photos or clips and they appear scene by scene, dimmed so the text stays readable.", say: "travel recap of Istanbul using my photos" },
+      { name: "Refine in a tap", what: "Regenerate, make it punchier, shorter or longer, or try a different style. Your own edits are kept where it makes sense.", say: "make it punchier" },
+      { name: "Fully editable afterwards", what: "Every scene is a normal text scene you can restyle in the Text room, and the music and graphics sit on the timeline.", note: "A voice-over needs a text-to-speech service, which is optional and off by default." },
+    ],
+  },
+  {
     id: "cut",
     title: "Cut and tidy footage",
     summary: "Turn a long, messy recording into a tight video.",

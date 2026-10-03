@@ -86,6 +86,8 @@ import {
 } from "./graphics-tools";
 import { addEmojiTool, addReactionTool, editEmojiTool } from "./emoji-tools";
 import { alignClipTool, arrangeClipTool, setTransformTool } from "./transform-tools";
+import { makeVideoFromPromptTool, planVideoTool } from "./prompt-video";
+import { refineVideoTool } from "./prompt-video-refine";
 import {
   addAdjustment,
   addBroll,
@@ -2303,6 +2305,9 @@ export const DIRECTOR_TOOLS = {
   set_transform: setTransformTool,
   align_clip: alignClipTool,
   arrange_clip: arrangeClipTool,
+  make_video_from_prompt: makeVideoFromPromptTool,
+  plan_video: planVideoTool,
+  refine_video: refineVideoTool,
   add_graphic: addGraphicTool,
   add_lower_third: addLowerThirdTool,
   add_progress_bar: addProgressBarTool,

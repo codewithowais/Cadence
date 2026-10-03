@@ -46,6 +46,9 @@ import { CanvasPanel } from "./CanvasPanel";
 import { openCanvasPanel } from "@/lib/canvas-prefs";
 import { CodeDrawer as CodeDrawerBase } from "./CodeDrawer";
 import { ShortcutsHelp as ShortcutsHelpBase } from "./ShortcutsHelp";
+import { PromptStudio, type StudioCreateResult } from "./PromptStudio";
+import { onOpenPromptStudio } from "@/lib/prompt-studio-bus";
+import { storyboardOf, syncStoryboardWithDoc } from "@cadence/director";
 import {
   emptyDoc,
   combinedVideoDoc,
@@ -244,6 +247,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // ⌘K command palette + "What can I say?" prompt library (first-run ease).
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // "Describe your video" studio (prompt → storyboard review → video).
+  const [studio, setStudio] = useState<{ open: boolean; prompt?: string; review?: boolean }>({ open: false });
   const [paletteRecents, setPaletteRecents] = useState<string[]>([]);
   const assistFileRef = useRef<HTMLInputElement>(null);
   // Directly-editable timeline: the selected clip. Timeline markers are read
@@ -710,7 +715,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
       say("director", res.summary, "edit", { tools: res.toolCalls.map((c) => c.name) });
       showUndoToast(res.summary);
       // A text video lands with no media — open the Text room so its scenes are editable.
-      if (res.toolCalls.some((c) => c.name === "make_text_video")) {
+      if (res.toolCalls.some((c) => c.name === "make_text_video" || c.name === "make_video_from_prompt")) {
         try {
           localStorage.setItem("cadence:textCat", "scenes");
         } catch {
@@ -754,6 +759,16 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
+    // `?describe=<sentence>` / `?studio=1` (landing hero, New project) opens the Describe-your-video studio.
+    const describe = params.get("describe");
+    if (describe !== null || params.get("studio") !== null) {
+      params.delete("describe");
+      params.delete("studio");
+      const left = params.toString();
+      window.history.replaceState(null, "", `${window.location.pathname}${left ? `?${left}` : ""}`);
+      setStudio({ open: true, prompt: describe?.trim() || undefined });
+      return;
+    }
     const p = params.get("prompt")?.trim();
     if (!p) return;
     params.delete("prompt");
@@ -772,6 +787,64 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
     void runDirector(req, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingRequest, hasMedia, busy]);
+
+  // ---- Describe-your-video studio ----------------------------------------------------------
+  // Any panel can open it through the window bus (Text room, rail, empty state).
+  useEffect(
+    () => onOpenPromptStudio((d) => setStudio({ open: true, prompt: d.prompt, review: d.review })),
+    [],
+  );
+
+  /** Register photos / clips / audio as project media WITHOUT touching the timeline (the studio uses them). */
+  async function attachForStudio(incoming: File[]): Promise<MediaAsset[]> {
+    const nextUrls = { ...urlsRef.current };
+    const nextFiles = { ...filesRef.current };
+    const added: MediaAsset[] = [];
+    for (let i = 0; i < incoming.length; i++) {
+      const file = incoming[i]!;
+      const stamp = `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`;
+      const url = URL.createObjectURL(file);
+      let asset: MediaAsset | null = null;
+      if (file.type.startsWith("image")) {
+        const dim = await probeImage(url);
+        asset = { id: `img-${stamp}`, kind: "image", src: file.name, width: dim.width, height: dim.height, label: file.name };
+      } else if (file.type.startsWith("video")) {
+        const meta = await probeVideo(url);
+        asset = { id: `media-${stamp}`, kind: "video", src: file.name, durationSec: Math.round(meta.duration * 1000) / 1000, width: meta.width, height: meta.height, label: file.name };
+      } else if (file.type.startsWith("audio")) {
+        const meta = await probeAudio(url);
+        asset = { id: `audio-${stamp}`, kind: "audio", src: file.name, durationSec: Math.round(meta.duration * 1000) / 1000, label: file.name };
+      }
+      if (!asset) {
+        URL.revokeObjectURL(url);
+        continue;
+      }
+      nextUrls[asset.id] = url;
+      nextFiles[asset.id] = file;
+      added.push(asset);
+    }
+    setUrls(nextUrls);
+    setFiles(nextFiles);
+    setMediaList((list) => [...list, ...added]);
+    return added;
+  }
+
+  /** The studio finished: land the video as ONE undoable step, open the Text room, show the refine chips. */
+  function handleStudioCreate(r: StudioCreateResult) {
+    setStudio({ open: false });
+    setPlaying(false);
+    say("you", r.storyboard.prompt);
+    commit(parseEditDoc(r.doc)); // undoable
+    setTimeSec(0);
+    say("director", r.summary, "edit", { tools: ["make_video_from_prompt"] });
+    showUndoToast("Video created from your description");
+    try {
+      localStorage.setItem("cadence:textCat", "scenes");
+    } catch {
+      /* storage unavailable */
+    }
+    setRoom("text");
+  }
 
   function handleNudge(delta: number) {
     const clone: EditDoc = structuredClone(doc);
@@ -1676,7 +1749,9 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
   // ---- First-run ease: palette / next-step chips / checklist / prompt library ----
   // Every action maps onto an EXISTING path: prompts → handleSend (the composer's
   // path), everything else → the handler the button/shortcut already uses.
-  const assistMode: "video" | "images" | "text" | "none" = mode !== "none" ? mode : docHasText ? "text" : "none";
+  // A video made from a description (even with photos behind its words) is a text video: offer text refinements.
+  const isPromptVideo = useMemo(() => !!storyboardOf(doc), [doc]);
+  const assistMode: "video" | "images" | "text" | "none" = isPromptVideo ? "text" : mode !== "none" ? mode : docHasText ? "text" : "none";
   const hasAudio = projectMedia.some((m) => m.kind === "audio");
   const lastTools = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.tools) return messages[i]!.tools!;
@@ -1863,6 +1938,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
               onFiles={handleFiles}
               onCancel={exporting ? cancelExport : undefined}
               onCollapse={toggleRail}
+              onDescribeVideo={(p) => setStudio({ open: true, prompt: p })}
               mode={assistMode}
               doc={doc}
               hasAudio={hasAudio}
@@ -2054,6 +2130,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           selectedIds={editingCraft.craft.selectedIds}
           onSelectLayer={(id, toggle) => (toggle && id ? editingCraft.craft.onToggleSelect(id) : setSelectedClipId(id))}
           onCommitDoc={commit}
+          onDescribeVideo={() => setStudio({ open: true })}
         />
         </EmojiDropZone>
         </ErrorBoundary>
@@ -2165,6 +2242,16 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         canExport={hasContent}
       />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <PromptStudio
+        open={studio.open}
+        onClose={() => setStudio({ open: false })}
+        media={projectMedia}
+        urls={urls}
+        initialPrompt={studio.prompt}
+        initialStoryboard={studio.review ? (() => { const s = storyboardOf(doc); return s ? syncStoryboardWithDoc(s, doc) : null; })() : null}
+        onAttach={attachForStudio}
+        onCreate={handleStudioCreate}
+      />
       <UndoToast toast={toast} onUndo={undo} onDismiss={() => setToast(null)} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={paletteCommands} onRun={runCommand} />
       <input

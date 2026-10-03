@@ -106,6 +106,15 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 ## 3d. Cycle J — render fidelity & polish
 - True z-order export; keyframes (x/y/rotation/opacity/scale) export as in the preview; speed-ramp presets (montage, hero-time, bullet-time, flash-in) with a one-tap strip; karaoke styles (color/fill/box/pop/underline/glow) + 6 viral caption presets; `.cube` LUTs + 6 free built-in looks (exact export, approximate preview); adjustment layers preview; Urdu / Arabic / Hindi fonts with correct shaping and right-to-left layout; handwriting text animation; per-scene themes for text videos.
 
+## 3d. Cycle J — prompt-based video making (details in `docs/agents/prompt-to-video-cycle-j.md`)
+- ✅ **Describe a whole video in one sentence** — "30s Instagram promo for my coffee shop, warm vibe, upbeat music", "birthday wish for Ayesha", "explain how photosynthesis works in 45s", "travel recap of Istanbul using my photos" (`make_video_from_prompt`). 12 genres (promo/ad, explainer, birthday & greeting, travel recap, tutorial/tips, announcement, quote, event invite, product launch, testimonial, intro/outro, photo slideshow) × platform / length / mood / palette / language read from the sentence; with or without uploaded media.
+- ✅ **A storyboard you review first** — scene cards with real, specific copy (never lorem ipsum): edit words, change a scene's length, reorder, regenerate one scene, swap theme / palette / music / shape, attach photos or clips (shown dimmed behind the words) — then **Create video** (one undoable step) into a fully editable text video with graphics, music and sound effects.
+- ✅ **Refine in a tap** — Regenerate · Punchier · Shorter · Longer · Different style (`refine_video`), in the studio, the Text room's Describe tab, the next-step chips and plain words ("make it punchier").
+- ✅ **Reach it anywhere** — landing hero box, New project → "Describe a video", the editor's empty state, the rail, and the "didn't understand" reply.
+- ✅ **Claude-ready seam** — the `Storyboard` zod schema is what an LLM emits; `StoryboardPlanner` (stub default) + a dormant `ClaudeStoryboardPlanner` behind `DIRECTOR_MODE=claude` (⛔ money gate; unit-tested with a mock; no paid call anywhere).
+- 🎬 **Voice-over** only through the gated TTS provider; off ⇒ everything else is still built and the note says so.
+- Honest by design: stand-in testimonials and unknown-topic explainers are flagged "needs your detail"; facts are verified for 11 explainer topics only.
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

@@ -53,12 +53,13 @@ import {
 } from "@cadence/director";
 import { BackgroundSwatch, TextSwatch, sampleText } from "./TextSwatch";
 import { GraphicsGallery } from "./GraphicsGallery";
+import { PromptVideoPane } from "./PromptVideoPane";
 import { addQuickText, allTexts, findText, lastTitleId, patchText, type QuickTextKind } from "@/lib/text-edit";
 import { PRO_TEXT_PRESETS, insertProPreset, presetPreviewClip } from "@/lib/text-presets-pro";
 import { dragSource } from "@/lib/dnd-payload";
 import type { DropPayload } from "@/lib/timeline-dnd";
 
-type Cat = "create" | "scenes" | "text" | "style" | "animate" | "background";
+type Cat = "create" | "describe" | "scenes" | "text" | "style" | "animate" | "background";
 const CAT_KEY = "cadence:textCat";
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -238,6 +239,7 @@ export function TextRoom(props: TextRoomProps) {
 
   const cats: { key: Cat; label: string; hint: string }[] = [
     { key: "create", label: "Create", hint: "Script → video" },
+    { key: "describe", label: "Describe", hint: "One sentence → video" },
     ...(tv ? [{ key: "scenes" as Cat, label: "Scenes", hint: "Edit & reorder" }] : []),
     { key: "text", label: "Text", hint: "Add & edit" },
     { key: "style", label: "Style", hint: "Fonts & effects" },
@@ -269,6 +271,7 @@ export function TextRoom(props: TextRoomProps) {
       </nav>
       <div className="min-w-0 flex-1 overflow-y-auto px-4 py-3">
         {cat === "create" && <CreatePane {...props} onCreated={() => choose("scenes")} />}
+        {cat === "describe" && <PromptVideoPane doc={doc} busy={props.busy} onAction={props.onAction} />}
         {cat === "scenes" && tv && <ScenesPane {...props} />}
         {cat === "text" && <TextPane {...props} />}
         {cat === "style" && <StylePane {...props} />}

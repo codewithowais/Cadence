@@ -31,3 +31,18 @@ export * from "./emoji-tools";
 export * from "./canvas-parse";
 export * from "./transform-ops";
 export * from "./transform-tools";
+export * from "./storyboard";
+export { parseBrief, type Brief } from "./storyboard-brief";
+export { planVideo, refineStoryboard, regenerateScene, setStoryboardStyle, StubStoryboardPlanner, PALETTES, PALETTE_NAMES, type RefineKind } from "./storyboard-stub";
+export {
+  buildStoryboardVisuals,
+  makeVideoFromPromptTool,
+  planVideoTool,
+  realiseStoryboard,
+  storyboardOf,
+  syncStoryboardWithDoc,
+  toTextScenes,
+  type MakeVideoFromPromptInput,
+  type RealiseResult,
+} from "./prompt-video";
+export { refineVideoTool, REFINE_KINDS } from "./prompt-video-refine";

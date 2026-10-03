@@ -28,6 +28,8 @@ interface DirectorRailProps {
   onCancel?: () => void;
   /** Collapse the chat rail to its slim re-open stub (shortcut: `[`). */
   onCollapse?: () => void;
+  /** Open the "Describe your video" studio (optionally pre-filled). */
+  onDescribeVideo?: (prefill?: string) => void;
   // ---- first-run ease & discoverability (all optional → the rail still works bare) ----
   /** What the project is — drives context-aware suggestions. */
   mode?: EditorMode;
@@ -63,6 +65,7 @@ export function DirectorRail({
   onFiles,
   onCancel,
   onCollapse,
+  onDescribeVideo,
   mode = hasMedia ? "video" : "none",
   doc,
   hasAudio = false,
@@ -205,6 +208,16 @@ export function DirectorRail({
               Choose video or photos
             </button>
             <div className="mt-5 border-t border-line-soft pt-4 text-left">
+              {onDescribeVideo && (
+                <button
+                  type="button"
+                  data-testid="rail-describe"
+                  onClick={() => onDescribeVideo()}
+                  className="mb-4 w-full rounded-lg bg-amber px-3 py-2 text-sm font-semibold text-onaccent transition hover:bg-amber-bright"
+                >
+                  Describe your video
+                </button>
+              )}
               <p className="text-xs font-medium text-text">…or make a video from words</p>
               <p className="mt-0.5 text-[11px] text-faint">No footage needed — tap one, or type your own script.</p>
               <div className="mt-2 flex flex-col gap-1.5">
@@ -250,6 +263,7 @@ export function DirectorRail({
                   busy={busy}
                   onRun={run}
                   onBrowse={openLibrary}
+                  onDescribe={onDescribeVideo}
                 />
               ) : (
                 <div
@@ -414,6 +428,7 @@ function UnmatchedReply({
   busy,
   onRun,
   onBrowse,
+  onDescribe,
 }: {
   message: Message;
   current: boolean;
@@ -422,6 +437,7 @@ function UnmatchedReply({
   busy: boolean;
   onRun: (a: CommandAction) => void;
   onBrowse?: () => void;
+  onDescribe?: (prefill?: string) => void;
 }) {
   const ideas = useMemo(() => closestIdeas(message.request ?? "", { mode, hasAudio }), [message.request, mode, hasAudio]);
   const chips: Chip[] = ideas.map((i) => ({ id: i.id, label: i.label, action: ideaAction(i) }));
@@ -440,6 +456,20 @@ function UnmatchedReply({
           onRun={onRun}
           more={onBrowse ? { label: "See all ideas", onClick: onBrowse } : undefined}
         />
+      )}
+      {onDescribe && current && (
+        <p className="text-xs">
+          Describing a whole video?{" "}
+          <button
+            type="button"
+            data-testid="unmatched-describe"
+            onClick={() => onDescribe(message.request)}
+            className="font-medium text-amber underline-offset-2 hover:underline"
+          >
+            Open the Describe-your-video studio
+          </button>{" "}
+          and I&apos;ll plan the scenes and write the copy.
+        </p>
       )}
       <details className="text-xs">
         <summary className="cursor-pointer select-none text-faint hover:text-muted">More examples</summary>

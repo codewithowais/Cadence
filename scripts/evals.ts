@@ -25,7 +25,7 @@ import {
 } from "@cadence/core";
 import { CanvasRenderEngine } from "@cadence/render-node";
 import { StubTranscriber } from "@cadence/understanding";
-import { ProjectState, StubDirector, runDirectorLoop } from "@cadence/director";
+import { ProjectState, StubDirector, runDirectorLoop, storyboardOf, type Storyboard } from "@cadence/director";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = resolve(__dirname, "..", ".cadence");
@@ -442,7 +442,176 @@ const EVALS: Eval[] = [
     },
     proof: "eval-h-position.png",
   },
+  // ---- PROMPT → VIDEO (one sentence → storyboard → complete editable video) ----------------
+  promptEval({
+    id: "pv-g",
+    capability: "prompt→video · promo (genre, palette, graphics, music)",
+    prompt: "30s Instagram promo for my coffee shop, warm vibe, upbeat music",
+    proof: "eval-g-prompt-promo.png",
+    check: (doc, sb) => {
+      assert(sb.genre === "promo" && sb.platform === "instagram", `genre/platform: ${sb.genre}/${sb.platform}`);
+      assert(doc.meta.width === 1080 && doc.meta.height === 1920, "Instagram promo should be 9:16");
+      const d = docDurationSec(doc);
+      assert(d >= 24 && d <= 38, `~30s expected, got ${d.toFixed(1)}s`);
+      assert(doc.tracks.some((t) => t.id === "music" && t.clips.length > 0), "expected a generated music bed");
+      assert(doc.tracks.some((t) => /^graphics-/.test(t.id)), "expected a CTA graphic (link-in-bio)");
+      assert(sb.palette.name === "coffee", `warm coffee palette expected, got ${sb.palette.name}`);
+      assert(/coffee|cup|brew|latte/i.test(sb.scenes.map((s) => `${s.heading} ${s.body ?? ""}`).join(" ")), "copy should mention the coffee shop's world");
+    },
+  }),
+  promptEval({
+    id: "pv-h",
+    capability: "prompt→video · birthday greeting with the person's name",
+    prompt: "birthday wish for Ayesha",
+    proof: "eval-h-prompt-birthday.png",
+    check: (doc, sb) => {
+      assert(sb.genre === "greeting", `genre ${sb.genre}`);
+      const texts = doc.tracks.flatMap((t) => t.clips).filter((c) => c.kind === "text").map((c) => (c.kind === "text" ? c.text : ""));
+      assert(texts.some((t) => /Happy Birthday, Ayesha/.test(t)), "expected “Happy Birthday, Ayesha!”");
+    },
+  }),
+  promptEval({
+    id: "pv-i",
+    capability: "prompt→video · explainer with real steps",
+    prompt: "explain how photosynthesis works in 45s",
+    proof: "eval-i-prompt-explainer.png",
+    check: (doc, sb) => {
+      assert(sb.genre === "explainer" && doc.meta.width === 1920, "explainer should be 16:9");
+      const d = docDurationSec(doc);
+      assert(d >= 38 && d <= 52, `~45s expected, got ${d.toFixed(1)}s`);
+      assert(sb.scenes.some((s) => /chlorophyll/i.test(s.body ?? "")), "expected the real photosynthesis steps");
+    },
+  }),
+  promptEval({
+    id: "pv-j",
+    capability: "prompt→video · travel recap using uploaded photos",
+    prompt: "travel recap of Istanbul using my photos",
+    photos: 6,
+    proof: "eval-j-prompt-travel-photos.png",
+    check: (doc, sb) => {
+      assert(sb.genre === "travel", `genre ${sb.genre}`);
+      const media = doc.tracks.find((t) => t.id === "tv-media");
+      assert((media?.clips.length ?? 0) >= 6, `expected a photo behind each scene, got ${media?.clips.length}`);
+      assert(doc.media.filter((m) => m.kind === "image").length === 6, "all 6 photos must be in the doc");
+      assert(media!.clips.every((c) => c.kind === "image" && c.look.brightness < 0.8), "photos are dimmed through their grade so the words stay legible");
+    },
+  }),
+  promptEval({
+    id: "pv-k",
+    capability: "prompt→video · tips list (numbered items)",
+    prompt: "5 tips for better sleep",
+    proof: "eval-k-prompt-tips.png",
+    check: (doc, sb) => {
+      assert(sb.genre === "tutorial", `genre ${sb.genre}`);
+      assert(sb.scenes.filter((s) => s.kind === "item").length === 5, "expected five numbered tip scenes");
+      assert(doc.textVideo?.format === "list", "tips should use the list format");
+    },
+  }),
+  promptEval({
+    id: "pv-l",
+    capability: "prompt→video · event invite with date + venue parsed from the sentence",
+    prompt: "invite to my daughter's birthday party this Saturday at 6pm at Gulberg Club",
+    proof: "eval-l-prompt-invite.png",
+    check: (_doc, sb) => {
+      assert(sb.genre === "invite", `genre ${sb.genre}`);
+      const t = sb.scenes.map((s) => `${s.heading} ${s.body ?? ""}`).join(" | ");
+      assert(/Gulberg Club/.test(t) && /Saturday/.test(t), `details missing: ${t}`);
+    },
+  }),
+  promptEval({
+    id: "pv-m",
+    capability: "prompt→video · product launch, cinematic mood",
+    prompt: "product launch video for Nimbus, a budgeting app, cinematic, 20s",
+    proof: "eval-m-prompt-launch.png",
+    check: (doc, sb) => {
+      assert(sb.genre === "launch" && sb.mood === "cinematic", `${sb.genre}/${sb.mood}`);
+      assert(sb.music.mood === "cinematic", `music ${sb.music.mood}`);
+      assert(docDurationSec(doc) >= 16 && docDurationSec(doc) <= 26, `~20s, got ${docDurationSec(doc)}`);
+      assert(sb.scenes.some((s) => /Nimbus/.test(s.heading)), "expected “Meet/Introducing Nimbus”");
+    },
+  }),
+  promptEval({
+    id: "pv-n",
+    capability: "prompt→video · Spanish greeting (language pack)",
+    prompt: "Spanish birthday wish for Carlos",
+    proof: "eval-n-prompt-spanish.png",
+    check: (_doc, sb) => {
+      assert(sb.language === "es", `language ${sb.language}`);
+      assert(sb.scenes.some((s) => /Feliz cumpleaños, Carlos/.test(s.heading)), "expected “¡Feliz cumpleaños, Carlos!”");
+    },
+  }),
+  promptEval({
+    id: "pv-o",
+    capability: "prompt→video · quote with attribution kept verbatim",
+    prompt: 'motivational quote video about discipline: “Discipline is the bridge between goals and results.” — Jim Rohn',
+    proof: "eval-o-prompt-quote.png",
+    check: (doc) => {
+      const texts = doc.tracks.flatMap((t) => t.clips).filter((c) => c.kind === "text").map((c) => (c.kind === "text" ? c.text : ""));
+      assert(texts.some((t) => /bridge between goals and results/.test(t)), "the user's own words must stay verbatim");
+    },
+    // The user supplied the words, so this stays a text video — assert the routing, not the planner.
+    expectTools: ["make_text_video"],
+    requireStoryboard: false,
+  }),
+  promptEval({
+    id: "pv-p",
+    capability: "prompt→video · refine: make it punchier (chained, edits kept)",
+    prompt: "make it punchier",
+    setupPrompt: "30s promo for my bakery",
+    proof: "eval-p-prompt-punchier.png",
+    expectTools: ["refine_video"],
+    check: (doc, sb) => {
+      assert(sb.pace === "fast", `pace ${sb.pace}`);
+      assert(docDurationSec(doc) < 30, `punchier should be tighter than 30s, got ${docDurationSec(doc)}`);
+    },
+  }),
+  promptEval({
+    id: "pv-q",
+    capability: "prompt→video · voice-over request degrades gracefully (money gate)",
+    prompt: "20s promo for my gym with a voice-over",
+    proof: "eval-q-prompt-voiceover-gated.png",
+    check: (doc, sb) => {
+      assert(sb.voiceover === true, "voice-over was requested");
+      assert(!doc.tracks.some((t) => t.id === "voiceover"), "no TTS provider ⇒ no voice-over track (gate holds)");
+      assert(docDurationSec(doc) > 10, "the rest of the video must still be built");
+    },
+  }),
 ];
+
+/** An eval for a one-sentence video prompt (see packages/director/src/prompt-video.ts). */
+function promptEval(o: {
+  id: string;
+  capability: string;
+  prompt: string;
+  proof: string;
+  photos?: number;
+  setupPrompt?: string;
+  expectTools?: string[];
+  requireStoryboard?: boolean;
+  check: (doc: EditDoc, sb: Storyboard) => void;
+}): Eval {
+  return {
+    id: o.id,
+    capability: o.capability,
+    prompt: o.prompt,
+    setup: async () => {
+      const project = o.photos ? photoProject(o.photos) : new ProjectState({ media: [] });
+      if (o.setupPrompt) await new StubDirector().interpret(o.setupPrompt, project);
+      return project;
+    },
+    expectTools: o.expectTools ?? ["make_video_from_prompt"],
+    extra: (doc) => {
+      const sb = storyboardOf(doc);
+      if (o.requireStoryboard === false) {
+        o.check(doc, sb as Storyboard);
+        return;
+      }
+      assert(sb, "the storyboard must ride along on the doc (doc.textVideo.storyboard)");
+      o.check(doc, sb);
+    },
+    proof: o.proof,
+  };
+}
 
 interface EvalOutcome {
   id: string;

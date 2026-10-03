@@ -53,9 +53,10 @@ export type Needs =
   | "video"
   | "images"
   | "text" // a text video
+  | "create" // anything but footage: a video described from scratch
   | "music"; // any content AND an uploaded audio file
 
-export type GoalKey = "shorter" | "social" | "captions" | "look" | "motion" | "sound" | "text" | "photos" | "quality";
+export type GoalKey = "prompt" | "shorter" | "social" | "captions" | "look" | "motion" | "sound" | "text" | "photos" | "quality";
 
 export interface Goal {
   key: GoalKey;
@@ -64,6 +65,7 @@ export interface Goal {
 }
 
 export const GOALS: Goal[] = [
+  { key: "prompt", label: "Describe a video", hint: "One sentence → a whole video" },
   { key: "shorter", label: "Make it shorter", hint: "Highlights, filler & dead air" },
   { key: "social", label: "Get it social-ready", hint: "Vertical, square, platform presets" },
   { key: "captions", label: "Captions & titles", hint: "Burn-in captions, karaoke, lower-thirds" },
@@ -95,6 +97,19 @@ const TEXT_LIST = "make a vertical list video: 3 tips for better sleep\n1. No sc
 const TEXT_NEON = "make a neon text video: Tonight only. Live music. Doors at 9.";
 
 export const PROMPT_LIBRARY: PromptIdea[] = [
+  // Describe a video (one sentence → storyboard → a complete, editable video)
+  { id: "pv-promo", goal: "prompt", label: "Instagram promo for my business", needs: "create", prompt: "30s Instagram promo for my coffee shop, warm vibe, upbeat music", keywords: ["promo", "ad", "advert", "business", "shop", "marketing", "describe", "sentence", "instagram", "reel"] },
+  { id: "pv-birthday", goal: "prompt", label: "Birthday wish with their name", needs: "create", prompt: "birthday wish for Ayesha", keywords: ["birthday", "wish", "greeting", "bday", "card", "happy", "celebrate", "describe"] },
+  { id: "pv-eid", goal: "prompt", label: "Eid or festival greeting", needs: "create", prompt: "Eid Mubarak video for my friend Hamza", keywords: ["eid", "greeting", "festival", "diwali", "christmas", "new year", "wish", "describe"] },
+  { id: "pv-explainer", goal: "prompt", label: "Explainer in 45 seconds", needs: "create", prompt: "explain how photosynthesis works in 45s", keywords: ["explain", "explainer", "how", "learn", "education", "lesson", "describe"] },
+  { id: "pv-travel", goal: "prompt", label: "Travel recap", needs: "create", prompt: "travel recap of Istanbul", keywords: ["travel", "trip", "vacation", "holiday", "recap", "photos", "describe"] },
+  { id: "pv-tips", goal: "prompt", label: "5 tips video", needs: "create", prompt: "5 tips for better sleep", keywords: ["tips", "tutorial", "how to", "list", "steps", "advice", "describe"] },
+  { id: "pv-invite", goal: "prompt", label: "Event invitation", needs: "create", prompt: "invite to my daughter's birthday party this Saturday at 6pm at Gulberg Club", keywords: ["invite", "invitation", "party", "event", "wedding", "rsvp", "save the date", "describe"] },
+  { id: "pv-launch", goal: "prompt", label: "Product launch", needs: "create", prompt: "product launch for Nimbus, a budgeting app, cinematic", keywords: ["launch", "product", "app", "introducing", "announce", "new", "describe"] },
+  { id: "pv-punchier", goal: "prompt", label: "Make it punchier", needs: "text", prompt: "make it punchier", keywords: ["punchy", "tighter", "snappier", "energy", "refine", "describe"] },
+  { id: "pv-shorter", goal: "prompt", label: "Make the video shorter", needs: "text", prompt: "make it shorter", keywords: ["shorter", "trim", "fewer scenes", "refine", "describe"] },
+  { id: "pv-style", goal: "prompt", label: "Try a different style", needs: "text", prompt: "give it a different style", keywords: ["style", "different", "theme", "look", "refine", "describe"] },
+
   // Make it shorter
   { id: "highlight-60", goal: "shorter", label: "Cut a 60-second highlight", needs: "video", prompt: "cut a 60-second highlight of the best parts", keywords: ["shorter", "trim", "best", "boring", "recap", "condense", "summary"] },
   { id: "highlight-30", goal: "shorter", label: "Cut a 30-second teaser", needs: "video", prompt: "cut a 30-second highlight", keywords: ["shorter", "teaser", "trailer", "short", "promo"] },
@@ -195,6 +210,8 @@ export function isAvailable(needs: Needs, mode: EditorMode, hasAudio: boolean): 
       return mode === "images";
     case "text":
       return mode === "text";
+    case "create":
+      return mode !== "video";
     case "music":
       return mode !== "none" && hasAudio;
   }
@@ -215,6 +232,8 @@ export function needsLabel(needs: Needs): string {
       return "needs photos";
     case "text":
       return "for text videos";
+    case "create":
+      return "for a project without footage";
     case "music":
       return "needs a song";
   }
@@ -415,6 +434,8 @@ const AFTER_TOOL: Record<string, string[]> = {
   set_quality: [],
   make_slideshow: ["vertical", "look-warm", "animated-title", "dissolves"],
   set_transition: ["music", "look-warm", "animated-title"],
+  make_video_from_prompt: ["pv-punchier", "pv-shorter", "pv-style", "vertical"],
+  refine_video: ["pv-punchier", "pv-shorter", "pv-style", "vertical"],
   make_text_video: ["theme-neon", "theme-elegant", "vertical", "letters-pop", "aurora"],
   restyle_text_video: ["letters-pop", "vertical", "aurora"],
   animate_text: ["aurora", "gradient-text", "slower-text", "vertical"],
@@ -427,7 +448,7 @@ const STARTERS: Record<EditorMode, string[]> = {
   video: ["highlight-60", "filler", "captions", "vertical", "look-cinematic", "fades", "4k"],
   images: ["vertical", "look-warm", "animated-title", "dissolves", "fades", "4k"],
   text: ["theme-neon", "theme-elegant", "vertical", "letters-pop", "aurora", "fades"],
-  none: ["tv-announce", "tv-quote", "tv-list"],
+  none: ["pv-promo", "pv-birthday", "tv-announce", "tv-quote", "tv-list"],
 };
 
 /** The "you're nearly there" step: download the finished video. */
