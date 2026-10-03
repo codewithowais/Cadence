@@ -48,6 +48,7 @@ import {
 } from "@cadence/director";
 import { insertEmojiPayload } from "@/lib/emoji-insert";
 import { preloadEmoji } from "@/lib/emoji-assets";
+import { dragSource } from "@/lib/dnd-payload";
 
 const CELL = 40;
 const HEAD_H = 28;
@@ -304,6 +305,8 @@ export function EmojiPicker(props: EmojiPickerProps) {
 
   const onDragStart = (e: DragEvent, emoji: string, pack?: string) => {
     e.dataTransfer.effectAllowed = "copy";
+    // Single emoji: also a timeline payload (lanes accept it at a time). Set FIRST — it writes text/plain.
+    if (!pack) dragSource({ type: "sticker", emoji }).onDragStart(e);
     e.dataTransfer.setData(EMOJI_DRAG_MIME, encodeEmojiDrag({ emoji, ...(pack ? { pack } : {}) }));
     e.dataTransfer.setData("text/plain", emoji);
     const img = (e.currentTarget as HTMLElement).querySelector("img");

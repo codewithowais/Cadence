@@ -10,6 +10,12 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
   - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
 
+## Cycle J — merged summary (7 parallel agents, merged feature by feature)
+
+Merge order: CTO docs → emoji → scene split → custom ratio → timeline+DnD → position → export/engine debt → prompt-to-video. Verify check ids renumbered on merge (71 emoji · 72 scene split · 73 custom canvas · 74 position · 75–82 render debt · 83 prompt→video); evals ids: a–f base, g–i emoji, j–l scene split, canvas-a/b/c, m–n position, pv-g…pv-q prompt-to-video. Advisory docs: `docs/COMPETITIVE-GAP-J.md` (25 ranked gaps), `docs/CTO-REVIEW-J.md` (risks + 30/60/90).
+
+- ⬜ **Follow-ups:** show `clip.label` in the timeline strip (`clipLabel` in CutsStrip); shuttle audio ≠1×; flip in ffmpeg export; ⛔/security items from the CTO review (dev-auth open in production, unauthenticated compute endpoints, export job queue).
+
 ## Cycle J — emoji (Motion Designer) — ✅ COMPLETE
 
 - ✅ Full emoji catalog (1,870 base / 3,395 w/ skin tones), virtualized picker, search, skin tones, recents/favorites, drag onto the Stage; ✅ color emoji drawn as Twemoji sprites identically in preview / node / export (carried-forward limitation resolved); ✅ sticker + 7 reaction packs; ✅ `add_emoji` / `add_reaction` (transcript-timed) / `edit_emoji`; ✅ 9 emoji text styles. Details: `docs/agents/emoji-cycle-j.md`.

@@ -288,7 +288,8 @@ test("drag & drop: reorder (ghost · preview · Esc · undo) · group · palette
   // --- Stickers / text styles: Design room → drag a sticker onto a lane and onto the preview ---
   await page.getByRole("navigation", { name: "Rooms" }).getByRole("button", { name: "Design" }).click();
   await page.getByRole("navigation", { name: "Design categories" }).getByRole("button", { name: /Text styles/ }).click();
-  const sticker = page.getByRole("button", { name: "Add 🔥 sticker" });
+  await page.getByRole("searchbox", { name: "Search emoji" }).first().fill("fire");
+  const sticker = page.getByRole("button", { name: "fire", exact: true }).first();
   await expect(sticker).toBeVisible();
   const textsBefore = (await allClips(page, "text")).length;
   await sticker.scrollIntoViewIfNeeded();

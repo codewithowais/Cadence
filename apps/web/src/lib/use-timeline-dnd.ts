@@ -142,7 +142,9 @@ export function useTimelineDnd(deps: TimelineDndDeps): TimelineDndApi {
   useEffect(() => clearHint, [clearHint]);
 
   // Audio has no picture to place, but still lands on a free audio lane at the playhead.
+  // Emoji tiles also carry the timeline payload (for lane drops) but the emoji drop zone owns the Stage.
   const acceptsStage = (e: DragEvent<HTMLElement>): boolean => hasDropPayload(e.dataTransfer);
+  const isEmojiDrag = (e: DragEvent<HTMLElement>): boolean => Array.from(e.dataTransfer.types).includes("application/x-cadence-emoji");
 
   const onDragOver = (e: DragEvent<HTMLElement>): void => {
     if (!acceptsStage(e)) return;
@@ -174,7 +176,11 @@ export function useTimelineDnd(deps: TimelineDndDeps): TimelineDndApi {
     clearHint();
   };
   const onDrop = (e: DragEvent<HTMLElement>): void => {
-    if (!hasDropPayload(e.dataTransfer)) return;
+    if (!acceptsStage(e)) return;
+    if (isEmojiDrag(e)) {
+      clearHint();
+      return;
+    }
     const payload = readDropPayload(e.dataTransfer);
     const frame = previewFrame(e.currentTarget) ?? e.currentTarget;
     const r = frame.getBoundingClientRect();

@@ -24,6 +24,8 @@ export function EmojiDropZone({
   onSelectClip?: (id: string | null) => void;
   children: ReactNode;
 }) {
+  // A single emoji also carries the timeline's lane payload; the timeline's Stage drop ignores
+  // anything with the emoji MIME (see use-timeline-dnd), so this zone is the only one that adds it.
   const isEmoji = (e: DragEvent): boolean => Array.from(e.dataTransfer.types).includes(EMOJI_DRAG_MIME);
 
   const onDragOver = (e: DragEvent) => {
