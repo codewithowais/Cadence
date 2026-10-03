@@ -125,6 +125,8 @@ export type KenBurns = z.infer<typeof KenBurns>;
  *  - neon        — flicker on like a neon sign.
  *  - glitch      — RGB-split jitter that settles.
  *  - scramble    — random glyphs that resolve into the real text.
+ *  - handwrite   — STROKE-REVEAL: each glyph's outline is drawn on like a pen, then
+ *                  the fill fades in (best with unit "letter" / "word").
  * Combine any style with `unit` (whole / line / word / letter) for staggered
  * per-line, per-word, or per-letter animation.
  */
@@ -150,6 +152,7 @@ export const TEXT_ANIM_STYLES = [
   "neon",
   "glitch",
   "scramble",
+  "handwrite",
 ] as const;
 export const TextAnimStyle = z.enum(TEXT_ANIM_STYLES);
 export type TextAnimStyle = z.infer<typeof TextAnimStyle>;

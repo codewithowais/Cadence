@@ -792,6 +792,98 @@ export async function checkKeyframeFidelity(): Promise<void> {
   ok(`check 76 (keyframe export fidelity): base-clip x/y/rotation/opacity + PiP scale keyframes export as eased expressions (no keyframes ⇒ byte-identical); ${real}`);
 }
 
+// ---------------------------------------------------------------------------
+// 77 · handwriting / stroke-reveal text animation
+// ---------------------------------------------------------------------------
+
+export async function checkHandwrite(): Promise<void> {
+  const eng = new CanvasRenderEngine();
+  const mk = (anim: Record<string, unknown> | null, text = "Handwritten"): EditDoc =>
+    parseEditDoc({
+      version: 1,
+      meta: { title: "hw", width: 960, height: 360, fps: 30, background: "#000000" },
+      tracks: [{ id: "t", kind: "visual", clips: [{ id: "x", kind: "text", start: 0, duration: 4, text, fontFamily: "'Dancing Script', cursive", fontSize: 150, color: "#ffffff", transform: { x: 480, y: 180 }, ...(anim ? { anim } : {}) }] }],
+    });
+  const frame = async (d: EditDoc, t: number): Promise<Buffer> => Buffer.from((await eng.renderFrame(d, t)).data);
+  const sum = async (png: Buffer, half?: "left" | "right"): Promise<number> => {
+    const img = await loadImage(png);
+    const c = createCanvas(img.width, img.height);
+    const cx = c.getContext("2d");
+    cx.drawImage(img, 0, 0);
+    const d = cx.getImageData(0, 0, img.width, img.height).data;
+    let n = 0;
+    for (let y = 0; y < img.height; y++)
+      for (let x = 0; x < img.width; x++) {
+        if (half === "left" && x >= img.width / 2) continue;
+        if (half === "right" && x < img.width / 2) continue;
+        n += d[(y * img.width + x) * 4]!;
+      }
+    return n;
+  };
+
+  // (a) whole-block handwrite: ink grows monotonically; the settled frame equals a static title.
+  const whole = mk({ style: "handwrite", unit: "whole", durationSec: 2 });
+  const rest = mk(null);
+  const times = [0.1, 0.4, 0.8, 1.2, 1.6, 1.95, 2.6];
+  const inks: number[] = [];
+  for (const t of times) inks.push(await sum(await frame(whole, t)));
+  for (let i = 1; i < inks.length; i++) assert(inks[i]! >= inks[i - 1]! * 0.999, `handwrite ink must grow with time (t=${times[i]}: ${inks[i]} < ${inks[i - 1]})`);
+  if (process.env.HW_DEBUG) console.log(inks.map((n) => Math.round(n / 1000)).join(" "));
+  assert(inks[0]! < inks[inks.length - 1]! * 0.45 && inks[1]! < inks[inks.length - 1]! * 0.75, "early in the stroke the text must be far from complete (outline only, no fill yet)");
+  assert((await frame(whole, 2.6)).equals(await frame(rest, 2.6)), "once the intro settles, handwrite must be byte-identical to the static title");
+  const mid = await frame(whole, 0.8); // pen still drawing: stroke present, fill not yet
+  assert(!mid.equals(await frame(rest, 0.8)) && (await sum(mid)) > 0, "mid-stroke frame must differ from the finished text but not be blank");
+
+  // (b) per-letter handwrite reveals left → right (the pen travels along the line).
+  const letters = mk({ style: "handwrite", unit: "letter", durationSec: 2.4 });
+  const early = await frame(letters, 0.9);
+  const l = await sum(early, "left");
+  const r = await sum(early, "right");
+  assert(l > r * 1.4, `per-letter handwrite must write left→right (left ${l} vs right ${r})`);
+  assert((await sum(await frame(letters, 3.2))) > (await sum(early)), "letters must finish writing after the intro");
+
+  // (c) joined scripts degrade to word-by-word (a per-letter reveal would tear the joins).
+  const arabic = await (async (): Promise<number> => {
+    const d = mk({ style: "handwrite", unit: "letter", durationSec: 1.2 }, "مرحبا بالعالم");
+    return sum(await frame(d, 0.3));
+  })();
+  assert(arabic > 0, "Arabic handwrite must still render");
+
+  // (d) Director: animate_text gives handwrite sensible defaults; the stub routes the phrase.
+  const project = new ProjectState({ media: [] });
+  project.setDoc(mk(null, "Hello there world"));
+  await DIRECTOR_TOOLS.animate_text!.execute({ style: "handwrite", target: "all" } as never, { project });
+  const clip = project.doc.tracks[0]!.clips[0] as TextClip;
+  assert(clip.anim.style === "handwrite" && clip.anim.unit === "letter" && clip.anim.durationSec >= 0.8, `animate_text handwrite defaults: ${JSON.stringify(clip.anim)}`);
+  const p2 = new ProjectState({ media: [] });
+  p2.setDoc(mk(null, "Hello there world"));
+  const r2 = await new StubDirector().interpret("animate the text so it writes on like handwriting", p2);
+  assert(r2.toolCalls.some((c) => c.name === "animate_text" && (c.input as { style?: string }).style === "handwrite"), `StubDirector must route handwriting to animate_text handwrite (got ${JSON.stringify(r2.toolCalls)})`);
+
+  // (e) REAL export: an animated handwrite title over footage exports frame-accurately (PNG sequence).
+  const s = await ensureSource("hw-src.mp4");
+  let real = "canvas-only (ffmpeg absent)";
+  if (s) {
+    const d = parseEditDoc({
+      version: 1,
+      meta: { title: "hw", width: 640, height: 480, fps: 30 },
+      media: [{ id: "v", kind: "video", src: s.src, durationSec: 3 }],
+      tracks: [
+        { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 3, mediaId: "v", transform: { x: 320, y: 240 } }] },
+        { id: "titles", kind: "visual", clips: [{ id: "x", kind: "text", start: 0, duration: 3, text: "Handwritten", fontFamily: "'Dancing Script', cursive", fontSize: 110, color: "#ffffff", transform: { x: 320, y: 240 }, anim: { style: "handwrite", unit: "whole", durationSec: 1.6 } }] },
+      ],
+    });
+    const white = (r: number, g: number, b: number): boolean => r > 200 && g > 200 && b > 200;
+    const mid2 = await exportFrame(d, () => s.src, 0.55, "hw-mid");
+    const end2 = await exportFrame(d, () => s.src, 2.5, "hw-end");
+    const nMid = countNear(mid2.px, mid2.w, [0, 150, 640, 330], white);
+    const nEnd = countNear(end2.px, end2.w, [0, 150, 640, 330], white);
+    assert(nMid > 100 && nMid < nEnd * 0.8, `exported handwrite must be mid-stroke at 0.55s (${nMid}px) and complete later (${nEnd}px)`);
+    real = `real encode: white pixels mid-stroke ${nMid} → settled ${nEnd}`;
+  }
+  ok(`check 77 (handwriting stroke-reveal): outline traces then fill fades (ink ${inks.map((n) => Math.round(n / 1000)).join("k/")}k), settled frame byte-identical to the static title, per-letter reveal runs left→right, animate_text defaults + stub routing; ${real}`);
+}
+
 export async function checkRenderDebt(): Promise<void> {
   await checkExportZOrder();
   await checkKaraokePresets();
@@ -799,6 +891,7 @@ export async function checkRenderDebt(): Promise<void> {
   await checkLutPipeline();
   await checkScriptSupport();
   await checkKeyframeFidelity();
+  await checkHandwrite();
 }
 
 if (process.argv[1]?.endsWith("verify-render-debt.ts")) {

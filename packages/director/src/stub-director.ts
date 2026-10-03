@@ -472,6 +472,7 @@ function parseRestyle(req: string): TextVideoTheme | null {
 
 const ANIM_WORDS: [RegExp, TextAnimStyle][] = [
   [/typewriter|type(?:s|d)? (?:out|in)|typing/, "typewriter"],
+  [/handwrit|hand[- ]?writ|write[- ]?on|writes? (?:itself|on)|stroke[- ]?reveal|pen (?:draw|stroke)|calligraph|signature (?:reveal|draw)/, "handwrite"],
   [/scrambl|decod|hacker|matrix/, "scramble"],
   [/glitch/, "glitch"],
   [/neon|flicker(?:s)? on/, "neon"],

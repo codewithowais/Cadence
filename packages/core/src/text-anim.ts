@@ -67,6 +67,10 @@ export interface UnitAnimState {
   scramble: number;
   /** false ⇒ not drawn at all this frame (typewriter-by-unit, before its turn). */
   visible: boolean;
+  /** 0..1 fraction of each glyph's OUTLINE traced so far (handwrite; 1 = complete / not drawing). */
+  strokeReveal: number;
+  /** 0..1 fill strength (handwrite fades the fill in after the outline is drawn). */
+  fillMul: number;
 }
 
 export const IDENTITY_UNIT_STATE: Readonly<UnitAnimState> = Object.freeze({
@@ -83,6 +87,8 @@ export const IDENTITY_UNIT_STATE: Readonly<UnitAnimState> = Object.freeze({
   glitch: 0,
   scramble: 0,
   visible: true,
+  strokeReveal: 1,
+  fillMul: 1,
 });
 
 /**
@@ -263,6 +269,13 @@ export function textUnitState(clip: TextClip, t: number, index = 0, count = 1): 
         s.scramble = 1 - p;
         s.opacity = clamp01(p * 5);
         break;
+      case "handwrite": {
+        // Pen phase (first ~70%): trace the outline; then fade the fill in.
+        s.strokeReveal = clamp01(p / 0.7);
+        s.fillMul = easeOutCubic(clamp01((p - 0.62) / 0.38));
+        s.visible = p > 0;
+        break;
+      }
     }
   }
 

@@ -120,6 +120,8 @@ export interface Ctx2D {
   lineJoin: string;
   lineCap: string;
   miterLimit: number;
+  /** Dash pattern (optional so minimal contexts still satisfy Ctx2D). */
+  setLineDash?(segments: number[]): void;
   font: string;
   textAlign: string;
   textBaseline: string;
@@ -515,6 +517,8 @@ interface PaintFx {
   /** 0..1 animation-driven RGB split (glitch intro). */
   glitch: number;
   px: number;
+  /** Handwrite stroke-reveal: outline traced to `stroke` (0..1), fill at `fill` (0..1). */
+  handwrite?: { stroke: number; fill: number };
 }
 
 /**
@@ -573,6 +577,34 @@ function paintRuns(ctx: Ctx2D, clip: TextClip, runs: TextRun[], ls: number, fx: 
   }
 
   const fill: unknown = clip.fillGradient ? textGradient(ctx, clip.fillGradient, fx.block, fx.gradOrigin) : clip.color;
+
+  // ---- handwrite: stroke-reveal (outline drawn on like a pen, then the fill fades in) ----
+  const hw = fx.handwrite;
+  if (hw && (hw.stroke < 1 || hw.fill < 1)) {
+    if (hw.stroke > 0 && hw.fill < 1) {
+      // Each glyph subpath restarts its dash pattern, so one [d, ∞] dash traces every
+      // contour from its start to length d at once. 6×fontSize exceeds any single
+      // contour, so stroke=1 completes every outline.
+      ctx.save();
+      // The pen line melts into the fill as it comes in (no bold "pop" when it finishes).
+      ctx.globalAlpha = baseAlpha * (1 - hw.fill);
+      ctx.lineWidth = Math.max(1.5, fs * 0.014);
+      ctx.strokeStyle = fill;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.setLineDash?.([Math.max(0.5, hw.stroke * fs * 6), 1e6]);
+      drawAll("stroke");
+      ctx.setLineDash?.([]);
+      ctx.restore();
+    }
+    if (hw.fill > 0) {
+      ctx.globalAlpha = baseAlpha * hw.fill;
+      ctx.fillStyle = fill;
+      drawAll("fill");
+      ctx.globalAlpha = baseAlpha;
+    }
+    return;
+  }
 
   // ---- hollow / splice: stroke only ----
   if (eff && (eff.style === "hollow" || eff.style === "splice")) {
@@ -844,6 +876,7 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts =
         block,
         gradOrigin: { x: u.cx, y: u.cy },
         glitch: s.glitch,
+        handwrite: s.strokeReveal < 1 || s.fillMul < 1 ? { stroke: s.strokeReveal, fill: s.fillMul } : undefined,
         px,
       });
       ctx.restore();
@@ -901,7 +934,13 @@ export function drawText(ctx: Ctx2D, clip: TextClip, t: number, opts: DrawOpts =
     y: (i - (n - 1) / 2) * lineStep,
     align: clip.align,
   }));
-  paintRuns(ctx, clip, runs, ls, { block, gradOrigin: { x: 0, y: 0 }, glitch: whole.glitch, px });
+  paintRuns(ctx, clip, runs, ls, {
+    block,
+    gradOrigin: { x: 0, y: 0 },
+    glitch: whole.glitch,
+    px,
+    handwrite: whole.strokeReveal < 1 || whole.fillMul < 1 ? { stroke: whole.strokeReveal, fill: whole.fillMul } : undefined,
+  });
   ctx.restore();
 }
 
