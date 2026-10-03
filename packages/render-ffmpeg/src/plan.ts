@@ -954,6 +954,7 @@ function soloActive(doc: EditDoc): boolean {
 function collectTextClips(doc: EditDoc): TextClip[] {
   const out: TextClip[] = [];
   for (const track of doc.tracks) {
+    if (track.hidden) continue; // a hidden track draws nothing (matches activeClipsAt / canvas)
     for (const clip of track.clips) if (clip.kind === "text") out.push(clip);
   }
   out.sort((a, b) => a.start - b.start);
@@ -1032,6 +1033,57 @@ function adjustmentFilters(
     }
   }
   return out;
+}
+
+/** One queued item of the z-ordered overlay pass (see {@link zOrderedOverlayItems}). */
+export type ZOverlayItem =
+  | { kind: "layer"; clip: VideoClip | ImageClip }
+  | { kind: "text"; clip: TextClip }
+  | { kind: "shape"; clip: ShapeClip }
+  | { kind: "adjustment"; clip: AdjustmentClip };
+
+/**
+ * PURE z-order resolver for the export's composite pass. Merges the upper video
+ * layers, text clips, shapes and MID-STACK adjustment layers into ONE list ordered
+ * by (track array index, clip start, array order) — the same bottom→top rule the
+ * preview canvas uses. An adjustment with nothing above it (the usual topmost
+ * "adjustments" track) is NOT included: it stays the final post-composite grade
+ * (graded over callouts/cursors too), byte-identical to the historical behavior;
+ * {@link finalAdjustmentClips} returns those. An adjustment with content above it
+ * grades only what sits beneath it (captions on a higher track stay ungraded).
+ */
+export function zOrderedOverlayItems(
+  doc: EditDoc,
+  src: { layers: (VideoClip | ImageClip)[]; texts: TextClip[]; shapes: ShapeClip[]; adjustments: AdjustmentClip[] },
+): ZOverlayItem[] {
+  const trackOf = new Map<string, number>();
+  const orderOf = new Map<string, number>();
+  doc.tracks.forEach((t, ti) =>
+    t.clips.forEach((c, ci) => {
+      trackOf.set(c.id, ti);
+      orderOf.set(c.id, ci);
+    }),
+  );
+  const items: { it: ZOverlayItem; ti: number; start: number; ci: number }[] = [];
+  const push = (it: ZOverlayItem): void => {
+    items.push({ it, ti: trackOf.get(it.clip.id) ?? 0, start: it.clip.start, ci: orderOf.get(it.clip.id) ?? 0 });
+  };
+  src.layers.forEach((clip) => push({ kind: "layer", clip }));
+  src.texts.forEach((clip) => push({ kind: "text", clip }));
+  src.shapes.forEach((clip) => push({ kind: "shape", clip }));
+  const topContentTrack = items.reduce((m, x) => Math.max(m, x.ti), -1);
+  for (const clip of src.adjustments) {
+    const ti = trackOf.get(clip.id) ?? 0;
+    if (ti < topContentTrack) push({ kind: "adjustment", clip }); // mid-stack only
+  }
+  items.sort((a, b) => a.ti - b.ti || a.start - b.start || a.ci - b.ci);
+  return items.map((x) => x.it);
+}
+
+/** Adjustment layers NOT in the z list: the final post-composite grades (nothing above them). */
+export function finalAdjustmentClips(adjustments: AdjustmentClip[], zItems: ZOverlayItem[]): AdjustmentClip[] {
+  const mid = new Set(zItems.filter((x) => x.kind === "adjustment").map((x) => x.clip.id));
+  return adjustments.filter((a) => !mid.has(a.id));
 }
 
 /**
@@ -1537,8 +1589,12 @@ export function buildExportPlan(
   //                     double-exposure / leak layer that spans the timeline).
   // In the common single-visual-track case (base + a "broll" lane) this is exactly
   // the historical b-roll overlay pass — byte-for-byte unchanged.
+  // The layer / text / shape passes are DEFINED here and RUN further down in true
+  // z-order (see `zOrderedOverlayItems`), so a shape on a lower track no longer
+  // renders over text on a higher one (and a higher video layer covers lower text),
+  // exactly like the preview canvas.
   const overlayLayers = collectUpperLayers(doc);
-  overlayLayers.forEach((clip, i) => {
+  const compositeLayer = (clip: VideoClip | ImageClip, i: number): void => {
     const blend = clip.blendMode ?? "normal";
     const chroma = clip.chroma;
     const mask = clip.mask;
@@ -1631,7 +1687,7 @@ export function buildExportPlan(
       filters.push(`[${videoLabel}][bov${i}]overlay=${ox}:${oy}:enable='between(t\\,${st}\\,${en})'[${out}]`);
     }
     videoLabel = out;
-  });
+  };
 
   // ---- Text overlay helper (transparent PNG, time-gated) ------------------
   // Overlay one pre-rendered transparent PNG (composition-sized, text already
@@ -1682,7 +1738,7 @@ export function buildExportPlan(
   // and titles are pixel-perfect. Clips with no rendered PNG in `textOverlays` are
   // skipped.
   const texts = canvasBase ? [] : collectTextClips(doc);
-  texts.forEach((clip, i) => {
+  const compositeText = (clip: TextClip, i: number): void => {
     // KARAOKE: one PNG per word, each overlaid gated to that word's [start,end], so
     // the highlight steps word-by-word on export (matching the per-frame preview).
     const wordPngs = karaokeOverlays?.get(clip.id);
@@ -1707,14 +1763,14 @@ export function buildExportPlan(
     const png = textOverlays?.get(clip.id);
     if (!png) return;
     overlayPng(png, clip.start, clip.start + clip.duration, `vtext${i}`);
-  });
+  };
 
   // ---- Vector shapes (rect / ellipse / line / arrow) ----------------------
   // Each shape clip is rasterized to a transparent composition-sized PNG (canvas
   // engine, so preview == export) and overlaid time-gated to its span — the SAME
-  // path as text/callout labels. No shapes ⇒ this loop is empty (byte-identical).
+  // path as text/callout labels. No shapes ⇒ nothing is queued (byte-identical).
   const shapes = canvasBase ? [] : collectShapes(doc);
-  shapes.forEach((clip, i) => {
+  const compositeShape = (clip: ShapeClip, i: number): void => {
     const segs = animatedOverlays?.get(clip.id);
     if (segs && segs.length > 0) {
       overlaySegments(segs, clip.start, clip.start + clip.duration, `vsha${i}`);
@@ -1723,7 +1779,39 @@ export function buildExportPlan(
     const png = shapeOverlays?.get(clip.id);
     if (!png) return;
     overlayPng(png, clip.start, clip.start + clip.duration, `vshape${i}`);
+  };
+
+  // ---- TRUE Z-ORDER of layers + text + shapes (+ adjustments) --------------
+  // Track array order is z-order (bottom → top), the SAME rule the preview canvas
+  // uses. Every upper video layer, text clip, shape and adjustment layer is queued
+  // with its z key and run in that order — fixing the old fixed text→shape order
+  // (all text under all shapes) and letting an adjustment layer grade ONLY what
+  // sits beneath it. In the common doc (layers < text < shapes by track) this is
+  // byte-identical to the previous fixed order.
+  const adjustmentsAll = canvasBase ? [] : collectAdjustments(doc);
+  const zItems = zOrderedOverlayItems(doc, {
+    layers: overlayLayers,
+    texts,
+    shapes,
+    adjustments: adjustmentsAll,
   });
+  const layerIdx = new Map<string, number>(overlayLayers.map((c, i) => [c.id, i]));
+  const textIdx = new Map<string, number>(texts.map((c, i) => [c.id, i]));
+  const shapeIdx = new Map<string, number>(shapes.map((c, i) => [c.id, i]));
+  const adjIdx = new Map<string, number>(adjustmentsAll.map((c, i) => [c.id, i]));
+  for (const item of zItems) {
+    if (item.kind === "layer") compositeLayer(item.clip, layerIdx.get(item.clip.id)!);
+    else if (item.kind === "text") compositeText(item.clip, textIdx.get(item.clip.id)!);
+    else if (item.kind === "shape") compositeShape(item.clip, shapeIdx.get(item.clip.id)!);
+    else {
+      const parts = adjustmentFilters(item.clip, resolveMediaPath);
+      if (parts.length > 0) {
+        const out = `vadj${adjIdx.get(item.clip.id)!}`;
+        filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
+        videoLabel = out;
+      }
+    }
+  }
 
   // ---- Callout / highlight boxes (drawbox border + optional dim + label) ---
   // Faithful overlay: a bright border around the rect, an optional dim of the
@@ -1764,11 +1852,11 @@ export function buildExportPlan(
   // its span. Applied here (after the visual composite + overlays) as a
   // post-composite pass, ordered by start. When there are no adjustment clips this
   // is a no-op and the graph is byte-for-byte unchanged (the fast path).
-  const adjustments = canvasBase ? [] : collectAdjustments(doc);
-  adjustments.forEach((clip, i) => {
+  const adjustments = finalAdjustmentClips(adjustmentsAll, zItems);
+  adjustments.forEach((clip) => {
     const parts = adjustmentFilters(clip, resolveMediaPath);
     if (parts.length === 0) return;
-    const out = `vadj${i}`;
+    const out = `vadj${adjIdx.get(clip.id)!}`;
     filters.push(`[${videoLabel}]${parts.join(",")}[${out}]`);
     videoLabel = out;
   });

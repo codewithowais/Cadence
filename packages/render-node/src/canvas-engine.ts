@@ -266,6 +266,29 @@ function applyAdjustment(
   if (clip.vfx) drawVfx(ctx, clip.vfx, w, h);
 }
 
+/**
+ * Highest track index holding z-orderable content that an adjustment can sit under
+ * (text / shape / video / image on a track other than the base). Mirrors the
+ * export's `zOrderedOverlayItems` rule so mid-stack adjustment parity holds.
+ */
+function topContentTrackIndex(doc: EditDoc): number {
+  let top = -1;
+  doc.tracks.forEach((t, ti) => {
+    if (t.hidden) return;
+    if (t.clips.some((c) => c.kind === "text" || c.kind === "shape")) top = Math.max(top, ti);
+  });
+  // Upper video layers (any visual track after the first media-bearing one) also count.
+  let seenBase = false;
+  doc.tracks.forEach((t, ti) => {
+    if (t.hidden || t.kind !== "visual") return;
+    const hasMedia = t.clips.some((c) => c.kind === "video" || c.kind === "image");
+    if (!hasMedia) return;
+    if (!seenBase && t.id !== "broll") seenBase = true;
+    else top = Math.max(top, ti);
+  });
+  return top;
+}
+
 // The active render time, so draw helpers can read it without threading it
 // through every call. Set at the top of renderFrame (single-threaded).
 let clipTimeCache = 0;
@@ -294,9 +317,6 @@ function paintFrame(canvas: Canvas, doc: EditDoc, timeSec: number): void {
   // Adjustment layers grade the composite AFTER everything is drawn (post-pass);
   // they are not "content", so keep them out of the content draw.
   const adjustments = active.filter((c): c is AdjustmentClip => c.kind === "adjustment");
-  const content = active.filter(
-    (c) => c.kind !== "callout" && c.kind !== "cursor" && c.kind !== "adjustment",
-  );
 
   // A callout with zoom magnifies the composited CONTENT toward its rect. Apply
   // that transform (scale about the rect center, shared core helper) around the
@@ -309,7 +329,28 @@ function paintFrame(canvas: Canvas, doc: EditDoc, timeSec: number): void {
     ctx.translate(t.tx, t.ty);
     ctx.scale(t.scale, t.scale);
   }
-  for (const clip of content) drawContentClip(ctx, clip as Clip, doc, width, height);
+  // MID-STACK adjustment layers (content on a HIGHER track exists) grade only what is
+  // beneath them: applied inline in z-order, mirroring the export's z-ordered pass
+  // (render-ffmpeg zOrderedOverlayItems). Skipped under a zoom callout (the content
+  // transform is live) — those fall back to the final post-pass. Adjustments with
+  // nothing above them stay the FINAL grade (graded over callouts/cursors too).
+  const topContentTrack = zoomCallout ? -1 : topContentTrackIndex(doc);
+  const trackIdxOf = new Map<string, number>();
+  doc.tracks.forEach((t, ti) => t.clips.forEach((c) => trackIdxOf.set(c.id, ti)));
+  const midAdj = new Set(
+    adjustments.filter((a) => (trackIdxOf.get(a.id) ?? 0) < topContentTrack).map((a) => a.id),
+  );
+  const drawn = new Set<string>();
+  for (const clip of active as Clip[]) {
+    if (clip.kind === "adjustment") {
+      if (midAdj.has(clip.id)) {
+        applyAdjustment(ctx, canvas, clip as AdjustmentClip, width, height);
+        drawn.add(clip.id);
+      }
+    } else if (clip.kind !== "callout" && clip.kind !== "cursor") {
+      drawContentClip(ctx, clip, doc, width, height);
+    }
+  }
   if (zoomCallout) ctx.restore();
 
   // Callouts (dim + border + label), then cursors, over the content.
@@ -320,7 +361,7 @@ function paintFrame(canvas: Canvas, doc: EditDoc, timeSec: number): void {
   // window (only active ones reach here). Applied in start order, after all
   // content + overlays and before the whole-doc finishing pass. No-op when none.
   adjustments.sort((a, b) => a.start - b.start);
-  for (const adj of adjustments) applyAdjustment(ctx, canvas, adj, width, height);
+  for (const adj of adjustments) if (!drawn.has(adj.id)) applyAdjustment(ctx, canvas, adj, width, height);
 
   // Whole-frame finishing overlays (vignette / grain / light-leak), over everything.
   drawVfx(ctx, doc.vfx, width, height);
