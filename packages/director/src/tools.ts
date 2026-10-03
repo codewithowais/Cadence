@@ -719,6 +719,9 @@ const SPEED_RAMP_PRESET_ENUM = [
   "ease-in-out",
   "ramp-up",
   "ramp-down",
+  "montage",
+  "hero-time",
+  "flash-in",
 ] as const satisfies readonly SpeedRampPreset[];
 
 export const speedRampTool: DirectorTool<{
@@ -728,7 +731,7 @@ export const speedRampTool: DirectorTool<{
 }> = {
   name: "set_speed_ramp",
   description:
-    "Speed ramp / time-remap curve (CapCut 'Curve'): vary playback speed across the clip. Pass `points` — control points [clipProgress 0..1, speedMultiplier 0.1..10] — for a custom curve, or a named `preset` (bullet-time, hero, ease-in-out, ramp-up, ramp-down). Optional `atSec` targets a single clip. The clip keeps its timeline length; only how fast it plays through the source varies.",
+    "Speed ramp / time-remap curve (CapCut 'Curve'): vary playback speed across the clip. Pass `points` — control points [clipProgress 0..1, speedMultiplier 0.1..10] — for a custom curve, or a named `preset` (bullet-time, hero, hero-time, montage, flash-in, ease-in-out, ramp-up, ramp-down). Optional `atSec` targets a single clip. The clip keeps its timeline length; only how fast it plays through the source varies.",
   inputSchema: z
     .object({
       points: z

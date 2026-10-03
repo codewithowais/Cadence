@@ -59,6 +59,7 @@ import {
   setPanTool,
   slideshowTool,
   speedTool,
+  speedRampTool,
   styleCaptionsTool,
   setCaptionPresetTool,
   titleTool,
@@ -84,6 +85,7 @@ import { speechRegions } from "./audio";
 import { isSynthSrc } from "./sound-synth";
 import type { MusicMood, SfxKind } from "./sound-synth";
 import { parseGraphicsRequest } from "./graphics-tools";
+import type { SpeedRampPreset } from "./edits";
 import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle, TranscriptEditMode, TranscriptEditUnit } from "./edits";
 import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
 import type { BlendMode, CurvePoint, KeyframeEasing, KeyframeProp } from "@cadence/core";
@@ -305,6 +307,20 @@ const CAPTION_COLORS: Record<string, string> = {
  * about captions AND names at least one style attribute (color / weight / outline
  * / position / font), so a plain "add captions" still routes to add_captions only.
  */
+/** Map a request to a speed-ramp preset ("bullet time", "hero time", "montage", "flash in", "speed ramp"). */
+function parseSpeedRampPreset(req: string): SpeedRampPreset | null {
+  if (/bullet.?time/.test(req)) return "bullet-time";
+  if (/hero.?time|hero (?:speed )?ramp|slow(?:-| )?mo(?:tion)? hero/.test(req)) return "hero-time";
+  if (/montage (?:speed )?ramp|speed ramp.{0,12}montage|beat montage|whip(?:s| pulses)/.test(req)) return "montage";
+  if (/flash.?in|whip in|speed in/.test(req)) return "flash-in";
+  if (/ease.?in.?out speed|speed ramp|time.?remap|speed curve|\bramp (?:it )?(?:up|down)\b/.test(req)) {
+    if (/ramp (?:it )?down|decelerat/.test(req)) return "ramp-down";
+    if (/ramp (?:it )?up|accelerat/.test(req)) return "ramp-up";
+    return "ease-in-out";
+  }
+  return null;
+}
+
 /** Map a request to a CAPTION_PRESETS key ("hormozi captions", "mrbeast style", "neon subtitles"). */
 function parseCaptionPreset(req: string): string | null {
   if (!/caption|subtitle|karaoke|words?\b/.test(req)) return null;
@@ -1310,8 +1326,19 @@ export class StubDirector {
       });
     }
 
+    // Speed RAMP curve ("bullet time", "hero time", "montage speed ramp", "flash in",
+    // "speed ramp", "time remap") — a named time-remap preset beats a constant speed.
+    const rampPreset = parseSpeedRampPreset(req);
+    if (rampPreset) {
+      const input = { preset: rampPreset, atSec: parseAtSeconds(req) };
+      steps.push({
+        run: (p) => speedRampTool.execute(input, { project: p }),
+        call: { name: speedRampTool.name, input },
+      });
+    }
+
     // Speed ramp (slow motion / speed up).
-    const speed = parseSpeed(req);
+    const speed = rampPreset ? undefined : parseSpeed(req);
     if (speed !== undefined) {
       const input = { speed, atSec: parseAtSeconds(req) };
       steps.push({

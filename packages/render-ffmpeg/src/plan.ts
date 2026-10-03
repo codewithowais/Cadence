@@ -449,6 +449,58 @@ function speedSetpts(speed: number): string {
  * More segments ⇒ closer to the curve; 8 is a good, cheap default.
  */
 const RAMP_SEGMENTS = 8;
+/** Hard cap on ramp segments (each is its own ffmpeg input) — keeps montage ramps cheap. */
+const RAMP_SEGMENTS_MAX = 40;
+
+/**
+ * Segment boundaries (clip progress, ascending, 0 … 1) for a ramped clip's export.
+ * Boundaries ALWAYS include every control point, so sharp features (a montage whip,
+ * a hero-time hold edge) land exactly on a cut instead of being averaged away by the
+ * old uniform 8-way split; each control interval is then subdivided in proportion to
+ * its width (and at least in two when its rate changes), up to RAMP_SEGMENTS_MAX
+ * total. A ramp with only its two endpoints keeps the historical 8 even segments, so
+ * those exports are byte-identical. Pure + deterministic.
+ */
+export function rampSegmentBounds(ramp: readonly (readonly [number, number])[], durSec = 3): number[] {
+  const pts = [...ramp].sort((a, b) => a[0] - b[0]);
+  const interior = pts.filter((q) => q[0] > 1e-6 && q[0] < 1 - 1e-6);
+  if (interior.length === 0) return Array.from({ length: RAMP_SEGMENTS + 1 }, (_, i) => i / RAMP_SEGMENTS);
+  const marks = Array.from(new Set<number>([0, 1, ...pts.map((q) => Math.min(1, Math.max(0, q[0])))])).sort((a, b) => a - b);
+  const rateAt = (p: number): number => {
+    if (p <= pts[0]![0]) return pts[0]![1];
+    for (let i = 1; i < pts.length; i++) {
+      if (p <= pts[i]![0]) {
+        const [p0, m0] = pts[i - 1]!;
+        const [p1, m1] = pts[i]!;
+        return p1 === p0 ? m1 : m0 + ((m1 - m0) * (p - p0)) / (p1 - p0);
+      }
+    }
+    return pts[pts.length - 1]![1];
+  };
+  let bounds: number[] = [0];
+  for (let i = 0; i < marks.length - 1; i++) {
+    const a = marks[i]!;
+    const b = marks[i + 1]!;
+    const w = b - a;
+    // A FLAT interval needs no subdivision (one constant-rate segment is exact). A
+    // changing one is split in proportion to its width — but never so finely that a
+    // segment reads < ~3 source frames (0.1s) or lasts < ~0.12s on the timeline: an
+    // input window under two frames collapses to a single frame and the segment
+    // plays SHORT (the timeline drifts). Fewer, wider segments are the safe fallback.
+    const changes = Math.abs(rateAt(a) - rateAt(b)) > 0.15 * Math.max(rateAt(a), rateAt(b));
+    let n = changes ? Math.max(2, Math.ceil(w / 0.0625)) : 1;
+    const srcOf = (x: number, y: number): number => durSec * (speedRampIntegral(ramp as never, y) - speedRampIntegral(ramp as never, x));
+    while (n > 1 && (srcOf(a, a + w / n) < 0.1 || durSec * (w / n) < 0.12)) n--;
+    for (let k = 1; k <= n; k++) bounds.push(a + (w * k) / n);
+  }
+  if (bounds.length - 1 > RAMP_SEGMENTS_MAX) {
+    // Too many: keep every control point, thin the sub-divisions evenly.
+    const keep = new Set(marks.map((m) => Math.round(m * 1e6)));
+    bounds = bounds.filter((b, i) => keep.has(Math.round(b * 1e6)) || i % 2 === 0);
+  }
+  bounds[bounds.length - 1] = 1;
+  return bounds.map((b) => Math.round(b * 1e6) / 1e6);
+}
 
 /**
  * atempo chain matching a speed factor. ffmpeg's atempo accepts [0.5, 100.0]; a
@@ -1356,9 +1408,11 @@ export function buildExportPlan(
     const pan = panFilter(c.pan);
     const vSeg: string[] = [];
     const aSeg: string[] = [];
-    for (let s = 0; s < RAMP_SEGMENTS; s++) {
-      const p0 = s / RAMP_SEGMENTS;
-      const p1 = (s + 1) / RAMP_SEGMENTS;
+    const bounds = rampSegmentBounds(ramp, dur);
+    const segCount = bounds.length - 1;
+    for (let s = 0; s < segCount; s++) {
+      const p0 = bounds[s]!;
+      const p1 = bounds[s + 1]!;
       const i0 = speedRampIntegral(ramp, p0);
       const i1 = speedRampIntegral(ramp, p1);
       const segTimeline = dur * (p1 - p0); // this segment's timeline seconds
@@ -1396,10 +1450,10 @@ export function buildExportPlan(
         aSeg.push(`[${alab}]`);
       }
     }
-    filters.push(`${vSeg.join("")}concat=n=${RAMP_SEGMENTS}:v=1:a=0[v${i}]`);
+    filters.push(`${vSeg.join("")}concat=n=${segCount}:v=1:a=0[v${i}]`);
     if (includeAudio) {
       if (hasAudio) {
-        filters.push(`${aSeg.join("")}concat=n=${RAMP_SEGMENTS}:v=0:a=1[a${i}]`);
+        filters.push(`${aSeg.join("")}concat=n=${segCount}:v=0:a=1[a${i}]`);
       } else {
         // No source audio ⇒ synthesize matching silence (mirrors audioSegmentFilter).
         const silIdx = addInput(

@@ -15,12 +15,13 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
-import { parseEditDoc, type EditDoc, type TextClip } from "@cadence/core";
+import { parseEditDoc, sourceSpanSec, sourceTimeAt, type EditDoc, type TextClip, type VideoClip } from "@cadence/core";
 import { CanvasRenderEngine } from "@cadence/render-node";
 import type { Transcript } from "@cadence/understanding";
-import { addCaptions, applyCaptionPreset, CAPTION_PRESETS, DIRECTOR_TOOLS, ProjectState, StubDirector } from "@cadence/director";
+import { addCaptions, applyCaptionPreset, CAPTION_PRESETS, DIRECTOR_TOOLS, ProjectState, setSpeedRamp, StubDirector } from "@cadence/director";
 import {
   buildExportPlan,
+  rampSegmentBounds,
   detectFfmpeg,
   resolveFfmpegBin,
   runExport,
@@ -299,9 +300,108 @@ export async function checkKaraokePresets(): Promise<void> {
   ok(`check 72 (karaoke styles + presets): pop/underline/glow styles distinct on the shared canvas; 6 caption presets apply+render distinct; set_caption_preset tool + stub routing; ${real}`);
 }
 
+// ---------------------------------------------------------------------------
+// 73 · speed-ramp presets (montage / hero-time / bullet-time / flash-in)
+// ---------------------------------------------------------------------------
+
+export async function checkSpeedRampPresets(): Promise<void> {
+  const resolveP = (id: string) => `/media/${id}.mp4`;
+  const names = ["montage", "hero-time", "bullet-time", "flash-in"] as const;
+  const mk = (): EditDoc =>
+    parseEditDoc({
+      version: 1,
+      meta: { title: "ramp", width: 640, height: 480, fps: 30 },
+      media: [{ id: "v", kind: "video", src: "/media/v.mp4", durationSec: 6 }],
+      tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 3, mediaId: "v", sourceIn: 0, transform: { x: 320, y: 240 } }] }],
+    });
+
+  // (a) engine: every preset applies (+ tool/stub), source-time is monotonic, and the
+  //     export segments land ON the control points (montage keeps all 3 whips).
+  const bounds: Record<string, number> = {};
+  for (const name of names) {
+    const d = setSpeedRamp(mk(), { preset: name });
+    const clip = d.tracks[0]!.clips[0] as VideoClip;
+    assert(clip.speedRamp && clip.speedRamp.length >= 3, `${name}: ramp must be set`);
+    let prev = -1;
+    for (let i = 0; i <= 30; i++) {
+      const st = sourceTimeAt(clip, (3 * i) / 30);
+      assert(st >= prev - 1e-9, `${name}: source time must be monotonic`);
+      prev = st;
+    }
+    const span = sourceSpanSec(clip);
+    assert(span <= 6.001, `${name}: ramp consumes ${span.toFixed(2)}s of source (fixture is 6s)`);
+    const b = rampSegmentBounds(clip.speedRamp, clip.duration);
+    bounds[name] = b.length - 1;
+    for (const [p] of clip.speedRamp) assert(b.some((x) => Math.abs(x - p) < 1e-5), `${name}: a segment boundary must sit on control point ${p}`);
+    const plan = buildExportPlan(d, resolveP, "/out/r.mp4");
+    const segs = (plan.filterComplex.match(/setpts=\(PTS-STARTPTS\)\//g) ?? []).length;
+    assert(segs === b.length - 1, `${name}: export must emit ${b.length - 1} segments, got ${segs}`);
+    assert(new RegExp(`concat=n=${b.length - 1}:v=1:a=0\\[v0\\]`).test(plan.filterComplex), `${name}: concat count must match segment count`);
+  }
+  assert(bounds.montage! > 8, `montage must segment finer than the old uniform 8 (got ${bounds.montage})`);
+  // A plain 2-point ramp keeps the historical 8 uniform segments (byte-identical).
+  assert(rampSegmentBounds([[0, 0.4], [1, 2.5]]).length - 1 === 8, "2-point ramps keep the 8 even segments");
+
+  // (b) tool + stub routing.
+  const project = new ProjectState({ media: [{ id: "v", kind: "video", src: "/media/v.mp4", durationSec: 6 }] });
+  project.setDoc(mk());
+  await DIRECTOR_TOOLS.set_speed_ramp!.execute({ preset: "flash-in" }, { project });
+  assert(((project.doc.tracks[0]!.clips[0] as VideoClip).speedRamp?.[0]?.[1] ?? 0) === 4, "set_speed_ramp flash-in → starts at 4x");
+  for (const [phrase, preset] of [["add a bullet time speed ramp", "bullet-time"], ["hero time slow motion on the clip", "hero-time"], ["montage speed ramp", "montage"], ["flash in at the start", "flash-in"]] as const) {
+    const p = new ProjectState({ media: [{ id: "v", kind: "video", src: "/media/v.mp4", durationSec: 6 }] });
+    p.setDoc(mk());
+    const r = await new StubDirector().interpret(phrase, p);
+    const call = r.toolCalls.find((c) => c.name === "set_speed_ramp");
+    assert(call && (call.input as { preset?: string }).preset === preset, `StubDirector: "${phrase}" must route to set_speed_ramp ${preset} (got ${JSON.stringify(r.toolCalls.map((c) => c.name))})`);
+  }
+
+  // (c) REAL encode: the exported picture follows the curve. The source encodes its own
+  //     time as luminance (lum = 255·T/6), so the luma of the exported frame at timeline
+  //     t reads back the SOURCE time the export actually played.
+  const info = await detectFfmpeg();
+  let real = "plan-only (ffmpeg absent)";
+  if (info.available) {
+    const bin = resolveFfmpegBin();
+    mkdirSync(OUT, { recursive: true });
+    const src = resolve(OUT, "ramp-time-src.mp4");
+    const r = spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=black:s=640x480:r=30:d=6,format=gray,geq=lum='255*T/6'", "-c:v", "libx264", "-crf", "8", "-pix_fmt", "yuv420p", "-an", src], { encoding: "utf8" });
+    assert(r.status === 0, `ramp fixture failed: ${(r.stderr || "").slice(-200)}`);
+    let worst = 0;
+    for (const name of ["montage", "hero-time"] as const) {
+      const d = parseEditDoc({ ...setSpeedRamp(mk(), { preset: name }), media: [{ id: "v", kind: "video", src, durationSec: 6 }] });
+      const clip = d.tracks[0]!.clips[0] as VideoClip;
+      for (const t of [0.4, 1.0, 1.6, 2.2, 2.7]) {
+        const f = await exportFrame(d, () => src, t, `ramp-${name}-${Math.round(t * 10)}`);
+        const lum = countMean(f.px, f.w, [200, 150, 440, 330]);
+        const est = (lum / 255) * 6;
+        const want = sourceTimeAt(clip, t);
+        worst = Math.max(worst, Math.abs(est - want));
+        if (process.env.RAMP_DEBUG) console.log(`    ${name} t=${t}: export source ${est.toFixed(2)}s vs curve ${want.toFixed(2)}s`);
+        assert(Math.abs(est - want) < 0.3, `${name}: at t=${t}s the export played source ${est.toFixed(2)}s but the curve says ${want.toFixed(2)}s`);
+      }
+    }
+    real = `real encode: exported source-time tracks the curve within ${worst.toFixed(2)}s (montage + hero-time)`;
+  }
+  ok(`check 73 (speed-ramp presets): montage/hero-time/bullet-time/flash-in apply, monotonic, segment boundaries on every control point (montage → ${bounds.montage} segments vs the old uniform 8); set_speed_ramp tool + stub routing; ${real}`);
+}
+
+/** Mean red-channel value over a rect (the fixture is gray, so R == luminance). */
+function countMean(px: Uint8ClampedArray, w: number, rect: [number, number, number, number]): number {
+  let sum = 0;
+  let n = 0;
+  for (let y = rect[1]; y < rect[3]; y++) {
+    for (let x = rect[0]; x < rect[2]; x++) {
+      sum += px[(y * w + x) * 4]!;
+      n++;
+    }
+  }
+  return sum / Math.max(1, n);
+}
+
 export async function checkRenderDebt(): Promise<void> {
   await checkExportZOrder();
   await checkKaraokePresets();
+  await checkSpeedRampPresets();
 }
 
 if (process.argv[1]?.endsWith("verify-render-debt.ts")) {
