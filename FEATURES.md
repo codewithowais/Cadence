@@ -85,6 +85,11 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 **Reliability, speed & trust** (CTO)
 - ✅ Live **export progress** (% + ETA + phase) with real server-side **cancel**, export **pre-flight** checks, **autosave + crash recovery** (doc + media in IndexedDB) for the scratch editor, panel **error boundaries**, **.cadence.json project files** with media re-link, playback perf (idle panels skip frames). Verify check 69.
 
+**Position & transform** (Cycle J — Canva / CapCut / After-Effects-grade placement)
+- ✅ **On-canvas selection box** for any text, shape, sticker or overlay: drag to move, 8 resize handles on shapes (corner handles on text/overlays, which scale uniformly), rotate handle (⇧ = 15°), ⇧ keeps aspect / ⌥ resizes from the centre, **arrow-key nudge** (⇧ ×10), **double-click text to edit in place**, ⇧-click multi-select. **Smart guides + snapping** to the canvas centre/edges, the 5% title-safe margins and other layers' edges/centres (⌥ bypasses). A whole drag is one undo step.
+- ✅ **Transform inspector** (Stage side panel): X · Y · W · H · rotation · scale · opacity, reference point, flip H/V, lock aspect, px/% units, 9-point + edge **align** (to the canvas or the selection), **distribute**, Fit / Fill / Reset, bring forward / send backward / to front / to back. **Keyframe-aware** (◆): editing a keyframed property writes a keyframe at the playhead.
+- ✅ Director: `set_transform`, `align_clip`, `arrange_clip` — *"move the title to the top left"*, *"make the logo smaller"*, *"center it"*, *"rotate 15 degrees"*, *"flip the logo"*, *"make it 50% transparent"*, *"send it to the back"* (verify check 71, evals g/h, details in `docs/agents/position-cycle-j.md`).
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

@@ -6,6 +6,7 @@ import {
   cssFilter,
   emphasisScale,
   imageMotion,
+  keyframeTransformState,
   transitionOpacity,
   transitionStyle,
   type AudioClip,
@@ -348,17 +349,21 @@ export function Stage(props: StageProps) {
             activeBroll.map((clip) => {
               const url = urls[clip.mediaId];
               if (!url) return null;
-              const sizePct = clip.transform.scale * 100;
-              const left = (clip.transform.x / doc.meta.width) * 100;
-              const top = (clip.transform.y / doc.meta.height) * 100;
+              // Keyframed x / y / scale / rotation / opacity (and flip) — the same shared
+              // resolver the canvas + export use, so a dragged / rotated overlay previews as it exports.
+              const kf = keyframeTransformState(clip, timeSec);
+              const sizePct = kf.scale * 100;
+              const left = (kf.x / doc.meta.width) * 100;
+              const top = (kf.y / doc.meta.height) * 100;
+              const flip = `${clip.transform.flipX ? " scaleX(-1)" : ""}${clip.transform.flipY ? " scaleY(-1)" : ""}`;
               const style: CSSProperties = {
                 position: "absolute",
                 width: `${sizePct}%`,
                 height: `${sizePct}%`,
                 left: `${left}%`,
                 top: `${top}%`,
-                transform: "translate(-50%, -50%)",
-                opacity: transitionOpacity(clip, timeSec),
+                transform: `translate(-50%, -50%) rotate(${kf.rotation}deg)${flip}`,
+                opacity: transitionOpacity(clip, timeSec) * kf.opacityMul,
                 filter: cssFilter(clip.look),
                 objectFit: "cover",
                 borderRadius: `${Math.max(4, scale * doc.meta.height * 0.02)}px`,

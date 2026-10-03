@@ -2087,13 +2087,14 @@ export const DIRECTOR_TOOLS = {
   auto_duck: autoDuckTool,
   enhance_voice: enhanceVoiceTool,
   beat_sync: beatSyncTool,
+  // Position (Cycle J) — registered BEFORE the graphics tools, which must stay last.
+  set_transform: setTransformTool,
+  align_clip: alignClipTool,
+  arrange_clip: arrangeClipTool,
   add_graphic: addGraphicTool,
   add_lower_third: addLowerThirdTool,
   add_progress_bar: addProgressBarTool,
   add_countdown: addCountdownTool,
   edit_graphic: editGraphicTool,
   animate_shape: animateShapeTool,
-  set_transform: setTransformTool,
-  align_clip: alignClipTool,
-  arrange_clip: arrangeClipTool,
 } as const;

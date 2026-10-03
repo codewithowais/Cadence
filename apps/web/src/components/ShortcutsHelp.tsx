@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 
 /** A group heading in the shortcuts sheet. */
-export type ShortcutGroup = "Playback" | "Navigate" | "Cut & edit" | "Select" | "Panels";
+export type ShortcutGroup = "Playback" | "Navigate" | "Cut & edit" | "Select" | "Position" | "Panels";
 
 /** The canonical keyboard-shortcut list (also the source for the help popover). */
 export const SHORTCUTS: { keys: string[]; label: string; group: ShortcutGroup }[] = [
@@ -40,6 +40,12 @@ export const SHORTCUTS: { keys: string[]; label: string; group: ShortcutGroup }[
   { keys: ["Shift", "Drag"], label: "Marquee-select clips (drag from the ruler or an empty lane)", group: "Select" },
   { keys: ["⌘/Ctrl", "A"], label: "Select every clip", group: "Select" },
   { keys: ["Esc"], label: "Clear the selection / in-out marks", group: "Select" },
+  // Position (on the preview)
+  { keys: ["Click"], label: "Select a layer on the preview — drag to move, handles to resize, top handle to rotate", group: "Position" },
+  { keys: ["← → ↑ ↓"], label: "Nudge the selected layer 1px (Shift = 10px) when the preview has focus", group: "Position" },
+  { keys: ["Shift", "Drag"], label: "Lock movement to one axis · keep aspect while resizing · rotate in 15° steps", group: "Position" },
+  { keys: ["⌥/Alt", "Drag"], label: "Skip snapping · resize from the centre", group: "Position" },
+  { keys: ["Double-click"], label: "Edit text in place (Enter to apply, Esc to cancel)", group: "Position" },
   // Panels
   { keys: ["["], label: "Show / hide chat panel", group: "Panels" },
   { keys: ["]"], label: "Show / hide code panel", group: "Panels" },
@@ -48,7 +54,7 @@ export const SHORTCUTS: { keys: string[]; label: string; group: ShortcutGroup }[
   { keys: ["?"], label: "This help", group: "Panels" },
 ];
 
-const GROUP_ORDER: ShortcutGroup[] = ["Playback", "Navigate", "Cut & edit", "Select", "Panels"];
+const GROUP_ORDER: ShortcutGroup[] = ["Playback", "Navigate", "Cut & edit", "Select", "Position", "Panels"];
 
 function Key({ children }: { children: React.ReactNode }) {
   return (

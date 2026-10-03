@@ -10,6 +10,12 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
   - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
 
+## Cycle J — Position (feature #2) — ✅ COMPLETE
+
+Canva/CapCut/After-Effects-grade placement: on-canvas selection box (move · resize · rotate · nudge · in-place text edit · multi-select), smart guides + snapping, Transform inspector (numeric, reference point, units, align/distribute, Fit/Fill/Reset, arrange), keyframe-aware edits, `set_transform` / `align_clip` / `arrange_clip` Director tools. See `docs/agents/position-cycle-j.md`, CHANGELOG S7.1.
+
+- ⬜ **Limitations carried forward:** flip + the reference point are preview/draw-canvas only (ffmpeg export does not mirror flipped overlays yet; the reference point is a UI aid, not stored); full-frame base footage is selectable but not draggable (use Overlay / reframe); text/overlay resize is uniform (corner handles); rotation of a base-track clip is not supported; group resize/rotate is single-layer only; callout/cursor layers are not on-canvas selectable (Demo room owns them); a lifted "Layer N" lane is a normal track (reorder via tracks).
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*
