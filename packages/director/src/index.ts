@@ -22,3 +22,5 @@ export * from "./sound-synth";
 export * from "./audio";
 export * from "./graphics";
 export * from "./graphics-tools";
+export * from "./transform-ops";
+export * from "./transform-tools";

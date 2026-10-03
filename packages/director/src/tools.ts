@@ -79,6 +79,7 @@ import {
   animateShapeTool,
   editGraphicTool,
 } from "./graphics-tools";
+import { alignClipTool, arrangeClipTool, setTransformTool } from "./transform-tools";
 import {
   addAdjustment,
   addBroll,
@@ -2092,4 +2093,7 @@ export const DIRECTOR_TOOLS = {
   add_countdown: addCountdownTool,
   edit_graphic: editGraphicTool,
   animate_shape: animateShapeTool,
+  set_transform: setTransformTool,
+  align_clip: alignClipTool,
+  arrange_clip: arrangeClipTool,
 } as const;

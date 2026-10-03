@@ -26,6 +26,9 @@ export const Transform = z.object({
   rotation: z.number().default(0),
   /** 0..1 opacity. */
   opacity: z.number().min(0).max(1).default(1),
+  /** Mirror horizontally / vertically about the anchor (preview + canvas render; absent = off). */
+  flipX: z.boolean().optional(),
+  flipY: z.boolean().optional(),
 });
 export type Transform = z.infer<typeof Transform>;
 
