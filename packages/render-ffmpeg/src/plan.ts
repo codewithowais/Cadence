@@ -818,6 +818,61 @@ export function keyframeTransformExpr(
 }
 
 /**
+ * Transform keyframes (x / y / rotation / opacity) for a FULL-FRAME BASE clip — the
+ * main video / photo track — as a LINEAR filter chain over the clip's own frames
+ * (clip-relative seconds: the chain runs after the per-clip `setpts` reset, so `t`/`T`
+ * start at 0). Mirrors the canvas order (rotate about the centre → translate) and
+ * fills the exposed edges with the doc background, exactly like the preview:
+ *  - opacity → rgba `geq` blending the frame toward the background colour (fade);
+ *  - rotation → `rotate` about the centre, corners filled with the background;
+ *  - x / y → `pad` by the keyframes' reach, then a per-frame `crop` window.
+ * Every expression is the SAME eased `keyframeTransformExpr` the PiP path uses.
+ * Returns [] when the clip has none of these keyframes (the fast path stays
+ * byte-identical). `scale` keyframes are handled separately (zoompan).
+ */
+export function baseTransformKeyframeFilters(
+  clip: { duration: number; keyframes?: Keyframe[]; transform: { x: number; y: number } },
+  W: number,
+  H: number,
+  bgHex: string,
+): string[] {
+  const rel = { start: 0, duration: clip.duration, keyframes: clip.keyframes };
+  const xE = keyframeTransformExpr(rel, "x");
+  const yE = keyframeTransformExpr(rel, "y");
+  const rE = keyframeTransformExpr(rel, "rotation");
+  const oE = keyframeTransformExpr(rel, "opacity", "T");
+  if (!xE && !yE && !rE && !oE) return [];
+  const bg = hexToFfColor(bgHex);
+  const [R, G, B] = [2, 4, 6].map((i) => parseInt(bg.color.slice(i, i + 2), 16));
+  const out: string[] = [];
+  if (oE) {
+    const a = `(${oE})`;
+    out.push(
+      "format=rgba",
+      `geq=r='r(X\\,Y)*${a}+${R}*(1-${a})':g='g(X\\,Y)*${a}+${G}*(1-${a})':b='b(X\\,Y)*${a}+${B}*(1-${a})':a='255'`,
+      "format=yuv420p",
+    );
+  }
+  if (rE) out.push(`rotate=a='(${rE})*PI/180':ow=${W}:oh=${H}:c=${bg.color}`);
+  // Translation reach: the biggest offset any keyframe (or the static transform) asks for.
+  const reach = (prop: KeyframeProp, centre: number, fallback: number): number => {
+    const vs = (clip.keyframes ?? []).filter((k) => k.prop === prop).map((k) => Math.abs(k.value - centre));
+    return Math.ceil(Math.max(0, ...vs, Math.abs(fallback - centre))) + 2;
+  };
+  if (xE || yE) {
+    const mx = xE ? reach("x", W / 2, clip.transform.x) : 0;
+    const my = yE ? reach("y", H / 2, clip.transform.y) : 0;
+    const dx = xE ? `(${xE})-${r3(W / 2)}` : "0";
+    const dy = yE ? `(${yE})-${r3(H / 2)}` : "0";
+    out.push(
+      `pad=${W + 2 * mx}:${H + 2 * my}:${mx}:${my}:color=${bg.color}`,
+      `crop=${W}:${H}:x='clip(${mx}-(${dx})\\,0\\,${2 * mx})':y='clip(${my}-(${dy})\\,0\\,${2 * my})'`,
+    );
+  }
+  return out;
+}
+
+/**
  * A stereo `pan` filter placing the clip in the stereo field: -1 hard left, 0
  * center, +1 hard right. Left gain = 1-max(0,pan), right gain = 1+min(0,pan), so
  * center is unchanged and the ends silence the opposite channel.
@@ -1386,6 +1441,8 @@ export function buildExportPlan(
       ...(kfZoom ? [kfZoom] : []),
       ...lookFilters(c.look, resolveMediaPath),
       "format=yuv420p",
+      // x / y / rotation / opacity keyframes on the base clip (export == preview).
+      ...baseTransformKeyframeFilters(c, W, H, doc.meta.background),
       ...(appendFps ? [`fps=${fps}`] : []),
     ];
   };
@@ -1549,6 +1606,7 @@ export function buildExportPlan(
         zoompanFor(c, W, H, fps),
         ...lookFilters(c.look, resolveMediaPath),
         "format=yuv420p",
+        ...baseTransformKeyframeFilters(c, W, H, doc.meta.background),
         `fps=${fps}`,
       ];
       pushVideoChain(filters, `${idx}:v`, vChain, c.regionFx, `v${i}`);
@@ -1599,6 +1657,7 @@ export function buildExportPlan(
         ...(kfZoom ? [kfZoom] : []),
         ...lookFilters(c.look, resolveMediaPath),
         "format=yuv420p",
+        ...baseTransformKeyframeFilters(c, W, H, doc.meta.background),
         `fps=${fps}`,
       ];
       pushVideoChain(filters, `${idx}:v`, vChain, c.regionFx, `v${i}`);
@@ -1672,7 +1731,10 @@ export function buildExportPlan(
     const yExpr = kfEligible ? keyframeTransformExpr(clip, "y") : null;
     const rotExpr = kfEligible ? keyframeTransformExpr(clip, "rotation") : null; // degrees
     const opExpr = kfEligible ? keyframeTransformExpr(clip, "opacity", "T") : null; // geq uses T
-    const hasXformKf = !!(xExpr || yExpr || rotExpr || opExpr);
+    // SCALE keyframes resize the box per frame (scale eval=frame, AFTER rotate so a
+    // uniform scale commutes with it) and the overlay centers on the live `overlay_w/h`.
+    const scExpr = kfEligible ? keyframeTransformExpr(clip, "scale") : null;
+    const hasXformKf = !!(xExpr || yExpr || rotExpr || opExpr || scExpr);
     // A rotated box grows to a CONSTANT square big enough to hold the PiP box at any
     // angle, so the (static or time-varying) overlay centering stays valid per frame.
     const rotBox = Math.round(Math.hypot(boxW, boxH));
@@ -1715,6 +1777,14 @@ export function buildExportPlan(
         // exposed corners transparent (alpha-safe). Keyframe degrees → radians.
         chain.push(`rotate=a='(${rotExpr})*PI/180':ow=${rotBox}:oh=${rotBox}:c=none`);
       }
+      if (scExpr) {
+        // The box was built at the static scale s0; the keyframed scale is an absolute
+        // fraction of the frame width, so ratio = s(t)/s0 (even sizes for yuv420p).
+        const s0 = Math.max(0.01, clip.transform.scale);
+        chain.push(
+          `scale=w='max(2\\,trunc(iw*(${scExpr})/${r3(s0)}/2)*2)':h='max(2\\,trunc(ih*(${scExpr})/${r3(s0)}/2)*2)':eval=frame`,
+        );
+      }
     } else {
       chain.push("format=yuv420p", `setpts=PTS-STARTPTS+${st}/TB`);
     }
@@ -1729,8 +1799,10 @@ export function buildExportPlan(
       // static transform when they have no keyframes, so one animated axis still works.
       const ovW = rotExpr ? rotBox : boxW;
       const ovH = rotExpr ? rotBox : boxH;
-      const ox = xExpr ? `(${xExpr})-${r3(ovW / 2)}` : String(Math.round(clip.transform.x - ovW / 2));
-      const oy = yExpr ? `(${yExpr})-${r3(ovH / 2)}` : String(Math.round(clip.transform.y - ovH / 2));
+      const halfW = scExpr ? "overlay_w/2" : String(r3(ovW / 2));
+      const halfH = scExpr ? "overlay_h/2" : String(r3(ovH / 2));
+      const ox = xExpr ? `(${xExpr})-${halfW}` : scExpr ? `${r3(clip.transform.x)}-${halfW}` : String(Math.round(clip.transform.x - ovW / 2));
+      const oy = yExpr ? `(${yExpr})-${halfH}` : scExpr ? `${r3(clip.transform.y)}-${halfH}` : String(Math.round(clip.transform.y - ovH / 2));
       filters.push(
         `[${videoLabel}][bov${i}]overlay=x='${ox}':y='${oy}':enable='between(t\\,${st}\\,${en})'[${out}]`,
       );

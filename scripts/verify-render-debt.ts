@@ -29,6 +29,7 @@ import {
   parseCube,
   parseEditDoc,
   sampleLut,
+  valueAt,
   sourceSpanSec,
   sourceTimeAt,
   type EditDoc,
@@ -668,12 +669,136 @@ export async function checkScriptSupport(): Promise<void> {
   ok(`check 75 (Urdu/Arabic/Hindi): Noto Naskh/Nastaliq/Devanagari bundled (OFL) + registered; Arabic joins (${joined.toFixed(0)}<${isolated.toFixed(0)}) and Devanagari conjuncts ligate (${conj.toFixed(0)}<${parts.toFixed(0)}); script fallback in Latin-font clips; letter-spacing suppressed for joined scripts; RTL word reveal runs right-to-left; ${real}`);
 }
 
+// ---------------------------------------------------------------------------
+// 76 · keyframe export fidelity: base-clip x/y/rotation/opacity + PiP scale
+// ---------------------------------------------------------------------------
+
+function bbox(px: Uint8ClampedArray, w: number, h: number, pred: (r: number, g: number, b: number) => boolean): { n: number; x0: number; x1: number; y0: number; y1: number; cx: number; cy: number } {
+  let n = 0;
+  let x0 = w;
+  let x1 = -1;
+  let y0 = h;
+  let y1 = -1;
+  let sx = 0;
+  let sy = 0;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (!pred(px[i]!, px[i + 1]!, px[i + 2]!)) continue;
+      n++;
+      sx += x;
+      sy += y;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  return { n, x0, x1, y0, y1, cx: n ? sx / n : -1, cy: n ? sy / n : -1 };
+}
+
+export async function checkKeyframeFidelity(): Promise<void> {
+  const info = await detectFfmpeg();
+  const resolveP = (id: string) => `/media/${id}.mp4`;
+  const kfs = (list: [string, number, number, string?][]) => list.map(([prop, t, value, easing]) => ({ prop, t, value, easing: easing ?? "linear" }));
+
+  // (a) plan-level: the base clip gains the transform chain; no keyframes ⇒ byte-identical.
+  const baseDoc = (keyframes?: unknown[]): EditDoc =>
+    parseEditDoc({
+      version: 1,
+      meta: { title: "kf", width: 640, height: 480, fps: 30, background: "#101820" },
+      media: [{ id: "v", kind: "video", src: "/media/v.mp4", durationSec: 5 }],
+      tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 2, mediaId: "v", transform: { x: 320, y: 240 }, ...(keyframes ? { keyframes } : {}) }] }],
+    });
+  const plain = buildExportPlan(baseDoc(), resolveP, "/o.mp4").filterComplex;
+  const kfPlan = buildExportPlan(baseDoc(kfs([["x", 0, 320], ["x", 1, 520], ["y", 0, 240], ["y", 1, 300], ["rotation", 0, 0], ["rotation", 1, 90], ["opacity", 0, 1], ["opacity", 1, 0.4]])), resolveP, "/o.mp4").filterComplex;
+  assert(!plain.includes("pad=") && !plain.includes("rotate=") && !plain.includes("geq="), "a base clip without transform keyframes must not gain the transform chain (byte-identical fast path)");
+  assert(kfPlan.includes("geq=") && kfPlan.includes("rotate=") && kfPlan.includes("pad=") && /crop=640:480:x='clip\(/.test(kfPlan), `base-clip keyframes must emit opacity (geq) + rotate + pad/crop translate, got ${kfPlan.slice(0, 400)}`);
+  assert(kfPlan.includes("0x101820"), "exposed edges must be filled with the doc background colour");
+
+  // (b) real encodes against the PURE valueAt (what the preview draws).
+  let real = "plan-only (ffmpeg absent)";
+  const s = info.available ? await ensureSource("kf-src.mp4") : null;
+  if (s) {
+    const bin = s.bin;
+    // A dark frame with a white 200x60 bar in the middle (an off-square marker).
+    const markerSrc = resolve(OUT, "kf-marker.mp4");
+    const r = spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=0x101820:s=640x480:r=30:d=3,drawbox=x=220:y=210:w=200:h=60:color=white:t=fill", "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", "-an", markerSrc], { encoding: "utf8" });
+    assert(r.status === 0, `kf marker fixture failed: ${(r.stderr || "").slice(-200)}`);
+    const white = (r: number, g: number, b: number): boolean => r > 200 && g > 200 && b > 200;
+    const doc = (keyframes: unknown[]): EditDoc => parseEditDoc({ ...baseDoc(keyframes), media: [{ id: "v", kind: "video", src: markerSrc, durationSec: 3 }] });
+    const exp = (d: EditDoc): VideoClip => d.tracks[0]!.clips[0] as VideoClip;
+
+    // x translation: marker centre follows valueAt("x") (eased).
+    const dx = doc(kfs([["x", 0, 320], ["x", 1, 560, "ease-in-out"]]));
+    const centres: string[] = [];
+    for (const t of [0.05, 0.6, 1.0, 1.5]) {
+      const f = await exportFrame(dx, () => markerSrc, t, `kf-x-${Math.round(t * 100)}`);
+      const b = bbox(f.px, f.w, f.h, white);
+      const want = valueAt(exp(dx).keyframes, "x", t / 2, 320);
+      assert(b.n > 800 && Math.abs(b.cx - want) < 14, `base x keyframe at t=${t}: marker centre ${b.cx.toFixed(0)} but valueAt says ${want.toFixed(0)}`);
+      centres.push(`${b.cx.toFixed(0)}≈${want.toFixed(0)}`);
+    }
+    // y translation (linear) — vertical.
+    const dy = doc(kfs([["y", 0, 240], ["y", 1, 120]]));
+    const fy = await exportFrame(dy, () => markerSrc, 1.0, "kf-y");
+    const by = bbox(fy.px, fy.w, fy.h, white);
+    assert(Math.abs(by.cy - valueAt(exp(dy).keyframes, "y", 0.5, 240)) < 14, `base y keyframe: marker centre y ${by.cy.toFixed(0)} vs ${valueAt(exp(dy).keyframes, "y", 0.5, 240)}`);
+
+    // rotation: a 200x60 bar turned 90° becomes ~60x200.
+    const dr = doc(kfs([["rotation", 0, 0], ["rotation", 1, 90]]));
+    const fr = await exportFrame(dr, () => markerSrc, 1.9, "kf-rot");
+    const br = bbox(fr.px, fr.w, fr.h, white);
+    assert(br.y1 - br.y0 > 150 && br.x1 - br.x0 < 110, `base rotation keyframe: bar should be ~tall at 90° (bbox ${br.x1 - br.x0}×${br.y1 - br.y0})`);
+    const fr0 = await exportFrame(dr, () => markerSrc, 0.02, "kf-rot0");
+    const br0 = bbox(fr0.px, fr0.w, fr0.h, white);
+    assert(br0.x1 - br0.x0 > 150 && br0.y1 - br0.y0 < 110, `rotation 0° keeps the bar wide (bbox ${br0.x1 - br0.x0}×${br0.y1 - br0.y0})`);
+
+    // opacity: the white bar fades toward the dark background (valueAt).
+    const dop = doc(kfs([["opacity", 0, 1], ["opacity", 1, 0.2]]));
+    const fo = await exportFrame(dop, () => markerSrc, 1.0, "kf-op");
+    const o = valueAt(exp(dop).keyframes, "opacity", 0.5, 1);
+    const mid = ((): number => {
+      const i = (240 * fo.w + 320) * 4;
+      return fo.px[i]!;
+    })();
+    const wantLum = Math.round(255 * o + 16 * (1 - o));
+    assert(Math.abs(mid - wantLum) < 28, `base opacity keyframe: bar luma ${mid} vs expected ~${wantLum} (opacity ${o.toFixed(2)})`);
+
+    // (c) PiP scale keyframes: the red overlay box grows 0.2 → 0.6 of the frame width.
+    const red = resolve(OUT, "kf-red.mp4");
+    const rr = spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=0xff2020:s=640x480:r=30:d=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", red], { encoding: "utf8" });
+    assert(rr.status === 0, "red fixture failed");
+    const pip = parseEditDoc({
+      version: 1,
+      meta: { title: "pip", width: 640, height: 480, fps: 30, background: "#000000" },
+      media: [{ id: "v", kind: "video", src: markerSrc, durationSec: 3 }, { id: "r", kind: "video", src: red, durationSec: 3 }],
+      tracks: [
+        { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 2, mediaId: "v", transform: { x: 320, y: 240 } }] },
+        { id: "broll", kind: "visual", clips: [{ id: "p0", kind: "video", start: 0, duration: 2, mediaId: "r", transform: { x: 320, y: 240, scale: 0.2 }, keyframes: kfs([["scale", 0, 0.2], ["scale", 1, 0.6]]) }] },
+      ],
+    });
+    const redPx = (r: number, g: number, b: number): boolean => r > 200 && g < 90 && b < 90;
+    const widths: string[] = [];
+    for (const t of [0.1, 1.0, 1.9]) {
+      const f = await exportFrame(pip, (id) => (id === "r" ? red : markerSrc), t, `kf-pip-${Math.round(t * 10)}`);
+      const b = bbox(f.px, f.w, f.h, redPx);
+      const want = 640 * valueAt((pip.tracks[1]!.clips[0] as VideoClip).keyframes, "scale", t / 2, 0.2);
+      assert(Math.abs(b.x1 - b.x0 + 1 - want) < 12, `PiP scale keyframe at t=${t}: box ${b.x1 - b.x0 + 1}px wide, valueAt says ${want.toFixed(0)}px`);
+      assert(Math.abs(b.cx - 320) < 8, "the scaled PiP must stay centred on its (x,y)");
+      widths.push(`${b.x1 - b.x0 + 1}≈${want.toFixed(0)}`);
+    }
+    real = `real encode vs valueAt — base x centre ${centres.join(", ")}; y ok; rotation 0°→90° bar ${br0.x1 - br0.x0}×${br0.y1 - br0.y0} → ${br.x1 - br.x0}×${br.y1 - br.y0}; opacity luma ${mid}≈${wantLum}; PiP scale width ${widths.join(", ")}`;
+  }
+  ok(`check 76 (keyframe export fidelity): base-clip x/y/rotation/opacity + PiP scale keyframes export as eased expressions (no keyframes ⇒ byte-identical); ${real}`);
+}
+
 export async function checkRenderDebt(): Promise<void> {
   await checkExportZOrder();
   await checkKaraokePresets();
   await checkSpeedRampPresets();
   await checkLutPipeline();
   await checkScriptSupport();
+  await checkKeyframeFidelity();
 }
 
 if (process.argv[1]?.endsWith("verify-render-debt.ts")) {
