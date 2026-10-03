@@ -14,6 +14,8 @@ import {
   type VideoClip,
 } from "@cadence/core";
 import { SyntheticLayer } from "./SyntheticLayer";
+import { TransformLayer, type CommitFn } from "./TransformLayer";
+import { TransformInspector } from "./TransformInspector";
 import { computePreview } from "@/lib/preview";
 import { clipGainAt } from "@/lib/audio-mix";
 import { fmtTime } from "@/lib/format";
@@ -44,6 +46,14 @@ interface StageProps {
   /** Empty-state actions: start a text video / open the media picker. */
   onStartWithText?: () => void;
   onAddMedia?: () => void;
+  /**
+   * Position (Cycle J): the on-canvas selection box + Transform inspector. Selection
+   * ids come from the editor (timeline + canvas share it); every gesture lands ONE
+   * undoable edit-doc op through `onCommitDoc` (the editor's `commit`).
+   */
+  selectedIds?: string[];
+  onSelectLayer?: (id: string | null, toggle: boolean) => void;
+  onCommitDoc?: CommitFn;
 }
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
@@ -135,7 +145,11 @@ function AudioClipPlayer(props: {
 }
 
 export function Stage(props: StageProps) {
-  const { urls, hasMedia, doc, timeSec, durationSec, playing, muted } = props;
+  const { urls, hasMedia, timeSec, durationSec, playing, muted } = props;
+  // A drag previews a DRAFT doc (one undo step lands on pointer-up); everything
+  // below renders the draft when there is one, the committed doc otherwise.
+  const [draft, setDraft] = useState<EditDoc | null>(null);
+  const doc = draft ?? props.doc;
   const videoRef = useRef<HTMLVideoElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const [frameH, setFrameH] = useState(0);
@@ -228,7 +242,8 @@ export function Stage(props: StageProps) {
 
   return (
     <div className="flex min-h-[180px] min-w-0 flex-1 flex-col">
-      <div className="flex min-h-0 flex-1 items-center justify-center p-4 sm:p-6" style={{ containerType: "size" }}>
+      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center p-4 sm:p-6" style={{ containerType: "size" }}>
         <div
           ref={frameRef}
           className="relative flex items-center justify-center overflow-hidden rounded-2xl border border-line bg-[#12181a] shadow-[0_18px_50px_-20px_rgba(24,34,38,0.30)]"
@@ -385,7 +400,27 @@ export function Stage(props: StageProps) {
           {props.placement && props.onFinishPlacement && (
             <PlacementLayer request={props.placement} onFinish={props.onFinishPlacement} />
           )}
+
+          {/* On-canvas selection box: move / resize / rotate / nudge / snap. */}
+          {hasContent && frameW > 0 && !props.placement && props.onCommitDoc && props.onSelectLayer && (
+            <TransformLayer
+              doc={doc}
+              baseDoc={props.doc}
+              timeSec={timeSec}
+              width={frameW}
+              height={frameH}
+              playing={playing}
+              selectedIds={props.selectedIds ?? []}
+              onSelect={props.onSelectLayer}
+              onDraft={setDraft}
+              onCommit={props.onCommitDoc}
+            />
+          )}
         </div>
+      </div>
+      {hasContent && !props.placement && props.onCommitDoc && (props.selectedIds?.length ?? 0) > 0 && (
+        <TransformInspector doc={props.doc} timeSec={timeSec} selectedIds={props.selectedIds ?? []} onCommit={props.onCommitDoc} />
+      )}
       </div>
 
       {/* Transport */}

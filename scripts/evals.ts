@@ -200,6 +200,50 @@ const EVALS: Eval[] = [
     },
     proof: "eval-f-text-video.png",
   },
+
+  // (g) POSITION — plain-language placement on a text video: align + rotate.
+  {
+    id: "g",
+    capability: "position · move the title to a corner + rotate (align_clip, set_transform)",
+    prompt: "move the title to the top left and rotate it 15 degrees",
+    setup: async () => {
+      const project = new ProjectState({ media: [] });
+      await new StubDirector().interpret("make a text video: Big news. We just launched. Try it free today.", project);
+      return project;
+    },
+    expectTools: ["align_clip", "set_transform"],
+    extra: (doc) => {
+      const texts = doc.tracks.flatMap((t) => t.clips).filter((c) => c.kind === "text");
+      const title = texts[texts.length - 1];
+      assert(title && title.kind === "text", "expected a title clip");
+      assert(title.transform.rotation === 15, `expected 15° rotation, got ${title.transform.rotation}`);
+      assert(title.transform.x < doc.meta.width / 2 && title.transform.y < doc.meta.height / 2, "expected the title in the top-left quadrant");
+    },
+    proof: "eval-g-position.png",
+  },
+
+  // (h) POSITION — relative size/position phrases on a shape graphic.
+  {
+    id: "h",
+    capability: "position · make the shape smaller + center it",
+    prompt: "make the shape smaller and center it",
+    setup: async () => {
+      const project = new ProjectState({ media: [] });
+      await new StubDirector().interpret("make a text video: Hello world. Second line.", project);
+      project.setDoc(
+        (await import("@cadence/director")).addShape(project.doc, { shape: "rect", w: 600, h: 300, atSec: 0, durationSec: 4 }),
+      );
+      return project;
+    },
+    expectTools: ["set_transform", "align_clip"],
+    extra: (doc) => {
+      const shape = doc.tracks.flatMap((t) => t.clips).find((c) => c.kind === "shape" && c.id.startsWith("shape-"));
+      assert(shape && shape.kind === "shape", "expected a shape");
+      assert(shape.w === 480 && shape.h === 240, `expected 80% size (480×240), got ${shape.w}×${shape.h}`);
+      assert(shape.transform.x === doc.meta.width / 2 && shape.transform.y === doc.meta.height / 2, "expected the shape centred");
+    },
+    proof: "eval-h-position.png",
+  },
 ];
 
 interface EvalOutcome {
