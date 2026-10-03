@@ -6,6 +6,7 @@
  *   "cut a 30s highlight, make it vertical with captions and a warm look"
  * The real Director swaps this rules brain for an LLM but calls the same tools.
  */
+import { parseSceneSplit } from "./scene-intent";
 import { docDurationSec, FONT_LIBRARY, fontStack, type ColorGrade, type EditDoc, type TextAnimStyle } from "@cadence/core";
 import {
   isTextVideo,
@@ -65,6 +66,7 @@ import {
   vfxTool,
   zoomTool,
   splitAllTracksTool,
+  splitIntoScenesTool,
   closeGapsTool,
   cutRangeTool,
   holdFrameTool,
@@ -1058,6 +1060,17 @@ export class StubDirector {
       const craft = parseCraftRequest(req);
       steps.push(...craft.steps);
       req = craft.rest;
+    }
+
+    // ---- divide a finished video into clips (scenes / sentences / silence / beats / interval) ----
+    // Needs footage; its phrase is removed so "cut every 5 seconds" never also reads as a highlight.
+    if (!textMode && project.doc.tracks.some((t) => t.clips.some((c) => c.kind === "video"))) {
+      const split = parseSceneSplit(req);
+      if (split) {
+        const input = split.input;
+        steps.push({ run: (p) => splitIntoScenesTool.execute(input, { project: p }), call: { name: splitIntoScenesTool.name, input } });
+        req = split.rest;
+      }
     }
 
     // ---- builders (replace the doc); pick at most one ----

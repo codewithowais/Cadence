@@ -5,6 +5,8 @@ export * from "./edits";
 export * from "./tracks";
 export * from "./trims";
 export * from "./craft";
+export * from "./scenes";
+export { parseSceneSplit, wantsSceneDetection, type SceneIntent } from "./scene-intent";
 export * from "./filler";
 export * from "./slideshow";
 export * from "./demo";

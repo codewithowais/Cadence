@@ -23,3 +23,12 @@ export {
   TTS_UNAVAILABLE_MESSAGE,
 } from "./tts";
 export type { TtsProvider, TtsRequest, TtsResult, TtsConfig } from "./tts";
+export * from "./scenes";
+export {
+  detectSceneFfmpeg,
+  ffmpegPresent,
+  ffmpegSceneThreshold,
+  parseShowinfoCuts,
+  sceneScanArgs,
+} from "./scenes-ffmpeg";
+export type { FfmpegSceneResult } from "./scenes-ffmpeg";
