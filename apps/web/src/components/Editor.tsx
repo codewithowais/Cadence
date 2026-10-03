@@ -41,6 +41,8 @@ import { QuickActions as QuickActionsBase } from "./QuickActions";
 import { AppliedStatus as AppliedStatusBase } from "./AppliedStatus";
 import { Stage } from "./Stage";
 import { CutsStrip } from "./CutsStrip";
+import { CanvasPanel } from "./CanvasPanel";
+import { openCanvasPanel } from "@/lib/canvas-prefs";
 import { CodeDrawer as CodeDrawerBase } from "./CodeDrawer";
 import { ShortcutsHelp as ShortcutsHelpBase } from "./ShortcutsHelp";
 import {
@@ -693,6 +695,8 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
         }
         setRoom("text");
       }
+      // Magic resize queues sizes on the doc — open the panel on its Magic tab to create + export them.
+      if (res.toolCalls.some((c) => c.name === "magic_resize")) openCanvasPanel("magic");
       return res.toolCalls.length;
     } catch (err) {
       say("director", err instanceof Error ? err.message : "I couldn't make that edit.", "error", { kind: "failed", request: text });
@@ -2083,6 +2087,13 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           </div>
         </div>
       )}
+      <CanvasPanel
+        doc={doc}
+        onApply={(d) => commit(d)}
+        onExportDoc={(d) => exportDoc(d)}
+        onCancelExport={cancelExport}
+        canExport={hasContent}
+      />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <UndoToast toast={toast} onUndo={undo} onDismiss={() => setToast(null)} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={paletteCommands} onRun={runCommand} />

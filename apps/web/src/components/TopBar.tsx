@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import type { EditDoc } from "@cadence/core";
+import { ratioLabel, type EditDoc } from "@cadence/core";
+import { openCanvasPanel } from "@/lib/canvas-prefs";
 import { fmtTime } from "@/lib/format";
 import type { ExportSettings } from "@/lib/export-presets";
 import { ExportMenu, type ExportUiProgress } from "./ExportMenu";
@@ -276,6 +277,28 @@ export function TopBar(props: TopBarProps) {
             <kbd className="hidden rounded border border-line-soft px-1 text-[10px] font-medium text-faint md:inline" aria-hidden="true">⌘K</kbd>
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => openCanvasPanel()}
+          aria-label={`Canvas size ${props.doc.meta.width} by ${props.doc.meta.height}. Change size or ratio`}
+          title="Canvas & size — custom ratio, presets, magic resize"
+          data-testid="canvas-chip"
+          className="flex h-8 items-center gap-1.5 rounded-lg border border-line bg-elevated px-2 text-muted transition hover:border-amber/40 hover:text-text"
+        >
+          <span className="grid h-4 w-4 place-items-center" aria-hidden="true">
+            <span
+              className="block rounded-[2px] border border-current"
+              style={{
+                width: Math.max(5, Math.round(14 * Math.min(1, props.doc.meta.width / props.doc.meta.height))),
+                height: Math.max(5, Math.round(14 * Math.min(1, props.doc.meta.height / props.doc.meta.width))),
+              }}
+            />
+          </span>
+          <span className="hidden tabular-nums lg:inline">
+            {props.doc.meta.width}×{props.doc.meta.height}
+          </span>
+          <span className="text-[10px] font-semibold text-faint">{props.doc.meta.canvas?.ratio ?? ratioLabel(props.doc.meta.width, props.doc.meta.height)}</span>
+        </button>
         <div className="flex items-center gap-1">
           <IconButton onClick={props.onUndo} disabled={!props.canUndo} label="Undo (⌘Z)" path="M9 14 4 9l5-5 M4 9h11a5 5 0 0 1 0 10h-1" />
           <IconButton onClick={props.onRedo} disabled={!props.canRedo} label="Redo (⌘⇧Z)" path="m15 14 5-5-5-5 M20 9H9a5 5 0 0 0 0 10h1" />
