@@ -72,6 +72,7 @@ import { DemoRoom } from "./DemoRoom";
 import type { Transcript } from "@cadence/understanding";
 import type { RoomKey } from "./RoomsRail";
 import { MEDIA_DND_ID, MEDIA_DND_AUDIO, MEDIA_DND_VISUAL } from "./CutsStrip";
+import { dragSource } from "@/lib/dnd-payload";
 import type { BeginPlacement } from "@/lib/placement";
 
 interface RoomPanelProps {
@@ -2111,6 +2112,7 @@ function TextStylesGallery({
             <button
               key={preset.key}
               type="button"
+              {...(disabled ? {} : dragSource({ type: "text-preset", key: preset.key, text: draft.trim() || undefined, label: preset.label }))}
               onClick={() => void drop((o) => preset.build(doc, o), draft)}
               disabled={disabled}
               aria-label={preset.label}
@@ -2137,6 +2139,7 @@ function TextStylesGallery({
             <button
               key={emoji}
               type="button"
+              {...(disabled ? {} : dragSource({ type: "sticker", emoji, label: `${emoji} sticker` }))}
               onClick={() => void drop((o) => insertSticker(doc, emoji, o))}
               disabled={disabled}
               aria-label={`Add ${emoji} sticker`}
@@ -2418,6 +2421,8 @@ function MediaTile({
 }) {
   const label = media.label ?? media.src;
   const family = media.kind === "audio" ? MEDIA_DND_AUDIO : MEDIA_DND_VISUAL;
+  // Also publish the full payload so the timeline can size its drop preview mid-drag.
+  const payloadSrc = dragSource({ type: "media", mediaId: media.id, mediaKind: media.kind, durationSec: media.durationSec, label: media.label ?? media.src });
   const detail =
     media.kind === "audio" || media.kind === "video"
       ? media.durationSec != null
@@ -2433,7 +2438,9 @@ function MediaTile({
         e.dataTransfer.setData(MEDIA_DND_ID, media.id);
         e.dataTransfer.setData(family, media.id);
         e.dataTransfer.effectAllowed = "copy";
+        payloadSrc.onDragStart(e);
       }}
+      onDragEnd={payloadSrc.onDragEnd}
       onClick={onSelect}
       aria-label={`${label} — drag onto a timeline lane to add it`}
       title={`${label} — drag onto a timeline lane`}
