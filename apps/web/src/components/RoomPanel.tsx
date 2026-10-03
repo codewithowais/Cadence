@@ -46,9 +46,10 @@ import {
   trackFade,
   trackPan,
 } from "@/lib/fx";
-import { EMOJI_STICKERS, TEXT_PRESETS, insertSticker, type PlaceOpts } from "@/lib/text-presets";
+import { TEXT_PRESETS, type PlaceOpts } from "@/lib/text-presets";
 import { BackgroundPane, TextRoom } from "./TextRoom";
 import { GraphicsGallery } from "./GraphicsGallery";
+import { EmojiPicker } from "./EmojiPicker";
 import { fmtTime, download, downloadBlob } from "@/lib/format";
 import { describeDoc } from "@/lib/status";
 import {
@@ -833,7 +834,7 @@ function drawParade(cv: HTMLCanvasElement | null, data: Uint8ClampedArray, sw: n
 
 // ---- Design room (unified Looks · Color · Backgrounds · Text · Overlays) ----
 
-type DesignCategory = "looks" | "grade" | "backgrounds" | "text" | "overlays" | "shapes" | "advanced" | "graphics";
+type DesignCategory = "looks" | "grade" | "backgrounds" | "text" | "overlays" | "shapes" | "advanced" | "graphics" | "emoji";
 
 const DESIGN_CATEGORIES: { key: DesignCategory; label: string; hint: string }[] = [
   { key: "looks", label: "Looks", hint: "One-tap filters" },
@@ -844,6 +845,7 @@ const DESIGN_CATEGORIES: { key: DesignCategory; label: string; hint: string }[] 
   { key: "shapes", label: "Shapes · Layout", hint: "Boxes, arrows, PiP, grid" },
   { key: "advanced", label: "Advanced", hint: "Chroma, blend, mask" },
   { key: "graphics", label: "Graphics", hint: "CTAs, timers, stickers" },
+  { key: "emoji", label: "Emoji", hint: "3,000+ stickers & reactions" },
 ];
 
 const DESIGN_CAT_KEY = "cadence:designCat";
@@ -992,6 +994,17 @@ function DesignRoom({
         )}
         {cat === "graphics" && (
           <GraphicsGallery
+            doc={doc}
+            busy={busy}
+            timeSec={timeSec}
+            selectedClipId={selectedClipId}
+            onApplyDoc={onApplyDoc}
+            onSelectClip={onSelectClip}
+            onSeek={onSeek}
+          />
+        )}
+        {cat === "emoji" && (
+          <EmojiPicker
             doc={doc}
             busy={busy}
             timeSec={timeSec}
@@ -2131,22 +2144,14 @@ function TextStylesGallery({
       </section>
 
       <section className="flex flex-col gap-1.5">
-        <h3 className="text-[10px] uppercase tracking-wider text-faint">Stickers</h3>
-        <div className="flex flex-wrap gap-1.5">
-          {EMOJI_STICKERS.map((emoji) => (
-            <button
-              key={emoji}
-              type="button"
-              onClick={() => void drop((o) => insertSticker(doc, emoji, o))}
-              disabled={disabled}
-              aria-label={`Add ${emoji} sticker`}
-              title="Preview is exact. Emoji fidelity in the exported .mp4 depends on the render machine's fonts."
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-line bg-elevated text-lg leading-none transition hover:border-amber/40 disabled:opacity-40"
-            >
-              {emoji}
-            </button>
-          ))}
-        </div>
+        <h3 className="text-[10px] uppercase tracking-wider text-faint">Emoji stickers</h3>
+        <EmojiPicker
+          compact
+          doc={doc}
+          busy={busy}
+          timeSec={timeSec}
+          onApplyDoc={onApplyDoc}
+        />
       </section>
     </div>
   );

@@ -200,6 +200,73 @@ const EVALS: Eval[] = [
     },
     proof: "eval-f-text-video.png",
   },
+
+  // (g) EMOJI — a color-emoji sticker placed by words (no media).
+  {
+    id: "g",
+    capability: "emoji · sticker by name + position",
+    prompt: "add a fire emoji at the top right",
+    setup: async () => new ProjectState({ media: [] }),
+    expectTools: ["add_emoji"],
+    extra: (doc) => {
+      const c = doc.tracks.flatMap((t) => t.clips).find((x) => x.kind === "text" && x.text === "🔥");
+      assert(c && c.kind === "text", "expected a 🔥 emoji clip");
+      assert(c.transform.x > doc.meta.width / 2 && c.transform.y < doc.meta.height / 2, "expected the top-right quadrant");
+      assert(c.anim.style === "pop", "expected a pop-in intro");
+    },
+    proof: "eval-g-emoji-sticker.png",
+  },
+
+  // (h) EMOJI — an animated reaction pack.
+  {
+    id: "h",
+    capability: "emoji · confetti / party reaction pack",
+    prompt: "add confetti",
+    setup: async () => new ProjectState({ media: [] }),
+    expectTools: ["add_reaction"],
+    extra: (doc) => {
+      const pieces = doc.tracks.flatMap((t) => t.clips).filter((x) => x.kind === "text" && /^emo-\d+-party-\d+$/.test(x.id));
+      assert(pieces.length >= 10, `expected a party pack of 10+ emoji, got ${pieces.length}`);
+      assert(new Set(pieces.map((x) => (x.kind === "text" ? x.text : ""))).size >= 3, "expected a mix of party emoji");
+    },
+    proof: "eval-h-emoji-confetti.png",
+  },
+
+  // (i) EMOJI, TRANSCRIPT-TIMED — hearts pop every time a word is said.
+  {
+    id: "i",
+    capability: "emoji · reaction timed to a spoken word",
+    prompt: "pop hearts when I say love",
+    setup: async () => {
+      const project = await videoProject(60);
+      project.setDoc({
+        version: 1,
+        meta: { width: 1280, height: 720 },
+        media: [{ id: "clip-001", kind: "video", src: "uploads/clip-001.mp4", durationSec: 60 }],
+        tracks: [{ id: "video", kind: "visual", clips: [{ id: "v1", kind: "video", start: 0, duration: 30, mediaId: "clip-001", sourceIn: 0 }] }],
+      });
+      project.setTranscript({
+        mediaId: "clip-001",
+        durationSec: 60,
+        language: "en",
+        segments: [],
+        words: [
+          { text: "We", start: 1, end: 1.2 },
+          { text: "love", start: 4, end: 4.4 },
+          { text: "this", start: 4.5, end: 4.8 },
+          { text: "Love!", start: 12, end: 12.5 },
+        ],
+      });
+      return project;
+    },
+    expectTools: ["add_reaction"],
+    extra: (doc) => {
+      const starts = doc.tracks.flatMap((t) => t.clips).filter((x) => x.kind === "text" && x.id.startsWith("emo-")).map((x) => x.start);
+      assert(starts.some((t) => Math.abs(t - 4) < 0.2) && starts.some((t) => Math.abs(t - 12) < 0.2), "expected the pack at 4s and 12s (when “love” is said)");
+      assert(!doc.tracks.some((t) => t.id.startsWith("graphics-")), "must not also add the heart sticker graphic");
+    },
+    proof: "eval-i-emoji-when-said.png",
+  },
 ];
 
 interface EvalOutcome {

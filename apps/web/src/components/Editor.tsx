@@ -88,6 +88,7 @@ import type { ExportUiProgress } from "./ExportMenu";
 import { useAutosave } from "@/lib/use-autosave";
 import { SCRATCH_DRAFT_KEY } from "@/lib/autosave";
 import { RecoverDraftBanner } from "./RecoverDraftBanner";
+import { EmojiDropZone } from "./EmojiDropZone";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { withStableHandlers } from "@/lib/stable-memo";
 import { buildProjectFile, matchFilesToMissing, parseProjectFile, projectFileName } from "@/lib/project-file";
@@ -1966,6 +1967,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           />
         )}
         <ErrorBoundary label="preview" resetKey={doc} onUndo={canUndo ? undo : undefined} className="min-h-0 flex-1">
+        <EmojiDropZone doc={doc} timeSec={timeSec} onApplyDoc={(d) => commit(d)} onSelectClip={setSelectedClipId}>
         <Stage
           urls={urls}
           hasMedia={hasMedia}
@@ -1984,6 +1986,7 @@ export function Editor({ initialDoc, projectName, onSave, backHref, notice }: Ed
           onStartWithText={() => setRoom("text")}
           onAddMedia={() => setRoom("media")}
         />
+        </EmojiDropZone>
         </ErrorBoundary>
         </div>
         <ResizeHandle
