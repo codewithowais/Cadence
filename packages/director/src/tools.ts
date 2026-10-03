@@ -79,6 +79,8 @@ import {
   animateShapeTool,
   editGraphicTool,
 } from "./graphics-tools";
+import { makeVideoFromPromptTool, planVideoTool } from "./prompt-video";
+import { refineVideoTool } from "./prompt-video-refine";
 import {
   addAdjustment,
   addBroll,
@@ -2086,6 +2088,9 @@ export const DIRECTOR_TOOLS = {
   auto_duck: autoDuckTool,
   enhance_voice: enhanceVoiceTool,
   beat_sync: beatSyncTool,
+  make_video_from_prompt: makeVideoFromPromptTool,
+  plan_video: planVideoTool,
+  refine_video: refineVideoTool,
   add_graphic: addGraphicTool,
   add_lower_third: addLowerThirdTool,
   add_progress_bar: addProgressBarTool,

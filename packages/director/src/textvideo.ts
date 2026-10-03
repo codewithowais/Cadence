@@ -673,6 +673,18 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
 
   const audioTracks = doc.tracks.filter((tr) => tr.kind === "audio");
   const audioMedia = new Set(audioTracks.flatMap((tr) => tr.clips.map((c) => ("mediaId" in c ? c.mediaId : ""))));
+  // Photos/clips a prompt-made video (make_video_from_prompt) shows behind its scenes live on
+  // `tv-media` + `tv-scrim`. They survive restyle/reframe so changing the theme doesn't drop them.
+  const overlayTracks = doc.tracks
+    .filter((tr) => tr.id === "tv-media" || tr.id === "tv-scrim")
+    .map((tr) => ({
+      ...tr,
+      clips: tr.clips
+        .filter((c) => c.start < t - 0.05)
+        .map((c) => (c.start + c.duration > t + X ? { ...c, duration: round(t + X - c.start) } : c)),
+    }))
+    .filter((tr) => tr.clips.length > 0);
+  const overlayMedia = new Set(overlayTracks.flatMap((tr) => tr.clips.map((c) => ("mediaId" in c ? c.mediaId : ""))));
   const first = scenes[0]!.head.replace(/\s+/g, " ").trim();
   return parseEditDoc({
     ...doc,
@@ -683,14 +695,15 @@ export function buildTextVideo(doc: EditDoc, opts: BuildTextVideoOptions): EditD
       height: H,
       background: T.backgrounds[0]!.color,
     },
-    media: doc.media.filter((m) => audioMedia.has(m.id)),
+    media: doc.media.filter((m) => audioMedia.has(m.id) || overlayMedia.has(m.id)),
     tracks: [
       { id: "tv-bg", kind: "visual", name: "Backgrounds", clips: bgClips },
+      ...overlayTracks,
       { id: "tv-accents", kind: "visual", name: "Accents", clips: accClips },
       { id: "tv-text", kind: "visual", name: "Text", clips: textClips },
       ...audioTracks,
     ],
-    textVideo: { theme, format, pace },
+    textVideo: { theme, format, pace, ...(doc.textVideo?.storyboard ? { storyboard: doc.textVideo.storyboard } : {}) },
   });
 }
 

@@ -3320,6 +3320,43 @@ async function checkTextVideoExportParity(): Promise<void> {
   );
 }
 
+/** Check 71 — prompt → video: one frame per genre renders; the storyboard schema + planner hold. */
+async function checkPromptVideo(): Promise<void> {
+  const { planVideo, Storyboard: StoryboardSchema, storyboardOf, GENRES } = await import("@cadence/director");
+  const PROMPTS: Record<string, string> = {
+    promo: "30s Instagram promo for my coffee shop, warm vibe, upbeat music",
+    explainer: "explain how photosynthesis works in 45s",
+    greeting: "birthday wish for Ayesha",
+    travel: "travel recap of Istanbul using my photos",
+    tutorial: "5 tips for better sleep",
+    announcement: "we're hiring a designer, announcement",
+    quote: "motivational quote about discipline",
+    invite: "invite to my daughter's birthday party this Saturday at 6pm at Gulberg Club",
+    launch: "product launch for Nimbus, a budgeting app",
+    testimonial: "testimonial video for Glow Salon",
+    intro: "YouTube intro for my channel TechWithOwais",
+    slideshow: "slideshow of our wedding memories using my photos",
+  };
+  const sizes: string[] = [];
+  for (const genre of GENRES) {
+    const prompt = PROMPTS[genre]!;
+    const photos = genre === "travel" || genre === "slideshow" ? 5 : 0;
+    const project = new ProjectState({
+      media: Array.from({ length: photos }, (_, i) => ({ id: `p${i}`, kind: "image" as const, src: `p${i}.jpg`, width: 1920, height: 1080, label: `p${i}.jpg` })),
+    });
+    const res = await new StubDirector().interpret(prompt, project);
+    assert(res.toolCalls.some((c) => c.name === "make_video_from_prompt"), `${genre}: routed to make_video_from_prompt (got ${res.toolCalls.map((c) => c.name).join(",") || "none"})`);
+    const sb = storyboardOf(res.doc);
+    assert(sb && sb.genre === genre, `${genre}: stored storyboard genre is ${sb?.genre}`);
+    assert(StoryboardSchema.safeParse(JSON.parse(JSON.stringify(sb))).success, `${genre}: storyboard survives JSON round-trip`);
+    const dur = docDurationSec(res.doc);
+    sizes.push(`${genre} ${await renderAndAssert(res.doc, dur * 0.4, `verify-prompt-${genre}.png`)}b`);
+    // Determinism: same prompt ⇒ same storyboard.
+    assert(JSON.stringify(planVideo({ prompt, media: project.media })) === JSON.stringify(planVideo({ prompt, media: project.media })), `${genre}: planner not deterministic`);
+  }
+  console.log(`  \x1b[32m✔\x1b[0m check 71 (prompt → video): ${GENRES.length} genres each routed, validated, deterministic and rendered a proof frame — ${sizes.join(" · ")}`);
+}
+
 async function checkEditingCraft(): Promise<void> {
   // Editing speed & timeline craft (senior-video-editor): split all · range cut ·
   // keep range · close gaps · freeze hold · content-preserving retime · paste
@@ -4272,6 +4309,7 @@ async function main(): Promise<void> {
   await checkGraphicsPack();
   await checkExportProgress();
   await checkEditingCraft();
+  await checkPromptVideo();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

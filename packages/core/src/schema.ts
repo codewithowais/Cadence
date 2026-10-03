@@ -1483,6 +1483,13 @@ export const TextVideoRecipe = z.object({
   theme: z.string().default("bold"),
   format: z.string().default("story"),
   pace: z.enum(["slow", "normal", "fast"]).default("normal"),
+  /**
+   * The Storyboard (genre / palette / scene plan) a prompt-made video was built from
+   * (`make_video_from_prompt`). Opaque to core — the director package owns and validates its
+   * shape — it rides along with the doc so refinement ("punchier", "shorter", "different
+   * style") and the storyboard review keep working after a reload or a new version.
+   */
+  storyboard: z.unknown().optional(),
 });
 export type TextVideoRecipe = z.infer<typeof TextVideoRecipe>;
 

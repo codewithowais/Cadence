@@ -83,6 +83,9 @@ import { speechRegions } from "./audio";
 import { isSynthSrc } from "./sound-synth";
 import type { MusicMood, SfxKind } from "./sound-synth";
 import { parseGraphicsRequest } from "./graphics-tools";
+import { parseBrief } from "./storyboard-brief";
+import { makeVideoFromPromptTool, storyboardOf } from "./prompt-video";
+import { refineVideoTool } from "./prompt-video-refine";
 import type { BrollCorner, CaptionStyleOpts, TitleAnimStyle, TitleStyle, TranscriptEditMode, TranscriptEditUnit } from "./edits";
 import type { AspectKey, LookKey, PlatformKey, QualityKey } from "./edits";
 import type { BlendMode, CurvePoint, KeyframeEasing, KeyframeProp } from "@cadence/core";
@@ -1013,6 +1016,49 @@ function parseCraftRequest(req: string): { steps: PlannedStep[]; rest: string } 
   return { steps, rest };
 }
 
+/**
+ * An open-ended "describe the video" request → `make_video_from_prompt`. Conservative: it never
+ * fires when the user typed their own script (that's a text video), when there's footage to
+ * edit, or — on a project that already has a timeline — unless the sentence plainly asks for a
+ * NEW video ("make a birthday video for Ayesha"), so "add a title: Happy Birthday" stays an edit.
+ */
+const PV_CREATE =
+  /\b(?:make|create|build|generate|produce|design|craft|whip up|put together|turn)\b[\s\S]{0,60}\b(?:video|promo|ad|advert|commercial|reel|clip|recap|slideshow|intro|outro|invite|invitation|greeting|wish|explainer|tutorial|announcement|testimonial|montage|trailer|short|story)\b/i;
+
+function parsePromptVideo(req: string, original: string, project: ProjectState): { prompt: string } | null {
+  const lower = req;
+  if (project.media.some((m) => m.kind === "video")) return null;
+  if (TEXT_VIDEO_TRIGGER.test(lower)) return null;
+  if (extractScript(original).script) return null;
+  const hasContent = docDurationSec(project.doc) > 0;
+  const explicitNew = PV_CREATE.test(original);
+  if (hasContent && !explicitNew) return null;
+  const hasImages = project.media.some((m) => m.kind === "image");
+  const brief = parseBrief(original, { hasMedia: hasImages });
+  const looksLikeEdit = /\b(?:add|insert|change|replace|remove|delete|trim|split|cut|move|rename|apply|set|fix)\b/.test(lower) && !explicitNew;
+  if (looksLikeEdit) return null;
+  if (brief.genre === "slideshow") {
+    // "make a slideshow from my photos" is the plain photo slideshow tool unless a topic is given.
+    return brief.subject ? { prompt: original } : null;
+  }
+  if (brief.confidence >= 0.7) return { prompt: original };
+  // Open-ended "make me a video about …" with nothing on the timeline.
+  if (!hasContent && explicitNew && /\b(?:about|for|of|on)\b/.test(lower)) return { prompt: original };
+  return null;
+}
+
+/** "make it punchier" / "shorter" / "a different style" / "regenerate" on a prompt-made video. */
+function parseRefineVideo(req: string, project: ProjectState): { kind: "regenerate" | "punchier" | "shorter" | "longer" | "different-style" } | null {
+  if (!storyboardOf(project.doc)) return null;
+  if (/\banimat|\btext\b.*\b(?:faster|slower)\b/.test(req)) return null;
+  if (/\bpunch(?:ier|y)\b|\bsnappier\b|\btighter\b|\bmore (?:punch|energy)\b/.test(req)) return { kind: "punchier" };
+  if (/\bshorter\b|\bcut it down\b|\btrim it down\b|\btoo long\b|\bquicker video\b/.test(req)) return { kind: "shorter" };
+  if (/\blonger\b|\btoo short\b|\bmore scenes\b|\bextend it\b/.test(req)) return { kind: "longer" };
+  if (/\b(?:different|another|new|fresh)\s+(?:style|look|vibe|feel)\b|\bswitch it up\b|\bstyle it differently\b/.test(req) && !parseTheme(req)) return { kind: "different-style" };
+  if (/\bregenerate\b|\bredo (?:it|this)\b|\brewrite\b|\btry again\b|\bnew version\b|\bfresh version\b|\bsomething different\b|\bstart over\b/.test(req)) return { kind: "regenerate" };
+  return null;
+}
+
 export class StubDirector {
   readonly mode = "stub" as const;
 
@@ -1026,7 +1072,24 @@ export class StubDirector {
     // can never trigger an unrelated edit.
     const hasVisualMedia = project.media.some((m) => m.kind === "video" || m.kind === "image");
     const tv = parseTextVideo(req, request, hasVisualMedia);
-    if (tv) {
+    // ---- prompt → video: one open-ended sentence ("30s promo for my coffee shop") builds a
+    // complete video (storyboard → scenes, graphics, music, sfx). Only when the user did NOT
+    // supply their own script/words (that stays a text video) and there's no footage to edit.
+    const pv = tv ? null : parsePromptVideo(req, request, project);
+    const rf = tv || pv ? null : parseRefineVideo(req, project);
+    if (pv) {
+      steps.push({
+        run: (p) => makeVideoFromPromptTool.execute(pv, { project: p }),
+        call: { name: makeVideoFromPromptTool.name, input: pv },
+      });
+      req = "";
+    } else if (rf) {
+      steps.push({
+        run: (p) => refineVideoTool.execute(rf, { project: p }),
+        call: { name: refineVideoTool.name, input: rf },
+      });
+      req = "";
+    } else if (tv) {
       const input = tv.input;
       steps.push({
         run: (p) => makeTextVideoTool.execute(input, { project: p }),
@@ -1590,6 +1653,10 @@ export class StubDirector {
   }
 
   private helpMessage(project: ProjectState): string {
+    return `${this.helpBase(project)} Or describe a whole video in one sentence, like \u201C30s Instagram promo for my coffee shop\u201D, \u201Cbirthday wish for Ayesha\u201D or \u201Cexplain how photosynthesis works in 45s\u201D, and I'll plan the scenes, write the copy and build it.`;
+  }
+
+  private helpBase(project: ProjectState): string {
     const hasVideo = project.media.some((m) => m.kind === "video");
     const hasImages = project.media.some((m) => m.kind === "image");
     if (isTextVideo(project.doc))

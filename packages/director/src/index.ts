@@ -22,3 +22,18 @@ export * from "./sound-synth";
 export * from "./audio";
 export * from "./graphics";
 export * from "./graphics-tools";
+export * from "./storyboard";
+export { parseBrief, type Brief } from "./storyboard-brief";
+export { planVideo, refineStoryboard, regenerateScene, StubStoryboardPlanner, PALETTES, PALETTE_NAMES, type RefineKind } from "./storyboard-stub";
+export {
+  buildStoryboardVisuals,
+  makeVideoFromPromptTool,
+  planVideoTool,
+  realiseStoryboard,
+  storyboardOf,
+  syncStoryboardWithDoc,
+  toTextScenes,
+  type MakeVideoFromPromptInput,
+  type RealiseResult,
+} from "./prompt-video";
+export { refineVideoTool, REFINE_KINDS } from "./prompt-video-refine";
