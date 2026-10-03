@@ -4,6 +4,10 @@ All notable changes, one line per verified slice.
 
 ## [Unreleased]
 
+### S7.1 — Cycle J: Custom ratio (Canvas & size)
+- **Custom canvas** — any W×H or ratio (21:9, 3:2, 7:5, 1.91:1), link-lock, rotate, validated bounds (even, 64–7680); optional backward-compatible `meta.canvas` (fit/fill/bars/saved sizes). Tools `set_canvas_size`, `magic_resize` + StubDirector phrases. Fit (blurred or solid bars) works in preview and export (ffmpeg `pad` / `split`+`boxblur`+`overlay`); text/shapes re-lay by fractions and the export target stays in the new aspect.
+- **Canvas & size panel** — 40 platform presets with live ratio thumbnails, saved sizes (browser + embedded in the doc), recents, safe-zone guides, **Magic resize** (sibling projects / files + export all). Verify check 71 (real ffmpeg encode), unit +16, evals +3, e2e `custom-ratio`.
+
 ### S6.1 — Cycle I: five specialist agents (parallel worktrees, merged + integrated)
 - **Senior Video Editor** — JKL/frame-step/in-out range, snapping, gaps, multi-select, paste attributes, split all, speed presets, freeze; 5 tools.
 - **Motion Designer** — 34 animated graphics presets (CTAs, countdowns, progress, lower thirds, stickers) + shape motion engine; 6 tools.

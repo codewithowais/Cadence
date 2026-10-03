@@ -10,6 +10,11 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ **QA1 Playwright E2E (real app + real media).** `apps/web/e2e/` + `@playwright/test`; `npm run test:e2e` (root or `@cadence/web`), `npm run test:e2e:install` for CI's Chromium. Generates a real `.webm` (canvas → `captureStream` → `MediaRecorder`) + 4 `.png` photos in-browser, uploads via `setInputFiles`, drives the video flow (highlight · vertical+captions · cinematic · fade · punch-in · 4K), rooms rail, Audio mute→`<video>.muted`, export-graceful (ffmpeg absent → message + JSON fallback), and the photo→slideshow flow. Screenshots → `test-artifacts/` (gitignored). — *verified: `npm run test:e2e` 2/2 headless Chromium; typecheck + verify 18/18 + next build all green.*
   - ✅ **Bug (MEDIUM) FIXED:** `setQuality` overshot on vertical "make it 4K" (anchored to width → ~3844×6836). Now anchors the LONG edge (`Math.max(baseW,baseH)`) so landscape→3840×2160 and vertical→2160×3840. Asserted in verify + e2e.
 
+## Cycle J — product-minded senior editor lanes
+
+- ✅ **J3 Custom ratio / Canvas & size.** `meta.canvas` schema (optional, migration-tested), core canvas helpers + 40 presets + safe zones, `set_canvas_size` / `magic_resize` tools + StubDirector phrases + 3 evals, Fit (solid/blur) in the ffmpeg plan + node canvas + Stage, `CanvasPanel` (top-bar chip, Deliver room pills), Magic resize (sibling projects / files + export all). See `docs/agents/custom-ratio-cycle-j.md` and CHANGELOG S7.1.
+  - ⬜ **Known limitations:** Fit applies to base footage/photos (not PiP); blurred preview duplicates the `<video>`; safe-zone insets are approximate; `quality.target*` clears on an aspect change; Magic resize is not subject-aware.
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*
