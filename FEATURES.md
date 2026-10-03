@@ -69,6 +69,9 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 - ✅ **Exports exactly as previewed** — media-less docs render every frame through the shared canvas; animated titles over footage export as frame sequences (no more frozen text).
 - ✅ **Text-video templates** in New project (Announcement, Quote, Tips list, Neon promo) + landing prompt chips.
 
+## 3d. Cycle J — emoji (Motion Designer, details in `docs/agents/emoji-cycle-j.md`)
+- ✅ Design → **Emoji**: all 1,870 standard emoji (3,395 with skin tones) — virtualized picker, search, categories, skin tones, recents + favorites, click-to-add or drag onto the preview; real color emoji in preview AND export (Twemoji sprites). 7 animated reaction packs (🔥 burst, ❤️ float-up, 👏 clap spam, 😂 laugh shake, confetti/party, sparkle, hearts pop), emoji inside any text, 9 emoji text styles. Tools: `add_emoji`, `add_reaction` (even "when I say love"), `edit_emoji`.
+
 ## 3c. Cycle I — specialist agent waves (details in `docs/agents/*.md`)
 **Editing speed & timeline craft** (Senior Video Editor)
 - ✅ J/K/L shuttle (2×/4×, reverse), frame step `,` `.` (⇧ = 10), ↑/↓ cut-to-cut, I/O in/out range → **Remove range** / **Keep only range**, snapping toggle `N` with a snap guide, visible + closable **gaps**, multi-select (⇧/⌘-click, marquee, ⌘A) with group delete/duplicate/nudge, **copy/paste attributes** (⌘⇧C/⌘⇧V), **Split all tracks** (⇧S), speed presets 0.5–2×, **Freeze frame** (`F`). Tools: `split_all_tracks`, `close_gaps`, `cut_range`, `hold_frame`, `retime_clip`. Preview now honors speed/freeze/reverse.
