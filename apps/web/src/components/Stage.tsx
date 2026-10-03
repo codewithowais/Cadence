@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   activeClipsAt,
   cssFilter,
@@ -14,6 +14,7 @@ import {
   type VideoClip,
 } from "@cadence/core";
 import { SyntheticLayer } from "./SyntheticLayer";
+import { FitBackdrop, SafeZoneOverlay, useSafeZoneMode } from "./CanvasFit";
 import { computePreview } from "@/lib/preview";
 import { clipGainAt } from "@/lib/audio-mix";
 import { fmtTime } from "@/lib/format";
@@ -146,6 +147,12 @@ export function Stage(props: StageProps) {
   const preview = useMemo(() => computePreview(doc, timeSec), [doc, timeSec]);
   const activeOnTracks = useMemo(() => activeClipsAt(doc, timeSec), [doc, timeSec]);
   const scale = frameH > 0 ? frameH / doc.meta.height : 0;
+  // Custom canvas: Fit contains the picture (bars = solid colour or a blurred copy);
+  // Fill (default / legacy) covers. Safe-zone guides are a preview-only overlay.
+  const fitOn = doc.meta.canvas?.fit === "fit";
+  const fitBlur = fitOn && doc.meta.canvas?.fill !== "solid";
+  const fitCls = fitOn ? "object-contain" : "object-cover";
+  const safeMode = useSafeZoneMode();
 
   // The first video clip on a non-b-roll track — the fallback source shown before
   // playback and between cuts.
@@ -237,6 +244,7 @@ export function Stage(props: StageProps) {
           style={{
             aspectRatio: `${doc.meta.width} / ${doc.meta.height}`,
             width: `min(100cqw, calc(100cqh * ${doc.meta.width / doc.meta.height}))`,
+            ...(fitOn && !fitBlur ? { backgroundColor: doc.meta.canvas?.fillColor } : {}),
           }}
         >
           {/* Backgrounds + synthetic clips BENEATH the footage (shared canvas drawing). */}
@@ -275,6 +283,19 @@ export function Stage(props: StageProps) {
           {/* Video layer (single source in edit mode). The transition TYPE is
               honored via the shared pure `transitionStyle` helper (slide / wipe /
               zoom / fade), so changing it in the UI visibly changes the preview. */}
+          {fitBlur && hasMedia && videoMediaId && urls[videoMediaId] && (
+            <FitBackdrop
+              kind="video"
+              src={urls[videoMediaId]}
+              sourceTime={preview.sourceTime}
+              playing={playing && !preview.frozen}
+              rate={preview.rate}
+              canvas={doc.meta.canvas}
+              frameW={frameW}
+              compW={doc.meta.width}
+              compH={doc.meta.height}
+            />
+          )}
           {hasMedia && videoMediaId && urls[videoMediaId] && (() => {
             const ts = activeVideo
               ? transitionStyle(activeVideo, timeSec, doc.meta.width, doc.meta.height)
@@ -288,7 +309,7 @@ export function Stage(props: StageProps) {
                 preload="auto"
                 data-transition={ts?.type}
                 data-transition-active={ts?.active ? "true" : "false"}
-                className="absolute inset-0 h-full w-full object-cover will-change-transform"
+                className={`absolute inset-0 h-full w-full ${fitCls} will-change-transform`}
                 style={{
                   opacity: ts ? ts.opacity : 0,
                   filter: activeVideo ? cssFilter(activeVideo.look) : "none",
@@ -311,13 +332,16 @@ export function Stage(props: StageProps) {
               const url = urls[clip.mediaId];
               if (!url) return null;
               return (
+                <Fragment key={clip.id}>
+                {fitBlur && (
+                  <FitBackdrop kind="image" src={url} sourceTime={null} playing={false} canvas={doc.meta.canvas} frameW={frameW} compW={doc.meta.width} compH={doc.meta.height} />
+                )}
                 <img
-                  key={clip.id}
                   src={url}
                   alt=""
                   data-transition={ts.type}
                   data-transition-active={ts.active ? "true" : "false"}
-                  className="absolute inset-0 h-full w-full object-cover will-change-transform"
+                  className={`absolute inset-0 h-full w-full ${fitCls} will-change-transform`}
                   style={{
                     opacity: ts.opacity,
                     filter: cssFilter(clip.look),
@@ -325,6 +349,7 @@ export function Stage(props: StageProps) {
                     clipPath: ts.clipPath !== "none" ? ts.clipPath : undefined,
                   }}
                 />
+                </Fragment>
               );
             })}
 
@@ -360,6 +385,9 @@ export function Stage(props: StageProps) {
           {/* Text, shapes, callouts, cursors (and backgrounds above footage) — drawn by
               the SAME shared canvas code as the export, so the preview is exact. */}
           {frameW > 0 && <SyntheticLayer doc={doc} timeSec={timeSec} layer="over" width={frameW} height={frameH} />}
+
+          {/* Safe-zone guides (preview only, never exported). */}
+          <SafeZoneOverlay mode={safeMode} />
 
           {/* Audio layer — hidden <audio> per music/voice-over clip, synced to the
               transport so they're heard in the preview (not just on export). */}

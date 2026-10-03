@@ -91,6 +91,9 @@ Legend: ✅ works now (verified) · 🎬 fully manifests on **export** (needs ff
 **Reliability, speed & trust** (CTO)
 - ✅ Live **export progress** (% + ETA + phase) with real server-side **cancel**, export **pre-flight** checks, **autosave + crash recovery** (doc + media in IndexedDB) for the scratch editor, panel **error boundaries**, **.cadence.json project files** with media re-link, playback perf (idle panels skip frames). Verify check 69.
 
+## 3d. Cycle J — Custom ratio (details in `docs/agents/custom-ratio-cycle-j.md`)
+- ✅ **Canvas & size** — type any W×H or ratio (21:9 · 3:2 · 7:5 · 1.91:1) with link-lock, rotate and live validation; 40 platform presets (YouTube, Shorts/TikTok/Reels, Instagram post/story/carousel, Facebook, X, LinkedIn, Pinterest, Snapchat, Twitch, A4/poster, cinema scope, 4:3, 21:9, GIF) with ratio thumbnails; saved sizes + recents; **Fill / Fit with blurred or solid bars** (preview == export); text re-laid by fractions; **safe-zone guides**; **Magic resize** to many sizes + export all. Tools: `set_canvas_size`, `magic_resize` ("make it 21:9", "make it 1080 by 1350", "resize for all social platforms").
+
 ## 4. Photo → video (creation, not just editing)
 - ✅ **Slideshow** (`make_slideshow`) — turn a group of photos into a video with Ken Burns moves + crossfades; add a look, go vertical, add captions/titles.
 

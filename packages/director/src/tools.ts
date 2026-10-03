@@ -9,6 +9,7 @@ import {
   BackgroundGradient,
   BackgroundPattern,
   docDurationSec,
+  ratioLabel,
   EditDoc,
   SHAPE_KINDS,
   TEXT_ANIM_STYLES,
@@ -152,6 +153,7 @@ import {
   type TranscriptEditMode,
   type TranscriptEditUnit,
 } from "./edits";
+import { magicTargets, setCanvasFit, setCanvasSize, withCanvasSettings, type SetCanvasOptions } from "./canvas-ops";
 
 const KF_PROPS = ["x", "y", "scale", "rotation", "opacity", "volume"] as const;
 const KF_EASINGS = ["linear", "ease-in", "ease-out", "ease-in-out"] as const;
@@ -296,6 +298,71 @@ export const reframeTool: DirectorTool<{ aspect?: AspectKey; width?: number; hei
     }
     const doc = reframe(ctx.project.doc, input.aspect!);
     return commit(ctx.project, doc, `Reframed to ${input.aspect}.`);
+  },
+};
+
+// ---- set_canvas_size (custom W×H / ratio + fit mode) -------------------------
+
+export const setCanvasSizeTool: DirectorTool<SetCanvasOptions> = {
+  name: "set_canvas_size",
+  description:
+    "Set a CUSTOM canvas: an exact pixel size (width+height), a ratio like 21:9 / 3:2 / 7:5 / 1.91:1 (optionally at a longEdge/width/height), or a preset id (e.g. 'ig-post-pt'). Sizes are rounded to even numbers within 64–7680. Choose how footage adapts: fit:'fill' crops to cover, fit:'fit' keeps the whole picture with fill:'blur' (blurred background) or fill:'solid' (fillColor) bars. Text/overlays re-lay out by fractions. Media is never stretched.",
+  inputSchema: z
+    .object({
+      width: z.number().positive().optional(),
+      height: z.number().positive().optional(),
+      ratio: z.string().max(24).optional(),
+      longEdge: z.number().positive().optional(),
+      presetId: z.string().max(64).optional(),
+      fit: z.enum(["fill", "fit"]).optional(),
+      fill: z.enum(["blur", "solid"]).optional(),
+      fillColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+      blur: z.number().min(0).max(1).optional(),
+      relayout: z.boolean().optional(),
+    })
+    .refine((v) => v.width || v.height || v.ratio || v.presetId || v.fit, {
+      message: "provide a size, a ratio, a presetId or a fit mode",
+    }),
+  async execute(input, ctx) {
+    const sizing = !!(input.width || input.height || input.ratio || input.presetId);
+    if (!sizing) {
+      const doc = setCanvasFit(ctx.project.doc, { fit: input.fit!, fill: input.fill, fillColor: input.fillColor, blur: input.blur });
+      return commit(
+        ctx.project,
+        doc,
+        input.fit === "fit"
+          ? `Fitting the whole picture in the frame with ${input.fill === "solid" ? "solid" : "blurred"} bars.`
+          : "Filling the frame (cropping the overflow).",
+      );
+    }
+    const r = setCanvasSize(ctx.project.doc, input);
+    const how = input.fit === "fit" ? ` · fit with ${input.fill === "solid" ? "solid" : "blurred"} bars` : input.fit === "fill" ? " · fill" : "";
+    return commit(
+      ctx.project,
+      r.doc,
+      `Set the canvas to ${r.width}×${r.height} (${ratioLabel(r.width, r.height)})${how}.${r.notes.length ? " " + r.notes.join(" ") : ""}`,
+    );
+  },
+};
+
+// ---- magic_resize (queue one project → many sizes) ---------------------------
+
+export const magicResizeTool: DirectorTool<{ targets?: string[]; social?: boolean }> = {
+  name: "magic_resize",
+  description:
+    "Prepare a MAGIC RESIZE: duplicate this project into several sizes (preset ids like 'tiktok', 'ig-post-pt', 'yt-video', or social:true for the standard social set) and export them all. Records the chosen sizes on the doc; the Canvas panel's Magic resize tab creates the copies and exports every size.",
+  inputSchema: z
+    .object({ targets: z.array(z.string().max(64)).max(24).optional(), social: z.boolean().optional() })
+    .refine((v) => v.social || (v.targets && v.targets.length > 0), { message: "provide targets or social:true" }),
+  async execute(input, ctx) {
+    const list = input.social ? magicTargets("social") : magicTargets(input.targets ?? []);
+    if (list.length === 0) throw new Error("None of those sizes are known presets.");
+    const doc = withCanvasSettings(ctx.project.doc, { magicTargets: list.map((t) => t.id) });
+    return commit(
+      ctx.project,
+      doc,
+      `Queued ${list.length} sizes for Magic resize (${list.map((t) => `${t.label} ${t.width}×${t.height}`).join(", ")}) — open Canvas → Magic resize to create and export them all.`,
+    );
   },
 };
 
@@ -2108,6 +2175,8 @@ export const DIRECTOR_TOOLS = {
   create_highlight: createHighlightTool,
   filler_cut: fillerCutTool,
   reframe: reframeTool,
+  set_canvas_size: setCanvasSizeTool,
+  magic_resize: magicResizeTool,
   add_captions: captionsTool,
   apply_look: lookTool,
   adjust_color: adjustColorTool,

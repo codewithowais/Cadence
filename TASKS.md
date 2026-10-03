@@ -20,6 +20,11 @@ Working method: PLAN → smallest vertical slice → `typecheck` + `verify` (ren
 - ✅ Pure scene scoring + 4 other split strategies (`packages/understanding/src/scenes.ts`), ffmpeg scan upgrade (`scenes-ffmpeg.ts`), `splitIntoScenes` op, `split_into_scenes` tool + routing + evals, in-browser detector, banner + Media-room section + live markers, `/api/scenes`. See `docs/agents/scene-split-cycle-j.md` and CHANGELOG S7.1. *verified: unit 186/186 · verify 71/71 · evals 9/9 · next build · e2e scene-split.*
 - ⬜ **Limitations:** hard cuts only (slow dissolves/fades are under-detected — raise sensitivity or use sentences/interval); PySceneDetect not wired; the timeline strip shows the generic clip name (the new `label` shows in the Media room list + code drawer, CutsStrip is another lane's file); a clip trimmed before dividing gets numbered, not transcript, labels.
 
+## Cycle J — product-minded senior editor lanes
+
+- ✅ **J3 Custom ratio / Canvas & size.** `meta.canvas` schema (optional, migration-tested), core canvas helpers + 40 presets + safe zones, `set_canvas_size` / `magic_resize` tools + StubDirector phrases + 3 evals, Fit (solid/blur) in the ffmpeg plan + node canvas + Stage, `CanvasPanel` (top-bar chip, Deliver room pills), Magic resize (sibling projects / files + export all). See `docs/agents/custom-ratio-cycle-j.md` and CHANGELOG S7.1.
+  - ⬜ **Known limitations:** Fit applies to base footage/photos (not PiP); blurred preview duplicates the `<video>`; safe-zone insets are approximate; `quality.target*` clears on an aspect change; Magic resize is not subject-aware.
+
 ## Cycle I — specialist agent waves — ✅ COMPLETE
 
 Five role agents (Senior Video Editor, Motion Designer, Audio Engineer, Product Manager, CTO) each built a feature group in an isolated worktree on a disjoint lane, gated green, then were merged into master and re-gated together (see CHANGELOG S6.1 and `docs/agents/*.md`). *verified: unit 162/162 · verify 70/70 · evals 6/6 · next build · e2e 41/41.*

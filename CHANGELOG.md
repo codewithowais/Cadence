@@ -19,6 +19,10 @@ All notable changes, one line per verified slice.
 - **S7.2d Web**: in-browser detector (hidden `<video>` seek-scan → 64×36 canvas, ~4 fps capped at 900 samples, cached per media, cancellable with progress, refined boundaries); dismissible **“Divide into scenes?”** banner after a ≥10s single video loads; **Media room → Divide into clips** (method pills, sensitivity + shortest-clip sliders, live cut preview as timeline markers + a mini strip + per-shot thumbnails, Apply / Undo); chat requests scan in the browser first and ship `sceneCuts` to the server Director; `/api/scenes` (ffmpeg upgrade, 501 + hint when absent).
 - *verified:* typecheck (root+web) · unit **186/186** (+24) · verify **71/71** (check 71: split tiles exactly, frames byte-identical, REAL ffmpeg scene scan finds the 2 cuts of a synthesized 3-shot mp4) · evals **9/9** (+3) · `next build` · Playwright e2e (new `scene-split.spec.ts`: generated 4-shot .webm → banner → scan → 3 markers → Apply → 4 labelled clips → Undo → chat).
 
+### S7.3 — Cycle J: Custom ratio (Canvas & size)
+- **Custom canvas** — any W×H or ratio (21:9, 3:2, 7:5, 1.91:1), link-lock, rotate, validated bounds (even, 64–7680); optional backward-compatible `meta.canvas` (fit/fill/bars/saved sizes). Tools `set_canvas_size`, `magic_resize` + StubDirector phrases. Fit (blurred or solid bars) works in preview and export (ffmpeg `pad` / `split`+`boxblur`+`overlay`); text/shapes re-lay by fractions and the export target stays in the new aspect.
+- **Canvas & size panel** — 40 platform presets with live ratio thumbnails, saved sizes (browser + embedded in the doc), recents, safe-zone guides, **Magic resize** (sibling projects / files + export all). Verify check 71 (real ffmpeg encode), unit +16, evals +3, e2e `custom-ratio`.
+
 ### S6.1 — Cycle I: five specialist agents (parallel worktrees, merged + integrated)
 - **Senior Video Editor** — JKL/frame-step/in-out range, snapping, gaps, multi-select, paste attributes, split all, speed presets, freeze; 5 tools.
 - **Motion Designer** — 34 animated graphics presets (CTAs, countdowns, progress, lower thirds, stickers) + shape motion engine; 6 tools.

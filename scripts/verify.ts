@@ -1025,13 +1025,13 @@ async function checkFrameSizes(): Promise<void> {
   project.setTranscript(await new StubTranscriber().transcribe(project.media[0]!));
   await new StubDirector().interpret("cut a 20 second highlight", project);
   const wide = await new StubDirector().interpret("make it 21:9 ultrawide", project);
-  assert(wide.toolCalls.some((c) => c.name === "reframe"), "expected reframe for 21:9");
+  assert(wide.toolCalls.some((c) => c.name === "reframe" || c.name === "set_canvas_size"), "expected reframe / set_canvas_size for 21:9");
   assert(wide.doc.meta.width === 2560 && wide.doc.meta.height === 1080, `expected 2560×1080, got ${wide.doc.meta.width}×${wide.doc.meta.height}`);
   await renderAndAssert(wide.doc, docDurationSec(wide.doc) / 2, "verify-2560x1080.png");
 
   // Custom width×height via the Director → "reframe to 1600x900".
   const custom = await new StubDirector().interpret("reframe to 1600x900", project);
-  const reframeCall = custom.toolCalls.find((c) => c.name === "reframe");
+  const reframeCall = custom.toolCalls.find((c) => c.name === "reframe" || c.name === "set_canvas_size");
   assert(reframeCall, "expected reframe for a custom size");
   assert(custom.doc.meta.width === 1600 && custom.doc.meta.height === 900, `expected 1600×900, got ${custom.doc.meta.width}×${custom.doc.meta.height}`);
   await renderAndAssert(custom.doc, 0.5, "verify-1600x900.png");
@@ -3949,6 +3949,109 @@ async function checkSceneSplit(): Promise<void> {
   console.log(`  \x1b[32m✔\x1b[0m check 72 (scene split): op tiles exactly · scoring cuts at 3,6 · REAL ffmpeg scan cuts at ${"2,4"}`);
 }
 
+async function checkCustomCanvas(): Promise<void> {
+  // Custom ratio: arbitrary W×H / ratio canvases render, Fit (solid + blurred bars) differs
+  // from Fill in the node canvas AND in a REAL ffmpeg encode (when ffmpeg is available),
+  // magic resize makes valid sized docs, and the export honors the custom size end-to-end.
+  const dir = await import("@cadence/director");
+  const mk = (extra: Record<string, unknown> = {}): EditDoc =>
+    parseEditDoc({
+      version: 1,
+      meta: { title: "canvas", width: 1920, height: 1080, fps: 30, background: "#101418", ...extra },
+      media: [{ id: "m1", kind: "video", src: "/media/m1.mp4", durationSec: 20, width: 1920, height: 1080, label: "landscape.mp4" }],
+      tracks: [
+        { id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 3, mediaId: "m1", sourceIn: 0, transform: { x: 960, y: 540 } }] },
+        { id: "titles", kind: "visual", clips: [{ id: "t0", kind: "text", start: 0, duration: 3, text: "CUSTOM", fontSize: 90, color: "#ffcf70", transform: { x: 960, y: 900 } }] },
+      ],
+    });
+  const px = (rgba: Buffer, w: number, x: number, y: number): [number, number, number] => {
+    const i = (y * w + x) * 4;
+    return [rgba[i]!, rgba[i + 1]!, rgba[i + 2]!];
+  };
+
+  // (a) a spread of custom sizes all render a valid frame at exactly that size.
+  for (const ratio of ["21:9", "3:2", "7:5", "1.91:1", "4:5"]) {
+    const r = dir.setCanvasSize(mk(), { ratio });
+    assert(r.width % 2 === 0 && r.height % 2 === 0, `custom canvas ${ratio}: even dimensions expected, got ${r.width}×${r.height}`);
+    const f = createRgbaFrameRenderer(r.doc);
+    assert(f.width === r.width && f.height === r.height, `custom canvas ${ratio}: renderer must be ${r.width}×${r.height}`);
+    await renderAndAssert(r.doc, 1, `verify-canvas-${ratio.replace(/[:.]/g, "_")}.png`);
+  }
+
+  // (b) node canvas: Fill covers, Fit-solid shows exact bar colour, Fit-blur shows a tinted (non-solid) bar.
+  const solidDoc = dir.setCanvasSize(mk(), { width: 540, height: 960, fit: "fit", fill: "solid", fillColor: "#336699" }).doc;
+  const blurDoc = dir.setCanvasSize(mk(), { width: 540, height: 960, fit: "fit", fill: "blur" }).doc;
+  const fillDoc = dir.setCanvasSize(mk(), { width: 540, height: 960 }).doc;
+  const solidPx = createRgbaFrameRenderer(solidDoc).render(1);
+  const blurPx = createRgbaFrameRenderer(blurDoc).render(1);
+  const fillPx = createRgbaFrameRenderer(fillDoc).render(1);
+  assert(px(solidPx, 540, 270, 20).join() === "51,102,153", `fit solid: top bar must be #336699, got ${px(solidPx, 540, 270, 20)}`);
+  assert(px(fillPx, 540, 270, 20).join() !== "51,102,153", "fill must not show solid bars");
+  assert(px(blurPx, 540, 270, 20).join() !== px(solidPx, 540, 270, 20).join(), "fit blur bar must differ from the solid bar");
+  assert(!solidPx.equals(fillPx) && !blurPx.equals(fillPx) && !blurPx.equals(solidPx), "fill / fit-solid / fit-blur frames must all differ");
+  await renderAndAssert(solidDoc, 1, "verify-canvas-fit-solid.png");
+  await renderAndAssert(blurDoc, 1, "verify-canvas-fit-blur.png");
+
+  // (c) magic resize: valid docs at every social size (each plans an export with the blurred fit).
+  const variants = dir.magicResize(mk(), dir.magicTargets("social"), { fit: "fit", fill: "blur" });
+  assert(variants.length >= 5, "magic resize: expected the social set");
+  for (const v of variants) {
+    const d = parseEditDoc(JSON.parse(JSON.stringify(v.doc)));
+    assert(d.meta.width === v.width && d.meta.height === v.height, `magic resize ${v.id}: size mismatch`);
+    const plan = buildExportPlan(d, (id) => `/media/${id}.mp4`, `/out/${v.id}.mp4`, fakeTextOverlays(d));
+    assert(plan.filterComplex.includes("overlay=(W-w)/2:(H-h)/2"), `magic resize ${v.id}: blurred-fit overlay missing`);
+  }
+  await renderAndAssert(variants[1]!.doc, 1, "verify-canvas-magic-tiktok.png");
+
+  // (d) REAL encode (when ffmpeg exists): output is exactly the custom size, and bars are real.
+  const info = await detectFfmpeg();
+  if (!info.available) {
+    console.log(`  \x1b[32m✔\x1b[0m check 73 (custom canvas): frames + plans OK — ffmpeg unavailable, real encode skipped`);
+    return;
+  }
+  const bin = resolveFfmpegBin();
+  const cdir = resolve(OUT_DIR, "canvas");
+  mkdirSync(cdir, { recursive: true });
+  const src = resolve(cdir, "src.mp4");
+  const sr = spawnSync(bin, ["-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", src], { encoding: "utf8" });
+  assert(sr.status === 0, "custom canvas: could not synthesize the source clip");
+  const small = (): EditDoc => parseEditDoc({
+    version: 1,
+    meta: { title: "c", width: 640, height: 360, fps: 30 },
+    media: [{ id: "m1", kind: "video", src, durationSec: 2, width: 640, height: 360, hasAudio: false }],
+    tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 1, mediaId: "m1", sourceIn: 0, transform: { x: 320, y: 180 } }] }],
+  });
+  const encodeFrame = (label: string, d: EditDoc, w: number, h: number): Buffer => {
+    const out = resolve(cdir, `${label}.mp4`);
+    const plan = buildExportPlan(d, () => src, out, new Map());
+    const r = spawnSync(bin, plan.args, { encoding: "utf8" });
+    assert(r.status === 0, `custom canvas encode [${label}]: ffmpeg exited ${r.status}\n  FC: ${plan.filterComplex.slice(0, 700)}\n  ERR: ${(r.stderr || "").split("\n").slice(-5).join("\n")}`);
+    const raw = spawnSync(bin, ["-hide_banner", "-y", "-ss", "0.5", "-i", out, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], { maxBuffer: 64 * 1024 * 1024 });
+    assert(raw.status === 0 && raw.stdout.length === w * h * 3, `custom canvas encode [${label}]: output must decode as exactly ${w}×${h} (got ${raw.stdout?.length} bytes, want ${w * h * 3})`);
+    return raw.stdout as Buffer;
+  };
+  const rgb = (b: Buffer, w: number, x: number, y: number): number[] => [b[(y * w + x) * 3]!, b[(y * w + x) * 3 + 1]!, b[(y * w + x) * 3 + 2]!];
+  const near = (a: number[], b: number[], tol: number) => a.every((v, i) => Math.abs(v - b[i]!) <= tol);
+
+  // Custom ratio (21:9-ish wide) honors the exact size.
+  encodeFrame("wide-21x9", dir.setCanvasSize(small(), { width: 840, height: 360 }).doc, 840, 360);
+  // 9:16 Fill: no bars (centre-cropped).
+  const fill916 = encodeFrame("fill-9x16", dir.setCanvasSize(small(), { width: 360, height: 640 }).doc, 360, 640);
+  // 9:16 Fit + solid: top bar is exactly the colour.
+  const solid916 = encodeFrame("fit-solid-9x16", dir.setCanvasSize(small(), { width: 360, height: 640, fit: "fit", fill: "solid", fillColor: "#336699" }).doc, 360, 640);
+  assert(near(rgb(solid916, 360, 180, 10), [51, 102, 153], 6), `real fit solid: top bar must be ≈#336699, got ${rgb(solid916, 360, 180, 10)}`);
+  assert(!near(rgb(fill916, 360, 180, 10), [51, 102, 153], 20), "real fill: no solid bar expected");
+  // 9:16 Fit + blur: bar is NOT black, differs from solid/fill, and is smooth.
+  const blur916 = encodeFrame("fit-blur-9x16", dir.setCanvasSize(small(), { width: 360, height: 640, fit: "fit", fill: "blur" }).doc, 360, 640);
+  const bar = rgb(blur916, 360, 180, 10);
+  assert(bar.some((v) => v > 12), `real fit blur: top bar must carry the blurred picture (not black), got ${bar}`);
+  assert(!blur916.equals(solid916) && !blur916.equals(fill916), "real fit blur must differ from solid and fill");
+  const a = rgb(blur916, 360, 100, 10);
+  const b = rgb(blur916, 360, 101, 10);
+  assert(near(a, b, 24), `real fit blur: bar should be smooth, got ${a} vs ${b}`);
+  console.log(`  \x1b[32m✔\x1b[0m check 73 (custom canvas): 5 custom sizes render · fit solid/blur differ from fill (canvas + REAL ffmpeg encode, exact output sizes) · ${variants.length} magic-resize docs valid`);
+}
+
 async function checkRealEncode(): Promise<void> {
   const info = await detectFfmpeg();
   if (!info.available) {
@@ -4438,6 +4541,7 @@ async function main(): Promise<void> {
   await checkExportProgress();
   await checkEditingCraft();
   await checkSceneSplit();
+  await checkCustomCanvas();
   await checkRealEncode();
   console.log(`\n[32m✔ VERIFY PASSED[0m — frames in ${OUT_DIR}`);
 }

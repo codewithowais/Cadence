@@ -75,6 +75,7 @@ import { SceneSplit, type SceneSplitBridge } from "./SceneSplit";
 import type { RoomKey } from "./RoomsRail";
 import { MEDIA_DND_ID, MEDIA_DND_AUDIO, MEDIA_DND_VISUAL } from "./CutsStrip";
 import type { BeginPlacement } from "@/lib/placement";
+import { openCanvasPanel } from "@/lib/canvas-prefs";
 
 interface RoomPanelProps {
   room: Exclude<RoomKey, "edit">;
@@ -1650,6 +1651,13 @@ function DeliverRoom({
           <span className="text-faint">{p.aspect}</span>
         </Pill>
       ))}
+
+      {/* Custom ratio — type any W×H / ratio, fit modes, magic resize (CanvasPanel). */}
+      <Pill onClick={() => openCanvasPanel()}>
+        Custom size…
+        <span className="tabular-nums text-faint">{doc.meta.width}×{doc.meta.height}</span>
+      </Pill>
+      <Pill onClick={() => openCanvasPanel("magic")}>Magic resize</Pill>
 
       <span className="mx-1 h-7 w-px shrink-0 bg-line" aria-hidden />
 

@@ -344,6 +344,60 @@ const EVALS: Eval[] = [
     },
     proof: "eval-i-sentences.png",
   },
+
+  // (canvas-a) CUSTOM RATIO — an arbitrary ratio + a fit mode, chained.
+  {
+    id: "canvas-a",
+    capability: "canvas · custom ratio 3:2 + fit with blurred background",
+    prompt: "make it 3:2 and fit the whole video with a blurred background",
+    setup: async () => {
+      const project = await videoProject();
+      await new StubDirector().interpret("cut a 30 second highlight", project);
+      return project;
+    },
+    expectTools: ["set_canvas_size"],
+    extra: (doc) => {
+      assert(doc.meta.width === 1620 && doc.meta.height === 1080, `expected 1620×1080, got ${doc.meta.width}×${doc.meta.height}`);
+      assert(doc.meta.canvas?.fit === "fit" && doc.meta.canvas.fill === "blur", "expected Fit with blurred bars");
+      assert(doc.meta.canvas?.ratio === "3:2", `expected the 3:2 label, got ${doc.meta.canvas?.ratio}`);
+    },
+    proof: "eval-canvas-a-3x2-blur.png",
+  },
+
+  // (canvas-b) CUSTOM RATIO — an explicit pixel size.
+  {
+    id: "canvas-b",
+    capability: "canvas · explicit size 1080 by 1350",
+    prompt: "make it 1080 by 1350",
+    setup: async () => {
+      const project = await videoProject();
+      await new StubDirector().interpret("cut a 30 second highlight", project);
+      return project;
+    },
+    expectTools: ["set_canvas_size"],
+    extra: (doc) => {
+      assert(doc.meta.width === 1080 && doc.meta.height === 1350, `expected 1080×1350, got ${doc.meta.width}×${doc.meta.height}`);
+    },
+    proof: "eval-canvas-b-1080x1350.png",
+  },
+
+  // (canvas-c) MAGIC RESIZE — queue every social size on the doc.
+  {
+    id: "canvas-c",
+    capability: "canvas · magic resize for all social platforms",
+    prompt: "resize for all social platforms",
+    setup: async () => {
+      const project = await videoProject();
+      await new StubDirector().interpret("cut a 30 second highlight", project);
+      return project;
+    },
+    expectTools: ["magic_resize"],
+    extra: (doc) => {
+      assert((doc.meta.canvas?.magicTargets?.length ?? 0) >= 5, "expected the social sizes queued on the doc");
+      assert(doc.meta.width === 1920 && doc.meta.height === 1080, "the working doc keeps its own size");
+    },
+    proof: "eval-canvas-c-magic.png",
+  },
 ];
 
 interface EvalOutcome {

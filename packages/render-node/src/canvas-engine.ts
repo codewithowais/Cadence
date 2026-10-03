@@ -26,6 +26,7 @@ import {
   drawVfx,
   emphasisScale,
   imageMotion,
+  mediaFitRect,
   keyframeTransformState,
   sourceTimeAt,
   transitionMotion,
@@ -68,6 +69,23 @@ function applyMaskClip(ctx: SKRSContext2D, mask: Mask, frameW: number, frameH: n
   ctx.clip(mask.invert ? "evenodd" : "nonzero");
 }
 
+/** Canvas fit/fill resolved for one media clip (see core `mediaFitRect`). */
+interface FitSpec {
+  mode: "fill" | "fit";
+  fill: "blur" | "solid";
+  fillColor: string;
+  rect: { x: number; y: number; w: number; h: number };
+}
+
+/** Darken a #rrggbb colour by `k` (0..1 keeps k of the brightness). */
+function shade(hex: string, k: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return "#101418";
+  const n = parseInt(m[1]!, 16);
+  const c = (v: number) => Math.round(v * k).toString(16).padStart(2, "0");
+  return `#${c((n >> 16) & 255)}${c((n >> 8) & 255)}${c(n & 255)}`;
+}
+
 function drawMedia(
   ctx: SKRSContext2D,
   clip: VideoClip | ImageClip,
@@ -75,6 +93,7 @@ function drawMedia(
   fill: string,
   frameW: number,
   frameH: number,
+  fitSpec?: FitSpec,
 ): void {
   // Transition motion (slide/wipe) + whether opacity should ramp (crossfade /
   // dip-to-black do; slide/wipe stay opaque) — shared core helper.
@@ -118,6 +137,20 @@ function drawMedia(
 
   // Look / color grade — applies to the tile now, to real pixels later.
   ctx.filter = cssFilter(clip.look);
+  // Canvas FIT: bars (solid colour, or a darkened enlarged tile standing in for the
+  // blurred copy) behind the contained picture. Fill (default) paints the whole frame.
+  const fit = fitSpec;
+  if (fit && fit.mode === "fit") {
+    ctx.fillStyle = fit.fill === "solid" ? fit.fillColor : shade(fill, 0.55);
+    ctx.fillRect(-frameW / 2, -frameH / 2, frameW, frameH);
+    if (fit.fill === "blur") {
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.hypot(frameW, frameH) / 2);
+      g.addColorStop(0, "rgba(255,255,255,0.10)");
+      g.addColorStop(1, "rgba(0,0,0,0.25)");
+      ctx.fillStyle = g;
+      ctx.fillRect(-frameW / 2, -frameH / 2, frameW, frameH);
+    }
+  }
   ctx.fillStyle = fill;
   ctx.beginPath();
   if (clip.chroma) {
@@ -127,7 +160,8 @@ function drawMedia(
     const sw = frameW * 0.5;
     ctx.roundRect(-sw / 2, -frameH / 2, sw, frameH, 0);
   } else {
-    ctx.roundRect(-frameW / 2, -frameH / 2, frameW, frameH, 0);
+    const r = fit && fit.mode === "fit" ? fit.rect : { x: 0, y: 0, w: frameW, h: frameH };
+    ctx.roundRect(r.x - frameW / 2, r.y - frameH / 2, r.w, r.h, 0);
   }
   ctx.fill();
   ctx.filter = "none";
@@ -203,7 +237,12 @@ function drawContentClip(ctx: SKRSContext2D, clip: Clip, doc: EditDoc, width: nu
     case "image":
     case "video": {
       const asset = doc.media.find((m) => m.id === clip.mediaId);
-      drawMedia(ctx, clip, asset?.label ?? asset?.src ?? clip.mediaId, tintFor(clip.mediaId), width, height);
+      const cv = doc.meta.canvas;
+      const fitSpec: FitSpec | undefined =
+        cv?.fit === "fit"
+          ? { mode: "fit", fill: cv.fill, fillColor: cv.fillColor, rect: mediaFitRect("fit", asset?.width, asset?.height, width, height) }
+          : undefined;
+      drawMedia(ctx, clip, asset?.label ?? asset?.src ?? clip.mediaId, tintFor(clip.mediaId), width, height, fitSpec);
       break;
     }
     case "solid":

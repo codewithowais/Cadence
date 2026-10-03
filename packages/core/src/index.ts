@@ -8,3 +8,4 @@ export * from "./shape-anim";
 export * from "./fonts";
 export * from "./emoji-draw";
 export * from "./emoji";
+export * from "./canvas";
