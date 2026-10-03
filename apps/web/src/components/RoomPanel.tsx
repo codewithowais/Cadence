@@ -49,6 +49,12 @@ import {
 import { EMOJI_STICKERS, TEXT_PRESETS, insertSticker, type PlaceOpts } from "@/lib/text-presets";
 import { BackgroundPane, TextRoom } from "./TextRoom";
 import { GraphicsGallery } from "./GraphicsGallery";
+import { LutLooks } from "./LutLooks";
+import { registerCubeText } from "@/lib/lut-preview";
+import { parseCube } from "@cadence/core";
+
+/** Throws a readable error for a malformed / 1-D / truncated .cube before it is uploaded. */
+const parseCubeCheck = (text: string): void => void parseCube(text);
 import { fmtTime, download, downloadBlob } from "@/lib/format";
 import { describeDoc } from "@/lib/status";
 import {
@@ -1316,8 +1322,17 @@ function LutControls({
     setError(null);
     setUploading(true);
     try {
+      // Parse in the browser first: a malformed / 1-D .cube is rejected with a clear
+      // message BEFORE uploading, and the fitted preview approximation is registered.
+      const text = await file.text();
+      parseCubeCheck(text);
       const { path } = await uploadMedia(file);
       namesRef.current[path] = file.name;
+      try {
+        registerCubeText(path, text);
+      } catch {
+        /* preview approximation is best-effort; export still applies the exact LUT */
+      }
       onApplyDoc(applyLut(doc, { lut: path }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't import that LUT.");
@@ -1337,9 +1352,10 @@ function LutControls({
         <h3 className="text-[10px] uppercase tracking-wider text-faint">LUT (.cube)</h3>
       </div>
       <p className="text-[11px] text-faint">
-        Import a 3D LUT to grade your footage. LUTs are applied on <strong className="text-muted">export</strong>{" "}
-        (ffmpeg) — the live preview approximates with the grade sliders above.
+        Import a 3D LUT (or pick a free built-in look) to grade your footage. Export applies the table{" "}
+        <strong className="text-muted">exactly</strong> (ffmpeg); the live preview is a close approximation.
       </p>
+      <LutLooks doc={doc} disabled={disabled} activeLut={activeLut} onApplyDoc={onApplyDoc} />
       {!hasVisual && (
         <p className="rounded-lg border border-line bg-elevated/40 px-3 py-2 text-xs text-faint">
           Add a video or photo first — a LUT needs a visual clip.

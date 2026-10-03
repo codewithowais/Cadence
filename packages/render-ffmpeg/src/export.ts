@@ -36,6 +36,7 @@ import {
   docNeedsShapeOverlays,
 } from "./text-overlays";
 import { detectFfmpeg, resolveFfmpegBin, FFMPEG_MISSING_MESSAGE, type FfmpegInfo } from "./detect";
+import { withBundledLuts } from "./luts";
 import { FfmpegProgressParser, MonotonicProgress, blockFraction, etaSeconds } from "./progress";
 
 /**
@@ -100,7 +101,9 @@ export class ExportCancelledError extends Error {
  * Render `doc` to a real .mp4 at `outFile`. Throws {@link FfmpegNotFoundError}
  * with a clear install hint if ffmpeg is missing.
  */
-export async function runExport(doc: EditDoc, opts: RunExportOptions): Promise<ExportOutcome> {
+export async function runExport(doc: EditDoc, rawOpts: RunExportOptions): Promise<ExportOutcome> {
+  // `bundled:<key>` LUT ids (built-in looks) resolve to a generated .cube on demand.
+  const opts: RunExportOptions = { ...rawOpts, resolveMediaPath: withBundledLuts(rawOpts.resolveMediaPath) };
   const bin = opts.bin || resolveFfmpegBin();
   const { signal } = opts;
   const checkAborted = (): void => {

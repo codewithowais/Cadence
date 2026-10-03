@@ -135,6 +135,7 @@ export async function POST(req: NextRequest) {
     // paths (and a LUT with no valid file fails safe).
     const byLut = new Map<string, string>();
     for (const lut of collectLutPaths(doc)) {
+      if (lut.startsWith("bundled:")) continue; // built-in look: the engine writes its own .cube
       const r = await resolveMediaToLocalPath(lut);
       byLut.set(lut, r.path);
       if (r.downloaded) { scratch.push(r.path); blobUrls.push(lut); }

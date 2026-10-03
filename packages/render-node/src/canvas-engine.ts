@@ -14,7 +14,9 @@
 import { createCanvas, type Canvas, type SKRSContext2D } from "@napi-rs/canvas";
 import {
   activeClipsAt,
+  applyLutToRgba,
   blendCompositeOperation,
+  bundledLut,
   calloutTransform,
   cssFilter,
   drawCallout,
@@ -67,6 +69,16 @@ function applyMaskClip(ctx: SKRSContext2D, mask: Mask, frameW: number, frameH: n
   ctx.clip(mask.invert ? "evenodd" : "nonzero");
 }
 
+/** Grade a "#rrggbb" colour through a bundled LUT id (identity for anything else). */
+function lutFill(hex: string, lutId: string): string {
+  const lut = bundledLut(lutId);
+  if (!lut || !/^#[0-9a-f]{6}$/i.test(hex)) return hex;
+  const px = new Uint8ClampedArray([parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), 255]);
+  applyLutToRgba(px, lut);
+  const h = (n: number): string => n.toString(16).padStart(2, "0");
+  return `#${h(px[0]!)}${h(px[1]!)}${h(px[2]!)}`;
+}
+
 function drawMedia(
   ctx: SKRSContext2D,
   clip: VideoClip | ImageClip,
@@ -117,7 +129,10 @@ function drawMedia(
 
   // Look / color grade — applies to the tile now, to real pixels later.
   ctx.filter = cssFilter(clip.look);
-  ctx.fillStyle = fill;
+  // A bundled 3D LUT grades the placeholder tile EXACTLY (the tile is a flat colour,
+  // so grading its fill is the LUT applied to its pixels). Uploaded .cube files are
+  // export-only here (the canvas never reads client-supplied paths).
+  ctx.fillStyle = clip.look.lut ? lutFill(fill, clip.look.lut) : fill;
   ctx.beginPath();
   if (clip.chroma) {
     // Chroma key approximation: the keyed background is dropped, so the layer
@@ -251,6 +266,13 @@ function applyAdjustment(
     ctx.drawImage(tmp, 0, 0);
     ctx.filter = "none";
     ctx.restore();
+  }
+  // A bundled 3D LUT grades the whole composite exactly (per-pixel trilinear).
+  const adjLut = grade.lut ? bundledLut(grade.lut) : null;
+  if (adjLut) {
+    const img = ctx.getImageData(0, 0, w, h);
+    applyLutToRgba(img.data, adjLut);
+    ctx.putImageData(img, 0, 0);
   }
   // Warm soft-light overlay for the warmth field — mirrors drawMedia's warm wash so
   // an adjustment's warmth reads the same as a per-clip warm look.

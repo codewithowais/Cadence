@@ -6,3 +6,4 @@ export * from "./draw";
 export * from "./text-anim";
 export * from "./shape-anim";
 export * from "./fonts";
+export * from "./lut";

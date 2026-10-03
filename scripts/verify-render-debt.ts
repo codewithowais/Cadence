@@ -10,17 +10,33 @@
  *      word on the shared canvas; every preset applies + renders; set_caption_preset
  *      tool + stub routing; a REAL export shows the highlight color stepping word to word
  */
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
-import { parseEditDoc, sourceSpanSec, sourceTimeAt, type EditDoc, type TextClip, type VideoClip } from "@cadence/core";
+import {
+  BUNDLED_LUTS,
+  BUNDLED_LUT_SIZE,
+  bundledLut,
+  lutApprox,
+  lutSvgFilter,
+  lutToCube,
+  parseCube,
+  parseEditDoc,
+  sampleLut,
+  sourceSpanSec,
+  sourceTimeAt,
+  type EditDoc,
+  type TextClip,
+  type VideoClip,
+} from "@cadence/core";
 import { CanvasRenderEngine } from "@cadence/render-node";
 import type { Transcript } from "@cadence/understanding";
 import { addCaptions, applyCaptionPreset, CAPTION_PRESETS, DIRECTOR_TOOLS, ProjectState, setSpeedRamp, StubDirector } from "@cadence/director";
 import {
   buildExportPlan,
+  bundledLutFile,
   rampSegmentBounds,
   detectFfmpeg,
   resolveFfmpegBin,
@@ -398,10 +414,126 @@ function countMean(px: Uint8ClampedArray, w: number, rect: [number, number, numb
   return sum / Math.max(1, n);
 }
 
+// ---------------------------------------------------------------------------
+// 74 · LUT: .cube parse + bundled looks + preview approximation + exact export
+// ---------------------------------------------------------------------------
+
+export async function checkLutPipeline(): Promise<void> {
+  // (a) parse / serialize round-trip + malformed input is rejected loudly.
+  const teal = bundledLut("bundled:teal-orange")!;
+  assert(teal && teal.size === BUNDLED_LUT_SIZE, "bundled teal-orange LUT must build");
+  const again = parseCube(lutToCube(teal));
+  let maxDiff = 0;
+  for (let i = 0; i < teal.data.length; i++) maxDiff = Math.max(maxDiff, Math.abs(teal.data[i]! - again.data[i]!));
+  assert(again.size === teal.size && maxDiff < 1e-5, `.cube round-trip drifted (${maxDiff})`);
+  const expectThrow = (text: string, what: string): void => {
+    let threw = false;
+    try {
+      parseCube(text);
+    } catch {
+      threw = true;
+    }
+    assert(threw, `parseCube must reject ${what}`);
+  };
+  expectThrow("LUT_1D_SIZE 2\n0 0 0\n1 1 1\n", "a 1-D LUT");
+  expectThrow("LUT_3D_SIZE 2\n0 0 0\n1 0 0\n", "a truncated table");
+  expectThrow("0 0 0\n", "a file with no LUT_3D_SIZE");
+  const withComments = parseCube('# comment\nTITLE "x"\nLUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n' + "0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n");
+  const idc = sampleLut(withComments, 0.25, 0.5, 0.75);
+  assert(Math.abs(idc[0] - 0.25) < 1e-6 && Math.abs(idc[1] - 0.5) < 1e-6 && Math.abs(idc[2] - 0.75) < 1e-6, "an identity .cube must sample as identity (trilinear)");
+
+  // (b) all 6 bundled looks are distinct, in range, and the preview approximation is close.
+  assert(BUNDLED_LUTS.length === 6, `expected 6 bundled looks, got ${BUNDLED_LUTS.length}`);
+  const errs: string[] = [];
+  const probe = sampleLut(bundledLut("bundled:kodak-warm")!, 0.4, 0.5, 0.6);
+  for (const spec of BUNDLED_LUTS) {
+    const lut = bundledLut(`bundled:${spec.key}`)!;
+    for (const v of lut.data) assert(v >= 0 && v <= 1, `${spec.key}: LUT values must stay in 0..1`);
+    const ap = lutApprox(lut);
+    assert(ap.meanError < 0.06, `${spec.key}: preview approximation too far from the LUT (mean err ${ap.meanError.toFixed(3)})`);
+    errs.push(`${spec.key} ${ap.meanError.toFixed(3)}`);
+    const svg = lutSvgFilter("t", ap);
+    assert(svg.includes("<feColorMatrix") && svg.includes("<feFuncR"), `${spec.key}: SVG filter must carry a matrix + curves`);
+    const o = sampleLut(lut, 0.4, 0.5, 0.6);
+    assert(Math.abs(o[0] - probe[0]) + Math.abs(o[1] - probe[1]) + Math.abs(o[2] - probe[2]) > 0 || spec.key === "kodak-warm", `${spec.key}: must differ from kodak-warm`);
+  }
+
+  // (c) canvas: a bundled LUT on a clip changes the frame, and the tile colour equals the LUT of the original.
+  const mk = (lut?: string): EditDoc =>
+    parseEditDoc({
+      version: 1,
+      meta: { title: "lut", width: 320, height: 180, fps: 30, background: "#000000" },
+      media: [{ id: "v", kind: "video", src: "/media/v.mp4" }],
+      tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 2, mediaId: "v", transform: { x: 160, y: 90 }, look: lut ? { lut } : {} }] }],
+    });
+  const eng = new CanvasRenderEngine();
+  const centre = (png: Buffer): Promise<[number, number, number]> => pixelAt(png, 20, 20);
+  const plainPx = await centre(Buffer.from((await eng.renderFrame(mk(), 0.5)).data));
+  const lutPx = await centre(Buffer.from((await eng.renderFrame(mk("bundled:teal-orange"), 0.5)).data));
+  assert(plainPx.join() !== lutPx.join(), "a bundled LUT must change the canvas frame");
+  const expect1 = sampleLut(teal, plainPx[0] / 255, plainPx[1] / 255, plainPx[2] / 255).map((v) => Math.round(v * 255));
+  assert(expect1.every((v, i) => Math.abs(v - lutPx[i]!) <= 3), `canvas LUT pixel ${lutPx} must equal the exact LUT of ${plainPx} = ${expect1}`);
+  // adjustment layer + LUT grades the whole frame exactly
+  const adj = parseEditDoc({ ...mk(), tracks: [...mk().tracks, { id: "adjustments", kind: "visual", clips: [{ id: "a0", kind: "adjustment", start: 0, duration: 2, grade: { lut: "bundled:noir" } }] }] });
+  const adjPx = await centre(Buffer.from((await eng.renderFrame(adj, 0.5)).data));
+  assert(Math.abs(adjPx[0] - adjPx[1]) <= 2 && Math.abs(adjPx[1] - adjPx[2]) <= 2, `an adjustment layer with the noir LUT must desaturate the frame (got ${adjPx})`);
+
+  // (d) tool + stub + the bare-key shorthand.
+  const project = new ProjectState({ media: [{ id: "v", kind: "video", src: "/media/v.mp4", durationSec: 5 }] });
+  project.setDoc(mk());
+  await DIRECTOR_TOOLS.apply_lut!.execute({ lut: "film-fade" }, { project });
+  assert((project.doc.tracks[0]!.clips[0] as VideoClip).look.lut === "bundled:film-fade", "apply_lut with a bare key → bundled:<key>");
+  const p2 = new ProjectState({ media: [{ id: "v", kind: "video", src: "/media/v.mp4", durationSec: 5 }] });
+  p2.setDoc(mk());
+  const r = await new StubDirector().interpret("give it a teal and orange look", p2);
+  assert(r.toolCalls.some((c) => c.name === "apply_lut"), `StubDirector must route 'teal and orange' to apply_lut (got ${r.toolCalls.map((c) => c.name)})`);
+
+  // (e) plan: lut3d with the materialized file; REAL encode matches the exact LUT.
+  const resolveP = (id: string): string => (id.startsWith("bundled:") ? bundledLutFile(id) : `/media/${id}.mp4`);
+  const plan = buildExportPlan(mk("bundled:teal-orange"), resolveP, "/out/l.mp4");
+  assert(/lut3d=file=[^,;\[]*teal-orange-v1\.cube/.test(plan.filterComplex), `bundled LUT must export as lut3d on a materialized .cube, got ${plan.filterComplex.slice(0, 300)}`);
+  const s = await ensureSource("lut-src.mp4");
+  let real = "plan-only (ffmpeg absent)";
+  if (s) {
+    const flat = (lut: string | undefined): EditDoc => parseEditDoc({ ...mk(lut), media: [{ id: "v", kind: "video", src: s.src, durationSec: 3 }] });
+    const base = await exportFrame(flat(undefined), () => s.src, 1, "lut-none");
+    const px0 = pxOf(base, 160, 90);
+    const teal1 = pxOf(await exportFrame(flat("bundled:teal-orange"), () => s.src, 1, "lut-bundled"), 160, 90);
+    const exp = sampleLut(teal, px0[0] / 255, px0[1] / 255, px0[2] / 255).map((v) => Math.round(v * 255));
+    assert(exp.every((v, i) => Math.abs(v - teal1[i]!) <= 10), `real export: bundled LUT pixel ${teal1} must match the exact LUT ${exp} of ${px0}`);
+    assert(teal1.join() !== px0.join(), "real export must actually grade the frame");
+    // an IMPORTED .cube file (invert) through the same lut3d path
+    const inv = ["LUT_3D_SIZE 2", "DOMAIN_MIN 0 0 0", "DOMAIN_MAX 1 1 1"];
+    for (let b = 0; b < 2; b++) for (let g = 0; g < 2; g++) for (let r2 = 0; r2 < 2; r2++) inv.push(`${1 - r2} ${1 - g} ${1 - b}`);
+    const cubePath = resolve(OUT, "invert.cube");
+    writeFileSync(cubePath, inv.join("\n") + "\n");
+    const imp = parseEditDoc({ ...flat(undefined), tracks: [{ id: "video", kind: "visual", clips: [{ id: "c0", kind: "video", start: 0, duration: 2, mediaId: "v", transform: { x: 160, y: 90 }, look: { lut: cubePath } }] }] });
+    const invPx = pxOf(await exportFrame(imp, (id) => (id === cubePath ? cubePath : s.src), 1, "lut-import"), 160, 90);
+    assert(invPx.every((v, i) => Math.abs(v - (255 - px0[i]!)) <= 10), `imported invert.cube must invert the frame: got ${invPx}, want ${px0.map((v) => 255 - v)}`);
+    real = `real encode: bundled teal-orange ${px0}→${teal1} (exact LUT ${exp}); imported invert.cube ${px0}→${invPx}`;
+  }
+  ok(`check 74 (LUT pipeline): .cube parse/serialize round-trips + rejects 1-D/truncated; 6 bundled looks (preview-fit mean err ${errs.join(", ")}); canvas applies the exact LUT (clip tile + adjustment layer); apply_lut tool + stub routing; ${real}`);
+}
+
+function pxOf(f: { w: number; px: Uint8ClampedArray }, x: number, y: number): [number, number, number] {
+  const i = (y * f.w + x) * 4;
+  return [f.px[i]!, f.px[i + 1]!, f.px[i + 2]!];
+}
+
+async function pixelAt(png: Buffer, x: number, y: number): Promise<[number, number, number]> {
+  const img = await loadImage(png);
+  const c = createCanvas(img.width, img.height);
+  const ctx = c.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+  const d = ctx.getImageData(x, y, 1, 1).data;
+  return [d[0]!, d[1]!, d[2]!];
+}
+
 export async function checkRenderDebt(): Promise<void> {
   await checkExportZOrder();
   await checkKaraokePresets();
   await checkSpeedRampPresets();
+  await checkLutPipeline();
 }
 
 if (process.argv[1]?.endsWith("verify-render-debt.ts")) {

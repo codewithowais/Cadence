@@ -82,8 +82,10 @@ export const ColorGrade = z.object({
    * export it becomes the ffmpeg `lut3d=file=<path>` filter (the path is resolved
    * through the SAME resolver/whitelist as media and escaped for the filtergraph;
    * lut3d reads a LOCAL file only — no arbitrary protocols). CSS/canvas have no
-   * .cube primitive, so the LUT is EXPORT-ONLY: the canvas preview skips it
-   * gracefully (documented, exactly like `curves`). Optional so existing docs stay
+   * .cube primitive: the export is EXACT (lut3d), the node canvas applies the exact
+   * table, and the browser preview approximates it with a fitted SVG filter
+   * (see core/lut.ts). `bundled:<key>` selects a built-in free look (no file; the
+   * exporter materializes a .cube). Optional so existing docs stay
    * valid. Faithful: a color remap only, never a content change.
    */
   lut: z.string().optional(),

@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   BackgroundGradient,
   BackgroundPattern,
+  BUNDLED_LUTS,
   docDurationSec,
   EditDoc,
   SHAPE_KINDS,
@@ -1314,7 +1315,7 @@ export const adjustHslTool: DirectorTool<{ hueShift?: number; saturation?: numbe
 export const applyLutTool: DirectorTool<{ lut: string; clipId?: string }> = {
   name: "apply_lut",
   description:
-    "Import a 3D LUT (.cube color lookup table) as the creative look, merged onto the main visual clips (or one clip by `clipId`). The LUT is applied on EXPORT (ffmpeg lut3d) as a color remap on top of the other grade; the canvas preview approximates the other grade fields but not the LUT (documented). Pass an empty `lut` to clear it. Faithful — color only.",
+    `Import a 3D LUT (.cube color lookup table) as the creative look, merged onto the main visual clips (or one clip by clipId). The LUT is applied exactly on EXPORT (ffmpeg lut3d); the browser preview approximates it with a fitted filter. Built-in free looks need no file — pass lut:"bundled:<key>" (or just the key): ${BUNDLED_LUTS.map((l) => l.key).join(", ")}. Pass an empty lut to clear it. Faithful — color only.`,
   inputSchema: z.object({ lut: z.string(), clipId: z.string().min(1).optional() }),
   async execute(input, ctx) {
     const doc = applyLut(ctx.project.doc, { lut: input.lut, clipId: input.clipId });

@@ -7,6 +7,7 @@
 import {
   captionAnchorY,
   docDurationSec,
+  findBundledLut,
   parseEditDoc,
   sourceSpanSec,
   sourceTimeAt,
@@ -2187,7 +2188,9 @@ export interface ApplyLutOpts {
  */
 export function applyLut(doc: EditDoc, opts: ApplyLutOpts): EditDoc {
   const clone: EditDoc = structuredClone(doc);
-  const lut = opts.lut.trim() || undefined;
+  let lut = opts.lut.trim() || undefined;
+  // A bare built-in key ("teal-orange") means the bundled look.
+  if (lut && !lut.includes("/") && !lut.includes(".") && findBundledLut(lut)) lut = `bundled:${findBundledLut(lut)!.key}`;
   let changed = 0;
   for (const track of clone.tracks) {
     for (const clip of track.clips) {

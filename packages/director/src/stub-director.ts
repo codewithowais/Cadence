@@ -60,6 +60,7 @@ import {
   slideshowTool,
   speedTool,
   speedRampTool,
+  applyLutTool,
   styleCaptionsTool,
   setCaptionPresetTool,
   titleTool,
@@ -307,6 +308,19 @@ const CAPTION_COLORS: Record<string, string> = {
  * about captions AND names at least one style attribute (color / weight / outline
  * / position / font), so a plain "add captions" still routes to add_captions only.
  */
+/** Map a request to a bundled LUT key ("teal and orange look", "warm film grade"). */
+function parseBundledLut(req: string): string | null {
+  const table: [RegExp, string][] = [
+    [/teal (?:and|&|\+|n) orange|orange (?:and|&) teal|blockbuster (?:look|grade)/, "teal-orange"],
+    [/(?:warm|kodak|golden) film|film (?:stock )?warm|kodak/, "kodak-warm"],
+    [/cool film|fuji|film (?:stock )?cool/, "fuji-cool"],
+    [/faded film|film fade|matte film|faded (?:print|look)/, "film-fade"],
+    [/noir mono|black and white lut|\blut\b.*noir/, "noir"],
+  ];
+  for (const [re, key] of table) if (re.test(req)) return key;
+  return null;
+}
+
 /** Map a request to a speed-ramp preset ("bullet time", "hero time", "montage", "flash in", "speed ramp"). */
 function parseSpeedRampPreset(req: string): SpeedRampPreset | null {
   if (/bullet.?time/.test(req)) return "bullet-time";
@@ -1207,7 +1221,17 @@ export class StubDirector {
     // preset so "make it warmer" nudges warmth instead of applying the warm look.
     const colorAdjust = parseColorAdjust(req, project.doc);
 
-    const look = parseLook(req);
+    // A built-in free 3D LUT look ("teal and orange", "warm film", "faded film").
+    const bundledLutKey = wantsSlideshow ? null : parseBundledLut(req);
+    if (bundledLutKey) {
+      const input = { lut: bundledLutKey };
+      steps.push({
+        run: (p) => applyLutTool.execute(input, { project: p }),
+        call: { name: applyLutTool.name, input },
+      });
+    }
+
+    const look = bundledLutKey ? null : parseLook(req);
     if (look && !wantsSlideshow && !colorAdjust) {
       steps.push({
         run: (p) => lookTool.execute({ look }, { project: p }),
